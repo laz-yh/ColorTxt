@@ -50,7 +50,6 @@
   );
   display: inline-block;
   line-height: inherit;
-  border-radius: 3px;
 }
 
 .monaco-editor .readerInlineSearchCurrentMatch {
@@ -60,7 +59,6 @@
   );
   display: inline-block;
   line-height: inherit;
-  border-radius: 3px;
 }
 
 .monaco-editor .readerInlineSearchCurrentLine {
