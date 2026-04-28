@@ -140,6 +140,14 @@ export function useAppWindowBindings(deps: {
     const onDocumentKeydownEscapeFullscreen = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape") return;
       if (!deps.isFullscreenView.value) return;
+      const target = ev.target;
+      if (
+        target instanceof HTMLElement &&
+        target.classList.contains("fileItemRenameInput")
+      ) {
+        // 文件重命名输入框优先处理 Esc（取消重命名），不应触发退出全屏。
+        return;
+      }
       // 有模态时仅由 modalStack 的捕获监听 resolve 一次；此处再 resolve 会关两层
       if (hasModalOnStack()) return;
       ev.preventDefault();
