@@ -3,6 +3,11 @@ import type * as monaco from "monaco-editor";
 export type ReaderScrollKeyHandlerOptions = {
   /** 空格键：下一屏（与 PageDown / scrollByPageStep(1) 相同逻辑），并避免触发只读空提示气泡 */
   onSpacePageDown?: () => void;
+  /**
+   * 为 false 时不做任何只读侧键位拦截（空格翻页、方向键等），交给 Monaco 正常编辑。
+   * 编辑模式下应返回 false。
+   */
+  shouldInterceptReadOnlyKeys?: () => boolean;
 };
 
 /**
@@ -15,6 +20,10 @@ export function installReaderScrollKeyHandler(
   options?: ReaderScrollKeyHandlerOptions,
 ): monaco.IDisposable {
   return e.onKeyDown((ev) => {
+    if (options?.shouldInterceptReadOnlyKeys?.() === false) {
+      return;
+    }
+
     const accelKey = ev.ctrlKey || ev.metaKey;
     const isPasteOrCut =
       accelKey &&

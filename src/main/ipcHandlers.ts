@@ -34,6 +34,7 @@ import {
 } from "./dialogInvoke";
 import type { CreateMainWindow } from "./windowFactory";
 import { registerLocalFileForColortxtUrl } from "./colortxtLocalProtocol";
+import { registerWindowCloseGuardIpc } from "./windowCloseGuard";
 import {
   getToggleVisibilityShortcut,
   resumeGlobalShortcutsAfterRecording,
@@ -170,6 +171,7 @@ async function detectEncoding(filePath: string): Promise<string> {
 export function registerMainIpcHandlers(
   options: RegisterMainIpcHandlersOptions,
 ) {
+  registerWindowCloseGuardIpc();
   const {
     createWindow,
     shouldRestoreSessionByWindowId,
@@ -475,6 +477,65 @@ export function registerMainIpcHandlers(
       await mkdir(path.dirname(resolved), { recursive: true });
       await writeFile(resolved, utf8, "utf8");
       return { ok: true as const };
+    },
+  );
+
+  ipcMain.handle("file:readWholeTextFile", async (_evt, filePath: string) => {
+    const resolved = path.resolve(String(filePath ?? "").trim());
+    if (!resolved) {
+      return { ok: false as const, message: "路径为空" };
+    }
+    try {
+      const st = await stat(resolved);
+      if (!st.isFile()) {
+        return { ok: false as const, message: "路径不是可读文件" };
+      }
+    } catch (e) {
+      return {
+        ok: false as const,
+        message: e instanceof Error ? e.message : "文件不存在或不可访问",
+      };
+    }
+    try {
+      const encoding = await detectEncoding(resolved);
+      const buf = await readFile(resolved);
+      const text = iconv.decode(buf, encoding);
+      return { ok: true as const, text, encoding };
+    } catch (e) {
+      return {
+        ok: false as const,
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
+  });
+
+  ipcMain.handle(
+    "file:writeTextFile",
+    async (
+      _evt,
+      filePath: string,
+      content: string,
+      encodingRaw: unknown,
+    ) => {
+      const resolved = path.resolve(String(filePath ?? "").trim());
+      if (!resolved) {
+        return { ok: false as const, message: "路径为空" };
+      }
+      const encoding =
+        typeof encodingRaw === "string" && encodingRaw.trim()
+          ? encodingRaw.trim()
+          : "utf8";
+      try {
+        const buf = iconv.encode(content, encoding);
+        await mkdir(path.dirname(resolved), { recursive: true });
+        await writeFile(resolved, buf);
+        return { ok: true as const };
+      } catch (e) {
+        return {
+          ok: false as const,
+          message: e instanceof Error ? e.message : String(e),
+        };
+      }
     },
   );
 

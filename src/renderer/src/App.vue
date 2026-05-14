@@ -9,7 +9,11 @@ import {
   watch,
 } from "vue";
 import type { ComponentPublicInstance } from "vue";
-import { getChapterMatchRules, type Chapter } from "./chapter";
+import {
+  buildChaptersFromPlainText,
+  getChapterMatchRules,
+  type Chapter,
+} from "./chapter";
 import AppHeader, { type RecentFileItem } from "./components/AppHeader.vue";
 import ReaderSidebar from "./components/ReaderSidebar.vue";
 import AppFooter from "./components/AppFooter.vue";
@@ -42,6 +46,7 @@ import { useAppReaderUiPrefs } from "./composables/useAppReaderUiPrefs";
 import { useAppShellThemeWatch } from "./composables/useAppShellThemeWatch";
 import { useAppSyncCurrentFileWatch } from "./composables/useAppSyncCurrentFileWatch";
 import { useAppWindowBindings } from "./composables/useAppWindowBindings";
+import { pickActiveChapterIdx } from "./reader/chapterIndex";
 import { useTxtStreamPipeline } from "./composables/useTxtStreamPipeline";
 import { fileHistoryKey } from "./stores/recentHistoryStore";
 import {
@@ -106,7 +111,7 @@ import {
   createDefaultShortcutBindings,
   type ShortcutBindingMap,
 } from "./services/shortcutRegistry";
-import { appAlert } from "./services/appDialog";
+import { appAlert, appConfirm } from "./services/appDialog";
 import { mergeShortcutBindings } from "./services/shortcutUtils";
 import {
   syncTxtFilesCategoriesAfterCatalogEdit,
@@ -533,6 +538,18 @@ const physicalReaderPath = ref<string | null>(null);
 /** 当前文件是否已完成加载与阅读位置同步；无打开文件时为 true，打开/重置会话后为 false，流结束并完成滚动后为 true */
 const readingProgressSynced = ref(true);
 
+const readerEditMode = ref(false);
+const readerEditorDirty = ref(false);
+const readerSaveEncoding = ref("utf8");
+
+async function confirmIfReaderEditDiscard(): Promise<boolean> {
+  if (!readerEditMode.value || !readerEditorDirty.value) return true;
+  return appConfirm(
+    "当前正文的修改尚未保存，确定放弃这些更改？",
+    "未保存的修改",
+  );
+}
+
 let afterStreamFullTextInstalled: () => void | Promise<void> = async () => {};
 
 const stream = useTxtStreamPipeline({
@@ -933,6 +950,9 @@ const fileSession = useAppFileSession({
   ebookParsing,
   ebookConversionSourcePath,
   applyCurrentFileCategoryIfConcrete: applyCurrentFileCategoryToNewPaths,
+  readerEditMode,
+  readerEditorDirty,
+  confirmIfReaderEditDiscard,
 });
 
 const {
@@ -955,6 +975,7 @@ useAppSyncCurrentFileWatch({
   loading,
   readingProgressSynced,
   ebookParsing,
+  readerEditMode,
   stream,
   viewportEndLine,
   openFilePath,
@@ -1017,6 +1038,109 @@ const {
   onProbeLineChange,
   applyChapterMatchRules,
 } = chapterNav;
+
+const canEnterReaderEditMode = computed(
+  () =>
+    Boolean(currentFile.value) &&
+    !loading.value &&
+    readingProgressSynced.value &&
+    !ebookParsing.value,
+);
+
+function applyChaptersFromReaderPlainText() {
+  if (!readerEditMode.value) return;
+  const text = readerRef.value?.getAllText() ?? "";
+  const next = buildChaptersFromPlainText(text, chapterMinCharCount.value);
+  chapters.value = next;
+  stream.setChapterWriteIndex(Math.max(-1, next.length - 1));
+  readerRef.value?.setChapters(
+    next.map((ch) => ({ title: ch.title, lineNumber: ch.lineNumber })),
+  );
+  activeChapterIdx.value = pickActiveChapterIdx(
+    chapters.value,
+    lastProbeLine.value,
+  );
+}
+
+async function onToggleReaderEdit() {
+  if (readerEditMode.value) {
+    if (readerEditorDirty.value) {
+      const ok = await appConfirm(
+        "当前正文的修改尚未保存，确定切换回只读模式？未保存的更改将丢失。",
+        "未保存的修改",
+      );
+      if (!ok) return;
+    }
+    readerEditMode.value = false;
+    readerEditorDirty.value = false;
+    const path = currentFile.value;
+    if (path) {
+      const endLine = Math.max(
+        1,
+        Math.floor(
+          readerRef.value?.getViewportEndLine?.() ?? viewportEndLine.value,
+        ),
+      );
+      /** 编辑态 Monaco 与磁盘一一对应，行号即源物理行；滤空映射仅适用于只读压缩正文，不可用于编辑态行号 */
+      const physicalP = compressBlankLines.value
+        ? endLine
+        : stream.viewportDisplayLineToPhysicalLine(endLine);
+      await openFilePath(path, {
+        restorePhysicalLine: physicalP,
+        skipRememberCurrent: true,
+        keepSidebarTab: true,
+        skipReaderEditGuard: true,
+      });
+    }
+  } else {
+    if (!canEnterReaderEditMode.value) {
+      void appAlert("请等待当前文件加载完成后再进入编辑模式。");
+      return;
+    }
+    readerEditMode.value = true;
+  }
+}
+
+async function onSaveReaderFile() {
+  const p = physicalReaderPath.value;
+  if (!p || !window.colorTxt?.writeTextFile) return;
+  const text = readerRef.value?.getAllText() ?? "";
+  const r = await window.colorTxt.writeTextFile(
+    p,
+    text,
+    readerSaveEncoding.value,
+  );
+  if (!r.ok) {
+    void appAlert(r.message ?? "保存失败");
+    return;
+  }
+  readerRef.value?.markReaderEditSaved?.();
+  readerEditorDirty.value = false;
+}
+
+function onReaderEditLoaded(payload: { encoding: string }) {
+  readerSaveEncoding.value = (payload.encoding || "utf8").trim() || "utf8";
+  applyChaptersFromReaderPlainText();
+}
+
+function onReaderEditLoadFailed() {
+  readerEditMode.value = false;
+}
+
+function onReaderEditDirtyChange(dirty: boolean) {
+  readerEditorDirty.value = dirty;
+}
+
+async function handleWindowCloseRequest() {
+  if (readerEditMode.value && readerEditorDirty.value) {
+    const ok = await appConfirm(
+      "当前正文的修改尚未保存，确定关闭窗口？",
+      "未保存的修改",
+    );
+    if (!ok) return;
+  }
+  window.colorTxt.proceedCloseWindow();
+}
 
 /** AI 助手跳转章节：未激活书钉时先记住当前滚动位置（与查找打开前一致），再跳转 */
 function jumpToChapterFromAiAssistant(ch: Chapter) {
@@ -1096,7 +1220,16 @@ function revealCurrentFileInFolder() {
 }
 
 function quitApp() {
-  window.colorTxt.quitApp();
+  void (async () => {
+    if (readerEditMode.value && readerEditorDirty.value) {
+      const ok = await appConfirm(
+        "当前正文的修改尚未保存，确定退出应用？",
+        "未保存的修改",
+      );
+      if (!ok) return;
+    }
+    window.colorTxt.quitApp();
+  })();
 }
 
 function refreshReaderSurfaceAfterPaletteChange() {
@@ -1588,6 +1721,8 @@ useAppWindowBindings({
   activeStreamFilePath,
   readingProgressSynced,
   readerDropOverlayVisible,
+  handleWindowCloseRequest,
+  readerEditMode,
 });
 
 useAppShellThemeWatch({
@@ -1599,6 +1734,8 @@ useAppShellThemeWatch({
   persistSettings,
   showChapterCounts,
   currentFile,
+  readerEditMode,
+  readerEditorDirty,
   isFullscreenView,
   showFullscreenSidebar,
   pulseChapterListCenter,
@@ -1643,6 +1780,8 @@ useAppShellThemeWatch({
         :monaco-custom-highlight="monacoCustomHighlight"
         :compress-blank-lines="compressBlankLines"
         :lead-indent-full-width="leadIndentFullWidth"
+        :reader-edit-mode="readerEditMode"
+        :can-enter-reader-edit-mode="canEnterReaderEditMode"
         :shortcut-bindings="shortcutBindings"
         @open-file="openFileViaDialog"
         @pin-click="onPinClick"
@@ -1675,6 +1814,8 @@ useAppShellThemeWatch({
         @clear-recent-files="clearRecentFiles"
         @open-about="showAboutPanel = true"
         @quit-app="quitApp"
+        @toggle-reader-edit="onToggleReaderEdit"
+        @save-reader-file="onSaveReaderFile"
       />
     </div>
 
@@ -1747,6 +1888,7 @@ useAppShellThemeWatch({
           :chapters="chapters"
           :active-chapter-idx="activeChapterIdx"
           :format-char-count="formatCharCount"
+          :reader-edit-mode="readerEditMode"
           @pick-directory="pickTxtDirectory"
           @import-dropped-paths="onImportDroppedPathsFromList"
           @open-file="openFileFromSidebar"
@@ -1759,6 +1901,7 @@ useAppShellThemeWatch({
           @rename-file-path="onRenameFilePath"
           @open-file-in-new-window="onOpenFileInNewWindow"
           @close-current-file="closeCurrentFile"
+          @refresh-chapters-from-reader="applyChaptersFromReaderPlainText"
           @jump-to-bookmark="jumpToBookmark"
           @clear-bookmarks="clearCurrentFileBookmarks"
           @remove-bookmarks="removeCurrentFileBookmarks"
@@ -1843,12 +1986,18 @@ useAppShellThemeWatch({
             stream.viewportDisplayLineToPhysicalLine
           "
           :before-reveal-find-widget="ensurePinBeforeRevealFindWidget"
+          :reader-edit-mode="readerEditMode"
+          :physical-reader-path="physicalReaderPath"
           @probe-line-change="onProbeLineChange"
           @viewport-top-line-change="onViewportTopLineChange"
           @viewport-end-line-change="onViewportEndLineChange"
           @viewport-visual-progress-change="onViewportVisualProgressChange"
           @add-highlight-term="onAddHighlightTerm"
           @remove-highlight-term="onRemoveHighlightTerm"
+          @reader-edit-dirty-change="onReaderEditDirtyChange"
+          @reader-edit-loaded="onReaderEditLoaded"
+          @reader-edit-load-failed="onReaderEditLoadFailed"
+          @reader-edit-save-request="onSaveReaderFile"
         />
         <div
           v-if="showReaderIdleHint"

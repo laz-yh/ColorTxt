@@ -38,6 +38,17 @@ function keyboardEventFromReaderSidebar(ev: KeyboardEvent): boolean {
   return false;
 }
 
+/** 焦点是否在主阅读器 Monaco 编辑器内（用于编辑模式下放行全部按键给 Monaco） */
+function keyboardTargetInsideReaderMonacoEditor(
+  ev: KeyboardEvent,
+  readerRef: Ref<InstanceType<typeof ReaderMain> | null>,
+): boolean {
+  const t = ev.target;
+  if (!(t instanceof Node)) return false;
+  const root = readerRef.value?.getReaderEditorDomNode?.() ?? null;
+  return Boolean(root && root.contains(t));
+}
+
 export function useAppWindowBindings(deps: {
   readerRef: Ref<InstanceType<typeof ReaderMain> | null>;
   stream: Stream;
@@ -110,6 +121,10 @@ export function useAppWindowBindings(deps: {
   readingProgressSynced: Ref<boolean>;
   /** 拖入阅读区时，在阅读区容器上显示「打开文件」局部蒙层 */
   readerDropOverlayVisible: Ref<boolean>;
+  /** 主进程拦截关窗后由渲染进程决定是否 `proceedCloseWindow` */
+  handleWindowCloseRequest: () => Promise<void>;
+  /** 为 true 时：焦点在阅读器 Monaco 内不处理窗口级快捷键与全屏 Esc，交给编辑器 */
+  readerEditMode: Ref<boolean>;
 }) {
   const unsubscribers: Array<() => void> = [];
 
@@ -164,6 +179,12 @@ export function useAppWindowBindings(deps: {
       // 有模态时仅由 modalStack 的捕获监听 resolve 一次；此处再 resolve 会关两层
       if (hasModalOrEscBeforeModalLayer()) return;
       if (keyboardEventFromReaderSidebar(ev)) return;
+      if (
+        deps.readerEditMode.value &&
+        keyboardTargetInsideReaderMonacoEditor(ev, deps.readerRef)
+      ) {
+        return;
+      }
       ev.preventDefault();
       ev.stopPropagation();
       if (deps.readerRef.value?.isFindWidgetRevealed?.()) {
@@ -226,7 +247,11 @@ export function useAppWindowBindings(deps: {
         () => deps.shortcutBindings.value,
         (ev) =>
           !hasModalOrEscBeforeModalLayer() &&
-          !keyboardEventFromReaderSidebar(ev),
+          !keyboardEventFromReaderSidebar(ev) &&
+          !(
+            deps.readerEditMode.value &&
+            keyboardTargetInsideReaderMonacoEditor(ev, deps.readerRef)
+          ),
       ),
     );
 
@@ -594,6 +619,12 @@ export function useAppWindowBindings(deps: {
     unsubscribers.push(
       window.colorTxt.onOpenTxtFromShell((filePath) => {
         void deps.fileSession.openFilePath(filePath);
+      }),
+    );
+
+    unsubscribers.push(
+      window.colorTxt.onWindowRequestClose(() => {
+        void deps.handleWindowCloseRequest();
       }),
     );
 

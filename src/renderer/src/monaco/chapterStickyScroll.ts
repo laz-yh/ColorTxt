@@ -1,4 +1,5 @@
 import type * as monaco from "monaco-editor";
+import { Emitter } from "monaco-editor";
 import { chapterTitleForDisplay } from "../chapter";
 
 /** 与 `setChapters` / 粘性滚动大纲一致的单条章节信息 */
@@ -35,6 +36,15 @@ export function ensureStickyChapterBarClickDisabled(): void {
   document.head.appendChild(el);
 }
 
+export type ChapterStickyScrollProvidersHandle = {
+  disposable: monaco.IDisposable;
+  /**
+   * 章节行号已更新但模型未发生内容变更时调用（如「刷新章节」仅重算行号），
+   * 触发折叠区失效，使粘性条按 `getChapters` 重新拉取（依赖 `stickyScroll.defaultModel: foldingProviderModel`）。
+   */
+  notifyChapterFoldingRangesChanged: () => void;
+};
+
 /**
  * 注册折叠区与文档符号，使粘性滚动按章节层级显示章节名。
  * `getChapters` 应在每次 `setChapters` 后返回最新快照。
@@ -43,33 +53,40 @@ export function registerChapterStickyScrollProviders(
   monacoApi: typeof monaco,
   languageId: string,
   getChapters: () => ChapterStickyLine[],
-): monaco.IDisposable {
+): ChapterStickyScrollProvidersHandle {
   const disposables: monaco.IDisposable[] = [];
+  const foldingRangesChanged = new Emitter<monaco.languages.FoldingRangeProvider>();
+
+  const foldingProvider: monaco.languages.FoldingRangeProvider = {
+    onDidChange: foldingRangesChanged.event,
+    provideFoldingRanges(model) {
+      const max = model.getLineCount();
+      const sorted = getChapters()
+        .filter((c) => c.lineNumber >= 1 && c.lineNumber <= max)
+        .slice()
+        .sort((a, b) => a.lineNumber - b.lineNumber);
+
+      const ranges: monaco.languages.FoldingRange[] = [];
+      for (let i = 0; i < sorted.length; i++) {
+        const start = sorted[i].lineNumber;
+        const nextStart = sorted[i + 1]?.lineNumber ?? max + 1;
+        const end = Math.max(start, Math.min(max, nextStart - 1));
+        if (end <= start) continue;
+        ranges.push({
+          start,
+          end,
+          kind: monacoApi.languages.FoldingRangeKind.Region,
+        });
+      }
+      return ranges;
+    },
+  };
 
   disposables.push(
-    monacoApi.languages.registerFoldingRangeProvider(languageId, {
-      provideFoldingRanges(model) {
-        const max = model.getLineCount();
-        const sorted = getChapters()
-          .filter((c) => c.lineNumber >= 1 && c.lineNumber <= max)
-          .slice()
-          .sort((a, b) => a.lineNumber - b.lineNumber);
-
-        const ranges: monaco.languages.FoldingRange[] = [];
-        for (let i = 0; i < sorted.length; i++) {
-          const start = sorted[i].lineNumber;
-          const nextStart = sorted[i + 1]?.lineNumber ?? max + 1;
-          const end = Math.max(start, Math.min(max, nextStart - 1));
-          if (end <= start) continue;
-          ranges.push({
-            start,
-            end,
-            kind: monacoApi.languages.FoldingRangeKind.Region,
-          });
-        }
-        return ranges;
-      },
-    }),
+    monacoApi.languages.registerFoldingRangeProvider(
+      languageId,
+      foldingProvider,
+    ),
   );
 
   disposables.push(
@@ -119,9 +136,16 @@ export function registerChapterStickyScrollProviders(
     }),
   );
 
+  disposables.push({ dispose: () => foldingRangesChanged.dispose() });
+
   return {
-    dispose() {
-      for (const d of disposables) d.dispose();
+    disposable: {
+      dispose() {
+        for (const d of disposables) d.dispose();
+      },
+    },
+    notifyChapterFoldingRangesChanged: () => {
+      foldingRangesChanged.fire(foldingProvider);
     },
   };
 }

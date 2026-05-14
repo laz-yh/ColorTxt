@@ -31,6 +31,7 @@ import {
   buildReaderEditorCreateOptions,
   buildReaderEditorFontSizeUpdate,
   buildReaderEditorLineHeightUpdate,
+  buildReaderMonacoModeEditorOptions,
 } from "../monaco/readerEditorOptions";
 import {
   createTxtrTextMonarchLanguage,
@@ -73,6 +74,7 @@ import {
   subscribeModalStackChange,
 } from "../utils/modalStack";
 import { stripEbookIdAndAMarkersFromText } from "../ebook/ebookInternalLinkMarkers";
+import { appAlert } from "../services/appDialog";
 
 /** 与 `READER_HL_FLOAT_ROOT_Z_INDEX` 同步；低于 `AppModal` 蒙层（6000） */
 const HL_FLOAT_Z_INDEX = READER_HL_FLOAT_ROOT_Z_INDEX;
@@ -125,6 +127,8 @@ let lineHeightMultiple = defaultReaderLineHeightMultiple;
 let currentFontFamily = READER_EDITOR_DEFAULT_FONT_FAMILY;
 
 let chaptersSnapshot: ChapterStickyLine[] = [];
+/** `registerChapterStickyScrollProviders` 注入后赋值；`setChapters` 末尾触发折叠失效以刷新粘性条 */
+let notifyChapterStickyFoldingRanges: (() => void) | null = null;
 
 /** 上次已写入的章节标题行内装饰对应的「章节行号序列」键；相同时可跳过 `collection.set`（仅着色，不含留白） */
 let lastChapterTitleDecorationsLineKey = "";
@@ -172,6 +176,10 @@ const props = withDefaults(
     ebookDisplayLineToPhysical?: (displayLine: number) => number;
     /** 在**打开**查找栏（非关闭）之前调用，例如自动点亮书钉 */
     beforeRevealFindWidget?: () => void;
+    /** 编辑模式：Monaco 展示磁盘原文，不经阅读管线后处理 */
+    readerEditMode?: boolean;
+    /** 与流式读盘一致的磁盘 txt 路径（编辑读/存用） */
+    physicalReaderPath?: string | null;
   }>(),
   {
     monacoCustomHighlight: defaultMonacoCustomHighlight,
@@ -188,6 +196,8 @@ const props = withDefaults(
     ebookAnchorPhysicalToDisplay: undefined,
     ebookDisplayLineToPhysical: undefined,
     beforeRevealFindWidget: undefined,
+    readerEditMode: false,
+    physicalReaderPath: null,
   },
 );
 
@@ -198,7 +208,97 @@ const emit = defineEmits<{
   viewportVisualProgressChange: [percent: number, atBottom: boolean];
   addHighlightTerm: [payload: { text: string; colorIndex: number }];
   removeHighlightTerm: [payload: { text: string }];
+  readerEditDirtyChange: [dirty: boolean];
+  readerEditLoaded: [payload: { encoding: string }];
+  readerEditLoadFailed: [];
+  readerEditSaveRequest: [];
 }>();
+
+let readerEditSavedSnapshot = "";
+let readerEditContentDisposable: monaco.IDisposable | null = null;
+/** 成功载入编辑态正文的磁盘路径，用于同路径内避免重复整文件读 */
+let readerEditLoadedPhysicalKey = "";
+let saveCommandDisposable: monaco.IDisposable | null = null;
+
+function teardownReaderEditContentListener() {
+  readerEditContentDisposable?.dispose();
+  readerEditContentDisposable = null;
+}
+
+function emitReaderEditDirtyIfChanged() {
+  const m = model.value;
+  if (!m || !props.readerEditMode) return;
+  const dirty = m.getValue() !== readerEditSavedSnapshot;
+  emit("readerEditDirtyChange", dirty);
+}
+
+/** 只读 / 编辑：切换 Monaco「阅读优化 chrome」与原生编辑 chrome（字体与配色仍走共享逻辑） */
+function applyReaderMonacoModeOptions(editMode: boolean) {
+  editor.value?.updateOptions(buildReaderMonacoModeEditorOptions(editMode));
+}
+
+async function loadReaderEditFromDisk() {
+  const p = props.physicalReaderPath?.trim();
+  if (!p || !window.colorTxt?.readWholeTextFile) return;
+  const r = await window.colorTxt.readWholeTextFile(p);
+  if (!r.ok) {
+    await appAlert(r.message);
+    emit("readerEditLoadFailed");
+    return;
+  }
+  const m = model.value;
+  const e = editor.value;
+  if (!m || !e) return;
+  /** 与「压缩空行」开关切换一致：视口末行 → 物理行；编辑态全文无滤空，Monaco 行号即物理行，用 {@link scrollLineToBottom} 贴底恢复 */
+  let restorePhysicalLine: number | null = null;
+  if (
+    props.compressBlankLines &&
+    typeof props.ebookDisplayLineToPhysical === "function"
+  ) {
+    const endDisplay = Math.max(1, Math.floor(getViewportEndLine()));
+    const rawP = props.ebookDisplayLineToPhysical(endDisplay);
+    if (Number.isFinite(rawP) && rawP >= 1) {
+      restorePhysicalLine = Math.max(1, Math.floor(rawP));
+    }
+  }
+  disposeEbookInternalLinks();
+  await applyEmbeddedImageAnchors(null);
+  m.setValue(r.text);
+  readerEditSavedSnapshot = r.text;
+  readerEditLoadedPhysicalKey = p;
+  applyReaderMonacoModeOptions(true);
+  teardownReaderEditContentListener();
+  readerEditContentDisposable = m.onDidChangeContent(() => {
+    emitReaderEditDirtyIfChanged();
+  });
+  emit("readerEditLoaded", { encoding: r.encoding });
+  emit("readerEditDirtyChange", false);
+
+  if (restorePhysicalLine != null) {
+    const phys = restorePhysicalLine;
+    const totalPhysical = Math.max(1, m.getLineCount());
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (phys >= totalPhysical) {
+          scrollToBottom(false);
+        } else if (phys <= 1) {
+          jumpToLine(1, false);
+        } else {
+          scrollLineToBottom(Math.min(phys, totalPhysical), false);
+        }
+        void nextTick(() => {
+          normalizeScrollAfterEmbeddedViewZones();
+          emitProbeLine(false);
+        });
+      });
+    });
+  }
+}
+
+function markReaderEditSaved() {
+  readerEditSavedSnapshot = model.value?.getValue() ?? "";
+  emit("readerEditDirtyChange", false);
+}
 
 const HL_TIP_H = 36;
 const HL_FLOAT_GAP = 4;
@@ -489,7 +589,10 @@ function syncStickyScrollToStreamState() {
   const ed = editor.value;
   if (!ed) return;
   ed.updateOptions({
-    stickyScroll: { enabled: !props.streamLoading },
+    stickyScroll: {
+      enabled: !props.streamLoading,
+      defaultModel: "foldingProviderModel",
+    },
   });
 }
 
@@ -849,10 +952,18 @@ function setChapters(chapters: ChapterStickyLine[]) {
   const lineKey = chapterLineNumbersKey(
     sortedChapters.map((c) => c.lineNumber),
   );
+  /** 编辑态不加章节标题行内样式（scale/着色），避免改标题前后正文时 Monaco 渲染异常 */
+  if (props.readerEditMode) {
+    collection.clear();
+    lastChapterTitleDecorationsLineKey = "";
+    notifyChapterStickyFoldingRanges?.();
+    return;
+  }
   if (lineKey !== lastChapterTitleDecorationsLineKey) {
     collection.set(buildChapterTitleDecorations(monaco, m, chaptersSnapshot));
     lastChapterTitleDecorationsLineKey = lineKey;
   }
+  notifyChapterStickyFoldingRanges?.();
 }
 
 function setTheme(themeName: string) {
@@ -1444,6 +1555,7 @@ defineExpose({
   getViewportTopLine,
   getViewportLineSpan,
   getAllText,
+  markReaderEditSaved,
   getEditorLineContent,
   getModelLineCount,
   getSelectedText,
@@ -1466,6 +1578,7 @@ defineExpose({
   applyEmbeddedImageAnchors,
   applyEbookInternalLinkMarkers,
   getEbookLeadingLinkLabelsByDisplayLine,
+  getReaderEditorDomNode: () => editor.value?.getDomNode() ?? null,
 });
 
 function applyReaderSyntaxFromProps() {
@@ -1505,13 +1618,13 @@ onMounted(() => {
   if (!g[globalKey]) {
     monaco.languages.register({ id: languageId });
 
-    providersDisposables.push(
-      registerChapterStickyScrollProviders(
-        monaco,
-        languageId,
-        () => chaptersSnapshot,
-      ),
+    const chapterSticky = registerChapterStickyScrollProviders(
+      monaco,
+      languageId,
+      () => chaptersSnapshot,
     );
+    providersDisposables.push(chapterSticky.disposable);
+    notifyChapterStickyFoldingRanges = chapterSticky.notifyChapterFoldingRangesChanged;
 
     g[globalKey] = true;
   }
@@ -1581,6 +1694,7 @@ onMounted(() => {
     });
     const d3 = installReaderScrollKeyHandler(monaco, e, {
       onSpacePageDown: () => scrollByPageStep(1),
+      shouldInterceptReadOnlyKeys: () => !props.readerEditMode,
     });
     const d4 = e.onContextMenu((mouseEv) => {
       const m = model.value;
@@ -1594,6 +1708,14 @@ onMounted(() => {
       editorContextMenuX.value = mouseEv.event.browserEvent.clientX;
       editorContextMenuY.value = mouseEv.event.browserEvent.clientY;
       editorContextMenuOpen.value = true;
+    });
+    saveCommandDisposable = e.addAction({
+      id: "colortxt.readerEdit.save",
+      label: "保存",
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
+      run() {
+        if (props.readerEditMode) emit("readerEditSaveRequest");
+      },
     });
     /**
      * Monaco 内部命中测试在部分 DOM 路径下会先得到 UNKNOWN 并短路；`.view-lines` 在 `.view-zones` 之后插入会盖住 zone。
@@ -1645,6 +1767,8 @@ onMounted(() => {
       dSel.dispose();
       d3.dispose();
       d4.dispose();
+      saveCommandDisposable?.dispose();
+      saveCommandDisposable = null;
       editorHost?.removeEventListener(
         "pointerdown",
         onReaderPointerDownCapture,
@@ -1657,6 +1781,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  notifyChapterStickyFoldingRanges = null;
   disposeEbookInternalLinks();
   cancelImageViewZoneScrollRender();
   removeHlGlobalListeners?.();
@@ -1668,6 +1793,34 @@ onBeforeUnmount(() => {
   for (const d of providersDisposables) d.dispose();
   providersDisposables = [];
 });
+
+watch(
+  () => [props.readerEditMode, props.physicalReaderPath] as const,
+  async ([edit, physRaw]) => {
+    const phys = physRaw?.trim() ?? "";
+    if (!edit) {
+      teardownReaderEditContentListener();
+      readerEditLoadedPhysicalKey = "";
+      applyReaderMonacoModeOptions(false);
+      return;
+    }
+    if (!phys) return;
+    if (readerEditLoadedPhysicalKey !== phys) {
+      await loadReaderEditFromDisk();
+      return;
+    }
+    applyReaderMonacoModeOptions(true);
+    teardownReaderEditContentListener();
+    const m = model.value;
+    if (m) {
+      readerEditContentDisposable = m.onDidChangeContent(() => {
+        emitReaderEditDirtyIfChanged();
+      });
+    }
+    emitReaderEditDirtyIfChanged();
+  },
+  { flush: "post" },
+);
 
 watch(
   () => props.readerFilePath,
@@ -1687,7 +1840,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="content">
+  <main class="content" :class="{ 'content--readerEdit': readerEditMode }">
     <div ref="editorEl" class="editorHost"></div>
     <div
       v-if="hlTipVisible || hlPickerVisible"
@@ -1752,21 +1905,24 @@ onMounted(() => {
   user-select: text;
 }
 
-:deep(.monaco-editor .cursor) {
+/* 仅只读：隐藏文本光标（与 cursorWidth:0 配合）；编辑模式交给 Monaco 默认绘制 */
+.content:not(.content--readerEdit) :deep(.monaco-editor .cursor) {
   display: none !important;
 }
 
-:deep(.monaco-editor .wordHighlight),
-:deep(.monaco-editor .wordHighlightStrong) {
+/* 仅只读：弱化单词高亮装饰，避免「当前行」类视觉干扰阅读 */
+.content:not(.content--readerEdit) :deep(.monaco-editor .wordHighlight),
+.content:not(.content--readerEdit) :deep(.monaco-editor .wordHighlightStrong) {
   background: transparent !important;
 }
 
-/* 打开右键菜单时编辑器会失去 .focused，Monaco 会用 inactive 选区色变浅；统一为活动选区背景 */
-:deep(.monaco-editor .selected-text) {
+/* 仅只读：打开自定义右键菜单时编辑器会失去 .focused，统一为活动选区背景 */
+.content:not(.content--readerEdit) :deep(.monaco-editor .selected-text) {
   background-color: var(--vscode-editor-selectionBackground) !important;
 }
 
-:deep(.monaco-editor .scroll-decoration) {
+/* 仅只读：去掉顶缘滚动阴影 */
+.content:not(.content--readerEdit) :deep(.monaco-editor .scroll-decoration) {
   box-shadow: none !important;
   display: none !important;
 }

@@ -35,6 +35,10 @@ withDefaults(
     canPin?: boolean;
     bookmarkActive?: boolean;
     canBookmark?: boolean;
+    /** 阅读器是否处于可编辑模式 */
+    readerEditMode: boolean;
+    /** 是否允许进入编辑（有文件且加载完成等，由父组件计算） */
+    canEnterReaderEditMode: boolean;
     /** 与快捷键面板、按键处理一致，用于「更多」菜单旁展示的快捷键 */
     shortcutBindings: ShortcutBindingMap;
   }>(),
@@ -45,6 +49,8 @@ withDefaults(
     canPin: true,
     bookmarkActive: false,
     canBookmark: true,
+    readerEditMode: false,
+    canEnterReaderEditMode: false,
   },
 );
 
@@ -77,6 +83,8 @@ const emit = defineEmits<{
   pinClick: [];
   goBackFromPin: [];
   bookmarkClick: [];
+  toggleReaderEdit: [];
+  saveReaderFile: [];
 }>();
 </script>
 
@@ -85,6 +93,22 @@ const emit = defineEmits<{
     <button class="btn primary" size="large" @click="$emit('openFile')">
       打开文件
     </button>
+    <IconButton
+      :icon-html="icons.edit"
+      :active="readerEditMode"
+      :pressed="readerEditMode"
+      title="编辑模式"
+      aria-label="切换编辑模式"
+      :disabled="!readerEditMode && !canEnterReaderEditMode"
+      @click="emit('toggleReaderEdit')"
+    />
+    <IconButton
+      v-if="readerEditMode"
+      :icon-html="icons.save"
+      title="保存"
+      aria-label="保存"
+      @click="emit('saveReaderFile')"
+    />
     <div class="themePicker">
       <div class="headerQuickRow">
         <IconButton
@@ -152,6 +176,7 @@ const emit = defineEmits<{
           :pressed="compressBlankLines"
           title="压缩空行"
           aria-label="压缩空行"
+          :disabled="readerEditMode"
           @click="emit('toggleCompressBlankLines')"
         />
         <IconButton
@@ -160,6 +185,7 @@ const emit = defineEmits<{
           :pressed="leadIndentFullWidth"
           title="行首缩进"
           aria-label="行首缩进"
+          :disabled="readerEditMode"
           @click="emit('toggleLeadIndentFullWidth')"
         />
       </div>

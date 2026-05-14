@@ -27,6 +27,9 @@ export function useAppShellThemeWatch(deps: {
   persistSettings: () => void;
   showChapterCounts: Ref<boolean>;
   currentFile: Ref<string | null>;
+  /** 阅读器编辑模式：未保存 dirty 时标题加 `*` */
+  readerEditMode?: Ref<boolean>;
+  readerEditorDirty?: Ref<boolean>;
   isFullscreenView: Ref<boolean>;
   showFullscreenSidebar: Ref<boolean>;
   pulseChapterListCenter: (smooth: boolean) => void;
@@ -59,14 +62,20 @@ export function useAppShellThemeWatch(deps: {
   });
 
   watch(
-    () => deps.currentFile.value,
-    (fp) => {
+    () =>
+      [
+        deps.currentFile.value,
+        deps.readerEditMode?.value ?? false,
+        deps.readerEditorDirty?.value ?? false,
+      ] as const,
+    ([fp, editMode, dirty]) => {
       if (!fp) {
         window.colorTxt.setWindowTitle(APP_DISPLAY_NAME);
         return;
       }
       const fileName = fp.split(/[\\/]/).pop() || fp;
-      window.colorTxt.setWindowTitle(`${fileName} - ${APP_DISPLAY_NAME}`);
+      const star = editMode && dirty ? "* " : "";
+      window.colorTxt.setWindowTitle(`${star}${fileName} - ${APP_DISPLAY_NAME}`);
     },
     { immediate: true },
   );

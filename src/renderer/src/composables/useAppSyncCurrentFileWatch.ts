@@ -12,6 +12,8 @@ export function useAppSyncCurrentFileWatch(deps: {
   loading: Ref<boolean>;
   readingProgressSynced: Ref<boolean>;
   ebookParsing: Ref<boolean>;
+  /** 为 true 时不监控磁盘变更、不自动重载（避免与编辑中内容冲突） */
+  readerEditMode: Ref<boolean>;
   stream: StreamLike;
   viewportEndLine: Ref<number>;
   openFilePath: (
@@ -20,6 +22,7 @@ export function useAppSyncCurrentFileWatch(deps: {
       restorePhysicalLine?: number;
       skipRememberCurrent?: boolean;
       keepSidebarTab?: boolean;
+      skipReaderEditGuard?: boolean;
     },
   ) => Promise<boolean>;
 }) {
@@ -49,7 +52,8 @@ export function useAppSyncCurrentFileWatch(deps: {
       Boolean(deps.physicalReaderPath.value?.trim()) &&
       !deps.loading.value &&
       !deps.ebookParsing.value &&
-      deps.readingProgressSynced.value;
+      deps.readingProgressSynced.value &&
+      !deps.readerEditMode.value;
     const p = deps.physicalReaderPath.value?.trim() ?? "";
     await invokeWatch(on && p ? p : null);
   }
@@ -61,6 +65,7 @@ export function useAppSyncCurrentFileWatch(deps: {
       () => deps.loading.value,
       () => deps.ebookParsing.value,
       () => deps.readingProgressSynced.value,
+      () => deps.readerEditMode.value,
     ],
     () => {
       void updateWatchFromState();
@@ -78,7 +83,8 @@ export function useAppSyncCurrentFileWatch(deps: {
         !deps.syncCurrentFile.value ||
         deps.loading.value ||
         deps.ebookParsing.value ||
-        !deps.readingProgressSynced.value
+        !deps.readingProgressSynced.value ||
+        deps.readerEditMode.value
       ) {
         return;
       }
@@ -92,7 +98,8 @@ export function useAppSyncCurrentFileWatch(deps: {
           !deps.syncCurrentFile.value ||
           deps.loading.value ||
           deps.ebookParsing.value ||
-          !deps.readingProgressSynced.value
+          !deps.readingProgressSynced.value ||
+          deps.readerEditMode.value
         ) {
           return;
         }
@@ -105,6 +112,7 @@ export function useAppSyncCurrentFileWatch(deps: {
           restorePhysicalLine: physicalLine,
           skipRememberCurrent: true,
           keepSidebarTab: true,
+          skipReaderEditGuard: true,
         });
       }, 380);
     });

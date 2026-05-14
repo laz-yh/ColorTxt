@@ -199,6 +199,18 @@ const api = {
     ipcRenderer.invoke("file:writeUtf8File", filePath, utf8) as Promise<{
       ok: true;
     }>,
+  readWholeTextFile: (filePath: string) =>
+    ipcRenderer.invoke("file:readWholeTextFile", filePath) as Promise<
+      | { ok: true; text: string; encoding: string }
+      | { ok: false; message: string }
+    >,
+  writeTextFile: (filePath: string, content: string, encoding: string) =>
+    ipcRenderer.invoke(
+      "file:writeTextFile",
+      filePath,
+      content,
+      encoding,
+    ) as Promise<{ ok: true } | { ok: false; message: string }>,
   writeBinaryFile: (filePath: string, base64: string) =>
     ipcRenderer.invoke("file:writeBinaryFile", filePath, base64) as Promise<{
       ok: true;
@@ -299,6 +311,14 @@ const api = {
     ipcRenderer.invoke("shortcut:resumeAfterRecording") as Promise<void>,
   quitApp: () => {
     ipcRenderer.send("app:quit");
+  },
+  onWindowRequestClose: (cb: () => void) => {
+    const fn = () => cb();
+    ipcRenderer.on("window:requestClose", fn);
+    return () => ipcRenderer.off("window:requestClose", fn);
+  },
+  proceedCloseWindow: () => {
+    ipcRenderer.send("window:proceedClose");
   },
   onStreamStart: (cb: (payload: StreamStart) => void) => {
     const fn = (_: unknown, payload: StreamStart) => cb(payload);

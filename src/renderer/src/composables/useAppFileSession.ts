@@ -96,11 +96,15 @@ export function useAppFileSession(deps: {
   ebookParsing: Ref<boolean>;
   /** 正在转换的电子书源路径（用于底栏在 resetSession 之前显示「转换中…」） */
   ebookConversionSourcePath: Ref<string | null>;
+  readerEditMode: Ref<boolean>;
+  readerEditorDirty: Ref<boolean>;
   /**
    * 在合并进 `txtFiles` **之后**调用：传入本次新加入的路径；
    * 若当前筛选为具体分类则写入列表项 `category`；为「全部 / 未分类」时不改。
    */
   applyCurrentFileCategoryIfConcrete?: (newPaths: string[]) => void;
+  /** 切书/关文件前：返回 false 表示用户取消（保留未保存编辑） */
+  confirmIfReaderEditDiscard?: () => Promise<boolean>;
 }) {
   const {
     persistFileListCache,
@@ -297,8 +301,11 @@ export function useAppFileSession(deps: {
     persistFileListCache();
   }
 
-  function closeCurrentFile() {
+  async function closeCurrentFile() {
     if (!deps.currentFile.value) return;
+    if (deps.confirmIfReaderEditDiscard) {
+      if (!(await deps.confirmIfReaderEditDiscard())) return;
+    }
     rememberCurrentFileLine();
     deps.pendingRestorePhysicalLine.value = null;
     deps.pendingRestoreEditorViewState.value = null;
@@ -308,6 +315,8 @@ export function useAppFileSession(deps: {
     deps.activeStreamRequestId.value = null;
     deps.activeStreamFilePath.value = null;
     deps.physicalReaderPath.value = null;
+    deps.readerEditMode.value = false;
+    deps.readerEditorDirty.value = false;
     deps.loading.value = false;
     deps.loadingProgressPercent.value = null;
     deps.fileEncoding.value = "-";
@@ -615,10 +624,19 @@ export function useAppFileSession(deps: {
       keepSidebarTab?: boolean;
       /** 侧栏列表点击时传入当前行 */
       listRow?: TxtFileItem;
+      /** 为 true 时跳过「未保存编辑」确认（如编辑切回只读后的同一文件重载） */
+      skipReaderEditGuard?: boolean;
     },
   ) {
     if (!options?.keepSidebarTab) {
       suppressFileListCenterAfterLoad.value = false;
+    }
+
+    if (!options?.skipReaderEditGuard && deps.confirmIfReaderEditDiscard) {
+      if (!(await deps.confirmIfReaderEditDiscard())) {
+        suppressFileListCenterAfterLoad.value = false;
+        return false;
+      }
     }
 
     if (!options?.skipRememberCurrent) {
@@ -690,6 +708,9 @@ export function useAppFileSession(deps: {
       deps.pendingRestoreViewportTopPhysicalLine.value = null;
       deps.pendingRestorePhysicalLine.value = null;
     }
+
+    deps.readerEditMode.value = false;
+    deps.readerEditorDirty.value = false;
 
     resetSession(filePath);
     deps.physicalReaderPath.value = resolved.physicalPath;

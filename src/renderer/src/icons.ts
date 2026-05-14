@@ -14,6 +14,7 @@ import infoIcon from "./assets/info.svg?raw";
 import quitIcon from "./assets/quit.svg?raw";
 import fontFamilyIcon from "./assets/font_family.svg?raw";
 import editIcon from "./assets/edit.svg?raw";
+import saveIcon from "./assets/save.svg?raw";
 import removeIcon from "./assets/remove.svg?raw";
 import upIcon from "./assets/up.svg?raw";
 import downIcon from "./assets/down.svg?raw";
@@ -81,6 +82,7 @@ export const icons = {
   quit: quitIcon,
   fontFamily: fontFamilyIcon,
   edit: editIcon,
+  save: saveIcon,
   remove: removeIcon,
   up: upIcon,
   down: downIcon,

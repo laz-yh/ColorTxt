@@ -116,6 +116,8 @@ const props = withDefaults(
     characterBookStyle?: CharacterBookStylePersisted;
     /** 设置「确定」保存 AI 配置后由 App 递增，用于阅读助手刷新快速提问等 */
     aiAssistantConfigSyncNonce?: number;
+    /** 阅读器编辑模式（章节面板顶栏「刷新章节」图标） */
+    readerEditMode?: boolean;
   }>(),
   {
     panelExpanded: true,
@@ -149,6 +151,7 @@ const props = withDefaults(
     characterRoster: () => [],
     characterBookStyle: undefined,
     aiAssistantConfigSyncNonce: 0,
+    readerEditMode: false,
   },
 );
 
@@ -199,6 +202,7 @@ const emit = defineEmits<{
   requestCollapsePanel: [];
   openColorScheme: [];
   openSettings: [];
+  refreshChaptersFromReader: [];
   findHighlightTerm: [text: string];
   removeHighlightTerm: [text: string];
   clearInlineSearchHighlight: [];
@@ -580,7 +584,19 @@ defineExpose({
     </nav>
     <div v-show="panelExpanded" class="sidebarPanelColumn">
       <div class="sidebarHeader">
-        <span class="sidebarHeaderTitle">{{ activePanelTitle }}</span>
+        <div class="sidebarHeaderStart">
+          <span class="sidebarHeaderTitle">{{ activePanelTitle }}</span>
+          <button
+            v-if="activeTab === 'chapters' && readerEditMode"
+            type="button"
+            class="aiReaderSidebarHeaderIconBtn"
+            title="刷新章节"
+            aria-label="刷新章节"
+            @click="emit('refreshChaptersFromReader')"
+          >
+            <span class="svg" v-html="icons.refresh" />
+          </button>
+        </div>
         <button
           v-if="activeTab === 'files'"
           class="btn"
@@ -957,6 +973,14 @@ defineExpose({
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+.sidebarHeaderStart {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
 }
 
 .sidebarHeaderEnd {

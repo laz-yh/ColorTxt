@@ -416,6 +416,7 @@ kbd {
 }
 code {
   margin: 0 2px;
+  user-select: text;
 }
 kbd {
   border-radius: 6px;

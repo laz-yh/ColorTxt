@@ -9,6 +9,7 @@ import {
   WINDOW_MIN_HEIGHT,
   WINDOW_MIN_WIDTH,
 } from "./windowBounds";
+import { attachWindowCloseRequestGuard } from "./windowCloseGuard";
 
 export type CreateMainWindow = (options?: {
   openTxtPath?: string | null;
@@ -134,6 +135,7 @@ export function createMainWindowFactory(maps: MainWindowMaps): CreateMainWindow 
     win.on("close", () => {
       requestSaveWindowBounds(true);
     });
+    attachWindowCloseRequestGuard(win);
 
     return win;
   };
