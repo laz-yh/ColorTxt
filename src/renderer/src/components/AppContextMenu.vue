@@ -6,15 +6,35 @@ type ContextMenuItem = {
   label?: string;
   type?: "primary" | "success" | "warning" | "danger";
   separator?: boolean;
+  disabled?: boolean;
 };
 
-const props = defineProps<{
-  open: boolean;
-  x: number;
-  y: number;
-  items: readonly ContextMenuItem[];
-  minWidth?: number;
-}>();
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    x: number;
+    y: number;
+    items: readonly ContextMenuItem[];
+    minWidth?: number;
+    /** 点击落点在此元素内时不视为“外部点击”，不自动关闭（用于锚点按钮触发的菜单） */
+    excludeCloseWithin?: HTMLElement | null;
+    /**
+     * `point`：以 (x,y) 为左上角（经视口夹取）。
+     * `aboveFooterMouseX`：菜单在底栏上方弹出（底边不盖住底栏），水平以 `pointerXPx` 居中对齐后再夹到视口内。
+     */
+    placement?: "point" | "aboveFooterMouseX";
+    /** `placement === 'aboveFooterMouseX'` 时：底栏 `getBoundingClientRect().top` */
+    footerTopPx?: number | null;
+    /** `placement === 'aboveFooterMouseX'` 时：打开菜单时的指针 `clientX` */
+    pointerXPx?: number | null;
+  }>(),
+  {
+    placement: "point",
+    footerTopPx: null,
+    pointerXPx: null,
+    excludeCloseWithin: undefined,
+  },
+);
 
 const emit = defineEmits<{
   close: [];
@@ -31,37 +51,60 @@ function itemClass(item: ContextMenuItem) {
   return c.join(" ");
 }
 
+function onMenuItemClick(item: ContextMenuItem) {
+  if (item.disabled) return;
+  emit("select", item.id);
+}
+
 function clampPosition() {
   const menu = menuRef.value;
   if (!menu) return;
   const margin = 8;
+  const gapAboveAnchor = 4;
   const maxX = Math.max(margin, window.innerWidth - menu.offsetWidth - margin);
   const maxY = Math.max(
     margin,
     window.innerHeight - menu.offsetHeight - margin,
   );
+
+  if (
+    props.placement === "aboveFooterMouseX" &&
+    props.footerTopPx != null &&
+    props.pointerXPx != null
+  ) {
+    const footerTop = props.footerTopPx;
+    const xIdeal = props.pointerXPx - menu.offsetWidth / 2;
+    posX.value = Math.min(Math.max(margin, xIdeal), maxX);
+    const ymaxFoot = footerTop - gapAboveAnchor - menu.offsetHeight;
+    posY.value = Math.min(
+      Math.max(margin, ymaxFoot),
+      Math.min(maxY, ymaxFoot),
+    );
+    return;
+  }
+
   posX.value = Math.min(Math.max(margin, props.x), maxX);
   posY.value = Math.min(Math.max(margin, props.y), maxY);
 }
 
 watch(
-  () => props.open,
-  async (open) => {
+  () =>
+    [
+      props.open,
+      props.x,
+      props.y,
+      props.placement,
+      props.footerTopPx,
+      props.pointerXPx,
+    ] as const,
+  async ([open]) => {
     if (!open) return;
-    posX.value = props.x;
-    posY.value = props.y;
+    if (props.placement === "point") {
+      posX.value = props.x;
+      posY.value = props.y;
+    }
     await nextTick();
     clampPosition();
-  },
-);
-
-watch(
-  () => [props.x, props.y] as const,
-  () => {
-    if (!props.open) return;
-    posX.value = props.x;
-    posY.value = props.y;
-    void nextTick().then(clampPosition);
   },
 );
 
@@ -69,6 +112,13 @@ function onDocPointerDown(ev: PointerEvent) {
   if (!props.open) return;
   const t = ev.target as Node | null;
   if (t && menuRef.value?.contains(t)) return;
+  if (
+    t &&
+    props.excludeCloseWithin &&
+    props.excludeCloseWithin.contains(t as Node)
+  ) {
+    return;
+  }
   emit("close");
 }
 
@@ -104,17 +154,14 @@ onBeforeUnmount(() => {
     @click.stop
   >
     <template v-for="item in items" :key="item.id">
-      <div
-        v-if="item.separator"
-        class="appShellMenuDivider"
-        role="separator"
-      />
+      <div v-if="item.separator" class="appShellMenuDivider" role="separator" />
       <button
         v-else
         type="button"
         :class="itemClass(item)"
         role="menuitem"
-        @click="emit('select', item.id)"
+        :disabled="item.disabled"
+        @click="onMenuItemClick(item)"
       >
         {{ item.label }}
       </button>

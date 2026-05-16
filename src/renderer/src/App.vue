@@ -550,6 +550,68 @@ const readerEditMode = ref(false);
 const readerEditorDirty = ref(false);
 const readerSaveEncoding = ref("utf8");
 
+const footerEncodingActionsEnabled = computed(
+  () =>
+    Boolean(
+      physicalReaderPath.value &&
+        currentFile.value &&
+        !loading.value &&
+        !ebookParsing.value &&
+        typeof window.colorTxt?.writeTextFile === "function",
+    ),
+);
+
+/** 底栏路径菜单条目可用性（条目仍展示不可用时置灰） */
+const footerPathMenuRevealEnabled = computed(
+  () =>
+    Boolean(
+      physicalReaderPath.value ??
+        currentFile.value ??
+        ebookConversionSourcePath.value,
+    ),
+);
+const footerPathMenuReloadEnabled = computed(
+  () =>
+    Boolean(currentFile.value && !loading.value && !ebookParsing.value),
+);
+const footerPathMenuCloseEnabled = computed(() =>
+  Boolean(currentFile.value),
+);
+
+/** 主进程 `iconv.encode` 使用的编码名 */
+function normalizeIpcEncoding(raw: string): string {
+  const u = raw.trim().toLowerCase().replace(/\s+/g, "");
+  if (!u || u === "utf-8" || u === "utf8") return "utf8";
+  if (u === "gb2312") return "gb2312";
+  return raw.trim() || "utf8";
+}
+
+function encodingLabelForFooter(ipcEncoding: string): string {
+  const n = normalizeIpcEncoding(ipcEncoding);
+  if (n === "utf8") return "UTF-8";
+  if (n === "gb2312") return "GB2312";
+  return ipcEncoding.trim().toUpperCase() || "-";
+}
+
+async function saveReaderBufferWithIpcEncoding(
+  ipcEncoding: string,
+): Promise<boolean> {
+  const normalized = normalizeIpcEncoding(ipcEncoding);
+  const p = physicalReaderPath.value;
+  if (!p || !window.colorTxt?.writeTextFile) return false;
+  const text = readerRef.value?.getAllText() ?? "";
+  const r = await window.colorTxt.writeTextFile(p, text, normalized);
+  if (!r.ok) {
+    void appAlert(r.message ?? "保存失败");
+    return false;
+  }
+  readerSaveEncoding.value = normalized;
+  fileEncoding.value = encodingLabelForFooter(normalized);
+  readerRef.value?.markReaderEditSaved?.();
+  readerEditorDirty.value = false;
+  return true;
+}
+
 /** 切书、关文件、编辑↔只读、关窗、退出应用等场景共用 */
 const readerEditDiscardUnsavedMessageBox: ColorTxtShowMessageBoxOptions = {
   type: "warning",
@@ -1189,24 +1251,17 @@ async function onToggleReaderEdit() {
 }
 
 async function onSaveReaderFile() {
-  const p = physicalReaderPath.value;
-  if (!p || !window.colorTxt?.writeTextFile) return;
-  const text = readerRef.value?.getAllText() ?? "";
-  const r = await window.colorTxt.writeTextFile(
-    p,
-    text,
-    readerSaveEncoding.value,
-  );
-  if (!r.ok) {
-    void appAlert(r.message ?? "保存失败");
-    return;
-  }
-  readerRef.value?.markReaderEditSaved?.();
-  readerEditorDirty.value = false;
+  void (await saveReaderBufferWithIpcEncoding(readerSaveEncoding.value));
+}
+
+async function onFooterSaveFileAsEncoding(codec: "utf8" | "gb2312") {
+  void (await saveReaderBufferWithIpcEncoding(codec));
 }
 
 function onReaderEditLoaded(payload: { encoding: string }) {
-  readerSaveEncoding.value = (payload.encoding || "utf8").trim() || "utf8";
+  readerSaveEncoding.value = normalizeIpcEncoding(
+    (payload.encoding || "utf8").trim() || "utf8",
+  );
   applyChaptersFromReaderPlainText();
 }
 
@@ -1302,6 +1357,13 @@ function revealCurrentFileInFolder() {
     ebookConversionSourcePath.value;
   if (!filePath) return;
   void window.colorTxt.showItemInFolder(filePath).catch(() => {});
+}
+
+/** 底栏路径菜单：重新自磁盘载入当前会话文件 */
+async function reloadCurrentFileFromDisk() {
+  const path = currentFile.value;
+  if (!path) return;
+  await openFilePath(path, { keepSidebarTab: true });
 }
 
 function quitApp() {
@@ -2169,7 +2231,14 @@ useAppShellThemeWatch({
         :total-char-count-text="formatCharCount(totalCharCount)"
         :file-size-text="formatFileSize(currentFileSize)"
         :file-encoding="fileEncoding"
-        @reveal-file-in-folder="revealCurrentFileInFolder"
+        :encoding-actions-enabled="footerEncodingActionsEnabled"
+        :path-menu-reveal-enabled="footerPathMenuRevealEnabled"
+        :path-menu-reload-enabled="footerPathMenuReloadEnabled"
+        :path-menu-close-enabled="footerPathMenuCloseEnabled"
+        @path-reveal-in-folder="revealCurrentFileInFolder"
+        @path-reload="reloadCurrentFileFromDisk"
+        @path-close="closeCurrentFile"
+        @save-file-as-encoding="onFooterSaveFileAsEncoding"
       />
     </div>
 
