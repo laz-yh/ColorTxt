@@ -9,8 +9,9 @@ export type { TxtrMonarchHighlightOptions };
 /**
  * 不含成对括号开符（由 root 中优先匹配并进入 string/bracket 状态）。
  * 保留闭符与独立标点，便于未配对时在 root 仍显示为标点。
+ * 半角 < > 仅作标点（比较符）；全角 ＜ 为开符、未配对的 ＞ 作标点
  */
-const PUNCTUATION_CLASS = /[,，.。!！?？:：;；、）\]\}｝】〗》＞>…—\-]/;
+const PUNCTUATION_CLASS = /[,，.。!！?？:：;；、）\]\}｝】〗》＞><…—\-]/;
 
 /**
  * BMP 拉丁字母：ASCII、全角拉丁、Latin-1 字母段（跳过 × U+00D7、÷ U+00F7）、Latin Extended-A/B（含拼音 ā/ō/ē/ǎ/ǖ 等）。
@@ -52,9 +53,7 @@ function innerRestRe(
   stopBeforeBracketOpeners: boolean,
 ): RegExp {
   const e = escapeForNegatedClass(closeChar);
-  const noBracketOpen = stopBeforeBracketOpeners
-    ? "《<＜（【〖｛\\[\\(\\{"
-    : "";
+  const noBracketOpen = stopBeforeBracketOpeners ? "《＜（【〖｛\\[\\(\\{" : "";
   return new RegExp(`[^${e}\\r\\n0-9${LATIN_LETTERS_BMP}${noBracketOpen}]`);
 }
 
@@ -62,7 +61,6 @@ function innerRestRe(
 function bracketOpenerRules(): monaco.languages.IMonarchLanguageRule[] {
   return [
     [/《/, { token: "txtr.punctuation", next: "bracketBook" }],
-    [/</, { token: "txtr.punctuation", next: "bracketAngleAscii" }],
     [/＜/, { token: "txtr.punctuation", next: "bracketAngleFull" }],
     [/\(/, { token: "txtr.punctuation", next: "bracketParenAscii" }],
     [/（/, { token: "txtr.punctuation", next: "bracketParenFull" }],
@@ -181,13 +179,6 @@ export function createTxtrTextMonarchLanguage(
       bracketBook: rulesInsideDelimited(
         /》/,
         "》",
-        "txtr.bracketInner",
-        hlRules,
-      ),
-
-      bracketAngleAscii: rulesInsideDelimited(
-        />/,
-        ">",
         "txtr.bracketInner",
         hlRules,
       ),
