@@ -423,32 +423,54 @@ async function portraitPreviewReadableUrl(
   }
 }
 
-async function refreshDrawerPortraitPreview() {
-  const name = draftDisplayName.value.trim();
-  if (!name || !slideOpen.value) {
-    drawerPortraitPreviewUrl.value = null;
-    return;
-  }
-  const sk = portraitEditSessionKey.value.trim();
+/** 立绘可读 URL：会话草稿（上传/应用中未入库）优先，再走正式路径。 */
+async function readablePortraitDraftThenCanonical(opts: {
+  displayName: string;
+  sessionKey: string;
+}): Promise<string | null> {
+  const name = opts.displayName.trim();
+  const sk = opts.sessionKey.trim();
   if (sk) {
     try {
       const draftP = await portraitSessionDraftAbs(sk);
       const st = await window.colorTxt.stat(draftP);
       if (st.isFile) {
         const raw = await window.colorTxt.pathToReadableLocalUrl(draftP);
-        drawerPortraitPreviewUrl.value = raw ? withUrlCacheBust(raw) : null;
-        return;
+        if (raw) return withUrlCacheBust(raw);
       }
     } catch {
       /* 无草稿或不可读 */
     }
   }
-  drawerPortraitPreviewUrl.value = await portraitPreviewReadableUrl(name);
+  if (!name) return null;
+  return portraitPreviewReadableUrl(name);
+}
+
+async function refreshDrawerPortraitPreview() {
+  const name = draftDisplayName.value.trim();
+  if (!name || !slideOpen.value) {
+    drawerPortraitPreviewUrl.value = null;
+    return;
+  }
+  drawerPortraitPreviewUrl.value = await readablePortraitDraftThenCanonical({
+    displayName: name,
+    sessionKey: portraitEditSessionKey.value,
+  });
 }
 
 async function refreshGenModalPreview() {
   const name = genModalDisplayName.value.trim();
-  genPreviewUrl.value = name ? await portraitPreviewReadableUrl(name) : null;
+  if (!name) {
+    genPreviewUrl.value = null;
+    return;
+  }
+  /** 抽屉入口 `genTargetId` 为空，用抽屉 `portraitEditSessionKey`；未来若从卡片带入 id，则优先用之查草稿 */
+  const draftKey =
+    (genTargetId.value ?? "").trim() || portraitEditSessionKey.value.trim();
+  genPreviewUrl.value = await readablePortraitDraftThenCanonical({
+    displayName: name,
+    sessionKey: draftKey,
+  });
 }
 
 watch(
@@ -1324,11 +1346,11 @@ onBeforeUnmount(() => {
               </div>
               <div class="drawerRetrieveRow">
                 <button
+                  v-if="!extracting"
                   type="button"
                   class="aiPillToggle"
                   :class="{ 'aiPillToggle--on': spoilerSafe }"
                   title="避免透露当前阅读进度之后的内容"
-                  :disabled="extracting"
                   @click="spoilerSafe = !spoilerSafe"
                 >
                   <span
@@ -1866,9 +1888,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   width: 100%;
+  min-width: 0;
 }
 
 .drawerRetrieveRowEnd {
@@ -1876,6 +1898,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .drawerRetrieveStopBtn {
