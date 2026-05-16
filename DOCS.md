@@ -565,8 +565,8 @@ src/
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `AppHeader.vue`                                      | 顶栏：打开文件、书钉/书签、字体与字号行高、压缩空行/行首缩进、**高级换行策略**（Monaco `wrappingStrategy: advanced`）、内容上色、**高亮笔**（下拉列出当前文件自定义词及移除；背景/正文色来自阅读器变量供预览）、章节规则、主题、侧栏与全屏、查找与更多菜单等；**阅读器编辑**开关与编辑态**保存**。<br>从 `App.vue` 接收当前 **`shortcutBindings`** 并传给 `MoreMenu`；**`@open-color-scheme`** 可从高亮菜单进入配色弹窗                                                                                                                                                                                                                                                 |
 | `AppOverlays.vue`                                    | 蒙层弹窗：关于、快捷键、设置、配色、章节规则、**添加/编辑书签**（备注框上方章节名 + 正文预览；编辑时 footer 左 **「更新为当前行」**）与更新流等                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `AppContextMenu.vue`                                 | 通用右键菜单                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `AppFooter.vue`                                      | 底栏：当前路径、加载进度、阅读进度、字数、文件大小、编码                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `AppContextMenu.vue`                                 | 上下文菜单：**`placement`** **`point`**（书签等，`x`/`y` 为视口内左上角，经夹取）或 **`aboveFooterMouseX`**（底栏路径/编码菜单：整块在底栏上方、横向以打开时指针 `clientX` 居中后再夹到窗口内，见 **「底栏」**）；支持 **`disabled`** 项、`excludeCloseWithin`（避免重复点触发控件时误判为外侧关闭）                                                                                                                                                                                                                                                                                                                                                                                    |
+| `AppFooter.vue`                                      | 底栏：路径、加载/阅读进度、字数、大小、编码；**路径与编码**为链式按钮 + 向上弹出菜单，详见 **「底栏」**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `ReaderMain.vue`                                     | 阅读区：挂载编辑器与业务逻辑。<br>引入 **`readerMainMonaco.css`** 覆盖 Monaco 阅读区样式；编辑器静态选项集中在 `monaco/readerEditorOptions.ts`。<br>章节行内装饰与 **`highlightColors` / `highlightWordsByIndex`** 驱动的 Monarch 与装饰同步；选区添加自定义高亮词、色块选择器（按当前主题高亮色列表）；`monacoCustomHighlight` 开关。<br>**`ReaderHighlightFloat`** / **`ReaderImageLightbox`**；查找展开时可联动书钉；高亮词列表点击可进入查找；滚动与 probe。<br>全屏两侧空白滚轮经父组件调用 **`delegateEditorWheelFromBrowserEvent`**。<br>流式打开文件时在 `flushCarry` 末尾 **`setFullText`** 一次性灌入正文（保留 `appendText` 供其它场景）。**阅读器编辑模式**：`readerEditMode` + **`physicalReaderPath`** 时整盘 **`readWholeTextFile` / `setValue`**、Ctrl+S 保存、与压缩空行相关的进/出编辑滚动恢复，见 **「阅读器编辑模式」**。<br>**书签**：**`getBookmarkSaveAnchorDisplayLine`**（与保存锚点、列表跳转一致的「视口上沿 + 一行字高」逻辑行）、**`jumpToBookmarkLine`**（`revealLineNearTop` 后再 `scrollTop -= lineHeight` 为黏性章节条留白）、**`getViewportTopLine`** 等 |
 | `ReaderSidebar.vue`                                  | 侧栏容器：活动栏含文件 / 章节 / 书签 / 高亮词 / **AI 助手** / **角色** / 搜索（`constants/readerSidebarTab.ts`）。<br>挂载 `FileListPanel`、`ChapterListPanel`、`BookmarkListPanel`、`HighlightListPanel`、**`AiAssistantPanel`**、**`CharacterSidebarPanel`**、`SearchPanel`。<br>向文件列表下发 **`fileCategory` / `fileSort` / `fileCategoryCatalog`** 并上抛分类相关事件；与 `useReaderSidebarLists`、`useReaderInlineSearch` 等配合；**阅读器编辑**时章节区可提供刷新章节等入口                                                                                                                                                                                                |
 | `FileListPanel.vue`                                  | 侧栏「文件」：txt/电子书路径列表、**分类筛选**与 **排序**、编辑模式多选、右键与批量改分类。<br>单项右键支持分类/移除/重命名/在新窗口打开/在文件管理器显示（Ctrl+右键附加「清除该文件数据」）；筛选在具体分类时 footer 动作为「清空分类」。<br>`data-drop-zone="file-list"` 标记列表拖放接收区                                                                                                                                                                                                                                                                                                                                           |
@@ -769,6 +769,30 @@ src/
 - **设置面板**：字号、行高均为滑块；行高滑块的上限随草稿字号变化；拖动字号若导致当前行高超限时，会自动下调行高草稿。
 - **仅加大字号**（快捷键 / 顶栏）：若当前行高倍数在新字号下超限，会自动下调倍数并写回阅读器与持久化。
 
+## 底栏（`AppFooter`）
+
+由 **`AppFooter.vue`** 渲染，数据与事件由 **`App.vue`** 注入。阅读进度与百分比文案仍来自 **`useAppReadingProgress`**（与其余展示口径一致）。
+
+### 左侧路径
+
+- **展示**：`footerPathCaption` — 普通书籍为 **`physicalReaderPath ?? currentFile`**；**电子书转换中**为源书路径（`ebookConversionSourcePath`）。
+- **交互**：路径为链式按钮，点击打开 **`AppContextMenu`**（非直接打开资源管理器）。
+- **菜单项**（均受「整体在窗口内」夹取；某条不可用时仍显示为 **disabled**）：
+  - **在文件管理器中显示**：与 **`revealCurrentFileInFolder`** 一致，目标路径为 **`physicalReaderPath ?? currentFile ?? ebookConversionSourcePath`**（无可用路径时 disabled）。
+  - **重新加载**：**`openFilePath(currentFile, { keepSidebarTab: true })`**；无 **`currentFile`**、**`loading`** 或 **`ebookParsing`** 时为 disabled。
+  - **关闭文件**：**`closeCurrentFile`**（**danger** 样式）；无 **`currentFile`** 时 disabled。
+
+### 右侧编码
+
+- **展示**：当前探测/保存用编码标签（**`fileEncoding`**）。
+- **可点条件**：由 **`footerEncodingActionsEnabled`** 控制（需 **`physicalReaderPath`**、**`currentFile`**、非 **`loading`**、非 **`ebookParsing`** 且 **`writeTextFile` 可用**）。
+- **菜单**：**保存为 UTF-8** / **保存为 GB2312** → **`saveReaderBufferWithIpcEncoding`**：`ReaderMain.getAllText()` → **`writeTextFile(physicalReaderPath, text, 编码)`** 覆盖落盘；成功后更新 **`fileEncoding`**、**`readerSaveEncoding`**，并 **`markReaderEditSaved`** / 清除编辑脏标记（与顶栏保存路径一致）。
+
+### 弹出定位与互斥
+
+- **`AppContextMenu`** **`placement="aboveFooterMouseX"`**：以底栏 **`<footer>`** 的 **`getBoundingClientRect().top`** 为界，菜单**底边**始终在底栏之上（留缝）；**横向**以打开瞬间的 **`clientX`** 与菜单宽度居中对齐后再做视口夹取。
+- **路径菜单与编码菜单互斥**：打开其一会先关闭另一；共享同一组指针/底栏顶边坐标（`footerPopoverFooterTopPx` / `footerPopoverPointerXPx`）。
+
 ## 阅读器编辑模式（正文磁盘编辑）
 
 只读模式下正文由 **`file:stream`** 经 **`useTxtStreamPipeline`** 解析后写入 Monaco（可含压缩空行、行首全角缩进等**显示层**处理）。**编辑模式**下同一 `ReaderMain` 实例改为展示 **`physicalReaderPath` 指向的磁盘 txt 全文**：与源文件**一行对一行**，不经上述阅读管线后处理；保存时把 Monaco 全文按当前编码写回该路径。
@@ -777,7 +801,8 @@ src/
 
 - **`readerEditMode` / `readerEditorDirty`**：是否处于编辑态、当前缓冲区是否与上次成功载入或保存的磁盘快照不一致。`useAppShellThemeWatch` 在窗口标题上为 dirty 状态追加 `*`。
 - **`canEnterReaderEditMode`**：需已打开文件、非 `loading`、**`readingProgressSynced`**（流结束且滚动恢复完成）、且非电子书转换中（`!ebookParsing`）。不满足时顶栏点「编辑」仅 **`appToast`** 弱提示（不阻塞）。
-- **顶栏 `AppHeader`**：编辑开关、编辑态下的**保存**（走 `onSaveReaderFile` → `writeTextFile`）；部分阅读类开关在编辑态禁用以免与磁盘全文语义冲突。
+- **顶栏 `AppHeader`**：编辑开关、编辑态下的**保存**（走 **`onSaveReaderFile`** → **`saveReaderBufferWithIpcEncoding`** / **`writeTextFile`**）；部分阅读类开关在编辑态禁用以免与磁盘全文语义冲突。
+- **底栏**：**「编码」** 菜单可在**只读或编辑态**下将当前 **`getAllText()`** 按所选编码写回 **`physicalReaderPath`**（见 **「底栏」**）。
 - **切回只读**：若有未保存改动，先经 **`window.colorTxt.showMessageBox`** 确认（选项对象 **`readerEditDiscardUnsavedMessageBox`**：`type: "warning"`，`buttons: ["取消", "确定"]`，**`defaultId: 0`** 使默认焦点在「取消」）；确认后 `openFilePath` 重载当前书以恢复流式只读正文。`openFilePath` 支持 **`skipReaderEditGuard`**，避免与同一套确认逻辑套娃。
 - **其它需放弃未保存编辑的路径**：切书、关文件等由 **`useAppFileSession`** 注入的 **`confirmIfReaderEditDiscard`** 调用同一 **`confirmReaderEditDiscardUnsaved()`**；关窗 **`handleWindowCloseRequest`**、**`quitApp`** 在 dirty 时同样走原生 MessageBox。
 

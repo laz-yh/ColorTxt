@@ -15,14 +15,14 @@
 </p>
 
 <p align="center">
-还有章节识别、空行压缩、行首缩进、AI 阅读助手等功能。
+还有章节识别、空行压缩、行首缩进、语音朗读、AI 阅读助手等功能。
 </p>
 
 <p align="center">
-  <img src="./images/screenshot.jpg" width="600">
+  <img src="./images/章节列表.jpg" width="600">
 </p>
 
-## 功能特性
+## 功能特性 <span style="font-size: 18px; font-weight: normal">[[示例图](./IMAGES.md)]</span>
 
 - 本地文件阅读：可打开单个 `.txt` 文件，也可以导入整个目录（会递归读取子目录）。
 - 支持其他格式：支持打开常见的电子书格式（如 `.epub`），打开时会转换为 `.txt` 进行加载。
