@@ -45,6 +45,8 @@ export function useAppVoiceRead(deps: {
   let currentChunkIndex = 0;
   const resumeWaiters: Array<() => void> = [];
   let playbackLoopGen = 0;
+  /** 已连续播完的批次末行，防止 jump/续播与主循环重叠时重读同一行 */
+  let lastCompletedBatchEndLine = 0;
 
   function isPlaybackAlive(gen: number, modeValue: VoiceReadMode): boolean {
     return gen === playbackLoopGen && modeValue !== "off";
@@ -99,8 +101,37 @@ export function useAppVoiceRead(deps: {
     isSynthesizing.value = false;
     player.stop();
     clearActiveBatch();
+    lastCompletedBatchEndLine = 0;
     mode.value = "off";
     deps.readerRef.value?.setVoiceReadLineHighlight?.(null);
+  }
+
+  function clampPlaybackStartLine(line: number, mCount: number): number {
+    let ln = Math.max(1, Math.min(Math.floor(line), mCount));
+    if (ln <= lastCompletedBatchEndLine) {
+      ln = Math.min(mCount, lastCompletedBatchEndLine + 1);
+    }
+    return ln;
+  }
+
+  function resumePlaybackAfterBatch(batchEnd: number, gen: number) {
+    if (!isPlaybackAlive(gen, mode.value)) return;
+    lastCompletedBatchEndLine = Math.max(lastCompletedBatchEndLine, batchEnd);
+    const reader = deps.readerRef.value;
+    const mCount = reader?.getModelLineCount?.() ?? 0;
+    if (!reader || mCount < 1) return;
+    if (batchEnd >= mCount) {
+      player.discardPrefetch();
+      exitVoiceRead();
+      return;
+    }
+    const next = clampPlaybackStartLine(batchEnd + 1, mCount);
+    if (next > mCount) {
+      exitVoiceRead();
+      return;
+    }
+    currentLine = next;
+    void runPlaybackLoop(next);
   }
 
   function syncToolbarFromPersisted() {
@@ -186,7 +217,15 @@ export function useAppVoiceRead(deps: {
 
   async function runPlaybackLoop(startLine: number) {
     const gen = ++playbackLoopGen;
-    currentLine = startLine;
+    const reader0 = deps.readerRef.value;
+    const mCount0 = reader0?.getModelLineCount?.() ?? 0;
+    if (!reader0 || mCount0 < 1) return;
+    const startLn = clampPlaybackStartLine(startLine, mCount0);
+    currentLine = startLn;
+    if (startLn > mCount0) {
+      exitVoiceRead();
+      return;
+    }
     while (mode.value !== "off" && gen === playbackLoopGen) {
       await waitIfPaused();
       if (!isPlaybackAlive(gen, mode.value)) break;
@@ -223,12 +262,13 @@ export function useAppVoiceRead(deps: {
       activeChunkToLine = chunkToModelLine;
 
       if (chunks.length === 0) {
+        lastCompletedBatchEndLine = Math.max(lastCompletedBatchEndLine, batchEnd);
         if (batchEnd >= mCount) {
           player.discardPrefetch();
           exitVoiceRead();
           break;
         }
-        currentLine = batchEnd + 1;
+        currentLine = clampPlaybackStartLine(batchEnd + 1, mCount);
         continue;
       }
 
@@ -239,6 +279,7 @@ export function useAppVoiceRead(deps: {
 
       try {
         await player.speakChunks(settings, chunks);
+        await player.waitForPlaybackSettled();
       } catch {
         // 错误提示由 App 层处理
       }
@@ -247,13 +288,15 @@ export function useAppVoiceRead(deps: {
       await waitIfPaused();
       if (!isPlaybackAlive(gen, mode.value)) break;
 
+      lastCompletedBatchEndLine = Math.max(lastCompletedBatchEndLine, batchEnd);
+
       if (batchEnd >= mCount) {
         player.discardPrefetch();
         exitVoiceRead();
         break;
       }
 
-      currentLine = batchEnd + 1;
+      currentLine = clampPlaybackStartLine(batchEnd + 1, mCount);
     }
   }
 
@@ -262,6 +305,7 @@ export function useAppVoiceRead(deps: {
     if (!reader) return;
     const ln = reader.getModelLineAtViewportCenter?.() ?? 1;
     syncToolbarFromPersisted();
+    lastCompletedBatchEndLine = 0;
     mode.value = "playing";
     void runPlaybackLoop(ln);
   }
@@ -274,8 +318,18 @@ export function useAppVoiceRead(deps: {
     void nextTick(() => {
       const reader = deps.readerRef.value;
       if (!reader || mode.value !== "playing") return;
-      const top = reader.getViewportStartModelLine?.() ?? 1;
-      void runPlaybackLoop(top);
+      const mCount = reader.getModelLineCount?.() ?? 0;
+      const ln = Math.max(
+        1,
+        Math.min(
+          reader.getModelLineAtViewportCenter?.() ?? getPlaybackAnchorLine(),
+          mCount,
+        ),
+      );
+      lastCompletedBatchEndLine = Math.max(0, ln - 1);
+      clearActiveBatch();
+      scrollAndHighlightLine(ln);
+      void runPlaybackLoop(ln);
     });
   }
 
@@ -371,15 +425,11 @@ export function useAppVoiceRead(deps: {
       .jumpToChunk(settings, chunks, targetChunkIndex)
       .then(async () => {
         if (!isPlaybackAlive(gen, mode.value)) return;
+        await player.waitForPlaybackSettled();
+        if (!isPlaybackAlive(gen, mode.value)) return;
         await waitIfPaused();
         if (!isPlaybackAlive(gen, mode.value)) return;
-        if (batchEnd >= mCount) {
-          player.discardPrefetch();
-          exitVoiceRead();
-          return;
-        }
-        currentLine = batchEnd + 1;
-        void runPlaybackLoop(batchEnd + 1);
+        resumePlaybackAfterBatch(batchEnd, gen);
       });
   }
 
@@ -395,6 +445,7 @@ export function useAppVoiceRead(deps: {
     player.onChunkChange = undefined;
     player.stopForLineJump();
     clearActiveBatch();
+    lastCompletedBatchEndLine = Math.max(0, ln - 1);
     scrollAndHighlightLine(ln);
     mode.value = "playing";
     void runPlaybackLoop(ln);

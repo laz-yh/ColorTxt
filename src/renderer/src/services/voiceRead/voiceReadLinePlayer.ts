@@ -560,7 +560,19 @@ export class VoiceReadLinePlayer {
 
   /**
    * 朗读已切好的多段（同一次会话）。后续「上一句 / 下一句」可只改 `chunks` 与起始索引重入。
+   * 等待当前 Edge/Dash 时间线播完（连续朗读切批前调用，避免下一批过早 abort 造成听感重复）
    */
+  async waitForPlaybackSettled(): Promise<void> {
+    if (this.stopped) return;
+    if (this.edgeAudioCtx && this.edgeHasAudioData) {
+      await this.awaitEdgePlaybackDrain();
+      return;
+    }
+    if (this.dashAudioCtx && this.dashHasAudioData) {
+      await this.awaitDashPlaybackDrain();
+    }
+  }
+
   speakChunks(settings: VoiceReadSettings, chunks: string[]): Promise<void> {
     const parts = chunks
       .map((c) => normalizeLineText(c))
@@ -783,13 +795,13 @@ export class VoiceReadLinePlayer {
 
     let edgeChunkError: unknown = null;
     for (let i = 0; i < chunks.length; i++) {
-      if (this.stopped) return;
+      if (this.stopped) break;
       try {
         const buf = await this.waitEdgeChunk(i);
-        if (this.stopped) return;
+        if (this.stopped) break;
         await this.edgeDecodeAndSchedule(buf, i, chunks.length);
       } catch (e) {
-        if ((e as Error)?.message === "aborted") return;
+        if ((e as Error)?.message === "aborted") break;
         if (!edgeChunkError) edgeChunkError = e;
         console.error("[VoiceRead Edge] chunk error:", e);
       }
@@ -971,7 +983,7 @@ export class VoiceReadLinePlayer {
 
     let dashChunkError: unknown = null;
     for (let i = 0; i < chunks.length; i++) {
-      if (this.stopped) return;
+      if (this.stopped) break;
       try {
         await this.dashStreamChunk(
           settings,
@@ -982,7 +994,7 @@ export class VoiceReadLinePlayer {
         );
       } catch (err) {
         if ((err as Error)?.message === "aborted" || sessionSignal.aborted) {
-          return;
+          break;
         }
         if (!dashChunkError) dashChunkError = err;
         console.error("[VoiceRead DashScope] chunk error:", err);
