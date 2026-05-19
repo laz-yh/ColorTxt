@@ -11,7 +11,6 @@ import { createReadStream, watch as fsWatchFile } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import {
   mkdir,
-  open,
   readdir,
   readFile,
   rename,
@@ -24,7 +23,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { getFonts } from "font-list";
 import iconv from "iconv-lite";
-import jschardet from "jschardet";
+import { detectTextFileEncoding } from "./detectTextEncoding";
 import { EBOOK_DOT_EXTENSIONS } from "@shared/ebookExtensions";
 import type { ColorTxtShowMessageBoxResult } from "@shared/colorTxtShowMessageBox";
 import { parseShowMessageBoxOptions } from "./messageBoxInvoke";
@@ -159,16 +158,7 @@ async function collectTxtFilesUnderRoot(
 }
 
 async function detectEncoding(filePath: string): Promise<string> {
-  const fd = await open(filePath, "r");
-  const header = Buffer.alloc(64 * 1024);
-  const { bytesRead } = await fd.read(header, 0, header.length, 0);
-  await fd.close();
-  if (bytesRead === 0) return "utf8";
-  const sample = header.subarray(0, bytesRead);
-  const detected = jschardet.detect(sample);
-  const enc = detected?.encoding;
-  if (typeof enc !== "string" || !enc.trim()) return "utf8";
-  return enc.trim();
+  return detectTextFileEncoding(filePath, app.getLocale());
 }
 
 export function registerMainIpcHandlers(
