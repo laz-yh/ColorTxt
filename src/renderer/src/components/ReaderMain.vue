@@ -16,6 +16,7 @@ import {
   registerChapterStickyScrollProviders,
 } from "../monaco/chapterStickyScroll";
 import {
+  buildChapterMinimapSectionHeaderDecorations,
   buildChapterTitleDecorations,
   getReaderMinimapCursorLineDecorColor,
   setReaderSyntaxHighlightEnabled,
@@ -116,6 +117,9 @@ const voiceReadDecorationsCollection =
   shallowRef<monaco.editor.IEditorDecorationsCollection | null>(null);
 /** 编辑态小地图：无选区时为当前行铺灰底（与蓝色选区区分） */
 const minimapCursorLineDecorationsCollection =
+  shallowRef<monaco.editor.IEditorDecorationsCollection | null>(null);
+/** 编辑态小地图：章节标题（Monaco sectionHeaderText） */
+const chapterMinimapDecorationsCollection =
   shallowRef<monaco.editor.IEditorDecorationsCollection | null>(null);
 /** 朗读高亮行（供上一行/下一行以「正在播的行」为锚点） */
 const voiceReadHighlightLine = ref<number | null>(null);
@@ -801,6 +805,7 @@ watch(
     if (!editor.value) return;
     applyReaderMonacoModeOptions(Boolean(props.readerEditMode));
     syncMinimapCursorLineDecoration();
+    syncChapterMinimapSectionHeaderDecorations();
   },
 );
 
@@ -1110,6 +1115,7 @@ function clear(opts?: ReaderClearOptions) {
   inlineSearch.clearInlineSearchState();
   voiceReadDecorationsCollection.value?.clear();
   minimapCursorLineDecorationsCollection.value?.clear();
+  chapterMinimapDecorationsCollection.value?.clear();
 
   e?.updateOptions({ stickyScroll: { enabled: false } });
 
@@ -1122,6 +1128,8 @@ function clear(opts?: ReaderClearOptions) {
     inlineSearchDecorationsCollection.value = e.createDecorationsCollection();
     voiceReadDecorationsCollection.value = e.createDecorationsCollection();
     minimapCursorLineDecorationsCollection.value =
+      e.createDecorationsCollection();
+    chapterMinimapDecorationsCollection.value =
       e.createDecorationsCollection();
     e.setPosition({ lineNumber: 1, column: 1 });
     e.setScrollTop(0);
@@ -1209,14 +1217,27 @@ function setChapters(chapters: ChapterStickyLine[]) {
   if (props.readerEditMode) {
     collection.clear();
     lastChapterTitleDecorationsLineKey = "";
+    syncChapterMinimapSectionHeaderDecorations();
     notifyChapterStickyFoldingRanges?.();
     return;
   }
+  syncChapterMinimapSectionHeaderDecorations();
   if (lineKey !== lastChapterTitleDecorationsLineKey) {
     collection.set(buildChapterTitleDecorations(monaco, m, chaptersSnapshot));
     lastChapterTitleDecorationsLineKey = lineKey;
   }
   notifyChapterStickyFoldingRanges?.();
+}
+
+function syncChapterMinimapSectionHeaderDecorations() {
+  const col = chapterMinimapDecorationsCollection.value;
+  const m = model.value;
+  if (!col || !m) return;
+  if (!props.readerEditMode || !props.readerEditMinimap) {
+    col.clear();
+    return;
+  }
+  col.set(buildChapterMinimapSectionHeaderDecorations(monaco, m, chaptersSnapshot));
 }
 
 function syncMinimapCursorLineDecoration() {
@@ -2096,6 +2117,8 @@ onMounted(() => {
     editor.value.createDecorationsCollection();
   minimapCursorLineDecorationsCollection.value =
     editor.value.createDecorationsCollection();
+  chapterMinimapDecorationsCollection.value =
+    editor.value.createDecorationsCollection();
 
   const e = editor.value;
   if (e) {
@@ -2217,6 +2240,7 @@ onMounted(() => {
 
     syncStickyScrollToStreamState();
     syncMinimapCursorLineDecoration();
+    syncChapterMinimapSectionHeaderDecorations();
   }
 });
 

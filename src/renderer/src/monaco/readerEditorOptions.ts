@@ -238,6 +238,10 @@ export function buildReaderEditModeMinimapOptions(
       /** 按字符渲染语法色（非色块），与 VS Code 一致 */
       renderCharacters: true,
       side: "right",
+      /** 章节名由 `buildChapterMinimapSectionHeaderDecorations` 提供，关闭自动探测避免重复 */
+      showRegionSectionHeaders: false,
+      showMarkSectionHeaders: false,
+      sectionHeaderFontSize: 9,
     },
   };
 }

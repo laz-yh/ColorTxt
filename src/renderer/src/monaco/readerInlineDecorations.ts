@@ -234,3 +234,34 @@ export function buildChapterTitleDecorations(
       },
     }));
 }
+
+/**
+ * 小地图章节标题（Monaco `sectionHeaderText`，同 VS Code 小地图节标题）。
+ * 与 {@link buildChapterTitleDecorations} 分离：编辑态不加行内 scale 样式。
+ */
+export function buildChapterMinimapSectionHeaderDecorations(
+  monacoApi: typeof import("monaco-editor"),
+  model: monaco.editor.ITextModel,
+  chapters: ChapterStickyLine[],
+): monaco.editor.IModelDeltaDecoration[] {
+  const maxLine = model.getLineCount();
+  return chapters
+    .filter(
+      (ch) =>
+        ch.title.trim().length > 0 &&
+        ch.lineNumber >= 1 &&
+        ch.lineNumber <= maxLine,
+    )
+    .map((ch) => ({
+      range: new monacoApi.Range(ch.lineNumber, 1, ch.lineNumber, 1),
+      options: {
+        description: "chapter-minimap-section-header",
+        minimap: {
+          color: undefined,
+          position: monacoApi.editor.MinimapPosition.Inline,
+          sectionHeaderStyle: monacoApi.editor.MinimapSectionHeaderStyle.Normal,
+          sectionHeaderText: ch.title,
+        },
+      },
+    }));
+}
