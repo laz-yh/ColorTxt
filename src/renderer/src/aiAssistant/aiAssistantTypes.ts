@@ -7,6 +7,10 @@ export type UiToolEntry = {
   preview: string;
   full: string;
   open: boolean;
+  /** 工具执行中：折叠标题（简短） */
+  progressTitle?: string;
+  /** 工具执行中：折叠正文（可含换行） */
+  progressMessage?: string;
 };
 
 /** 思考块：未封存 =「正在思考…」+ 脉冲；封存后 =「思考过程」+ 大脑 */
@@ -50,6 +54,28 @@ export type UiAssistantMsg = {
 };
 
 /** 仅界面展示：建索引 / 向量化进度，不入库；插在列表末尾随滚动 */
+/** 本轮对话 token 预估（仅 live，不落库） */
+export type UiTokenEstimateMsg = {
+  id: string;
+  role: "tokenEstimate";
+  requestId: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  ragEnabled: boolean;
+};
+
+/** 本轮对话 token 实际消耗（live 或自 DB payload 还原） */
+export type UiTokenUsageMsg = {
+  id: string;
+  role: "tokenUsage";
+  requestId: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  available: boolean;
+};
+
 export type UiIndexBannerMsg =
   | {
       id: "__indexBanner";
@@ -65,7 +91,12 @@ export type UiIndexBannerMsg =
       errorText: string;
     };
 
-export type UiMsg = UiUserMsg | UiAssistantMsg | UiIndexBannerMsg;
+export type UiMsg =
+  | UiUserMsg
+  | UiAssistantMsg
+  | UiTokenEstimateMsg
+  | UiTokenUsageMsg
+  | UiIndexBannerMsg;
 
 export type UiRenderSegRow =
   | { rowKind: "think"; think: UiThinkSegment; segIdx: number }

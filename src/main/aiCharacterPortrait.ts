@@ -300,7 +300,7 @@ ${retrievalContext || "（无检索结果）"}
     { role: "user" as const, content: userMain },
   ];
 
-  const raw = await chatCompletionOnce({
+  const { text: raw } = await chatCompletionOnce({
     chat,
     messages,
     maxTokens: Math.min(chat.maxTokens, 4096),
@@ -313,7 +313,7 @@ ${retrievalContext || "（无检索结果）"}
   try {
     parsed = JSON.parse(stripped) as unknown;
   } catch {
-    const raw2 = await chatCompletionOnce({
+    const { text: raw2 } = await chatCompletionOnce({
       chat,
       messages: [
         { role: "system", content: system },
@@ -413,7 +413,7 @@ ${negativeZh || "（空）"}
   ];
 
   try {
-    const raw = await chatCompletionOnce({
+    const { text: raw } = await chatCompletionOnce({
       chat: cfg.chat,
       messages,
       maxTokens: Math.min(cfg.chat.maxTokens, 2048),
@@ -425,7 +425,7 @@ ${negativeZh || "（空）"}
     try {
       parsed = JSON.parse(stripped) as unknown;
     } catch {
-      const raw2 = await chatCompletionOnce({
+      const { text: raw2 } = await chatCompletionOnce({
         chat: cfg.chat,
         messages: [
           { role: "system", content: system },
@@ -517,7 +517,7 @@ ${opts.retrievalContext || "（无）"}
 
 请输出 JSON。`;
 
-  const raw = await chatCompletionOnce({
+  const { text: raw } = await chatCompletionOnce({
     chat: opts.chat,
     messages: [
       { role: "system", content: system },
@@ -532,7 +532,7 @@ ${opts.retrievalContext || "（无）"}
   try {
     return normalizeStyleFromParsed(JSON.parse(stripped) as unknown);
   } catch {
-    const raw2 = await chatCompletionOnce({
+    const { text: raw2 } = await chatCompletionOnce({
       chat: opts.chat,
       messages: [
         { role: "system", content: system },

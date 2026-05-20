@@ -347,6 +347,15 @@ export type AIAgentRendererEvent =
       argsPreview: string;
     }
   | {
+      type: "tool_progress";
+      requestId: number;
+      toolCallId: string;
+      /** 折叠标题（简短） */
+      title: string;
+      /** 折叠正文（可含换行） */
+      detail: string;
+    }
+  | {
       type: "tool_result";
       requestId: number;
       toolCallId: string;
@@ -354,6 +363,23 @@ export type AIAgentRendererEvent =
       ok: boolean;
       preview: string;
       full: string;
+    }
+  | {
+      type: "token_usage_estimate";
+      requestId: number;
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+      ragEnabled: boolean;
+    }
+  | {
+      type: "token_usage_final";
+      requestId: number;
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+      /** 是否至少一次从 API 拿到 usage */
+      available: boolean;
     }
   | { type: "round_end"; requestId: number }
   | { type: "done"; requestId: number }
@@ -396,7 +422,7 @@ export const AI_AGENT_TOOLS: Array<{
     function: {
       name: "ragContext",
       description:
-        "读取某一章内连续分块正文（按阅读顺序拼接）。用户问「本章」时 chapterIndex 应使用系统提示「当前阅读章节」对应的索引（从 0 起）；展开 ragSearch 命中章节时须与该结果中的 chapterIndex 一致。对用户作答写 `（ch=N）` 时 **N = chapterIndex（从 0 起）**。mergedMarkdown 中的「第 K 章 · …」仅供阅读，勿把 K 当作 （ch=） 里的 N。",
+        "读取某一章正文（优先阅读器章节切片，与侧栏字数一致；非向量拼接）。≤1 万字返回原文；超长章按每 1 万字一段压缩为全章提要（约 1 万字）。用户问「本章」时 chapterIndex 用当前章索引（从 0 起）。`（ch=N）` 中 N = chapterIndex。compressed=true 为压缩提要。",
       parameters: {
         type: "object",
         properties: {
@@ -406,12 +432,13 @@ export const AI_AGENT_TOOLS: Array<{
           },
           maxChars: {
             type: "number",
-            description: "拼接正文最大字符数，默认 12000，上限 24000",
+            description:
+              "仅在使用 range 抽样时限制节选长度；全章模式由应用按 1 万字阈值自动原文/压缩",
           },
           range: {
             type: "number",
             description:
-              "可选：仅取该章内中间若干块周围各扩展 range 块（默认取全章顺序节选直至 maxChars）",
+              "可选：仅取该章内中间若干块周围各扩展 range 块（与全章压缩模式互斥）",
           },
         },
         required: ["chapterIndex"],

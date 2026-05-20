@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import { fetchChapterPlainTextFromRenderer } from "./aiChapterPlainTextBridge";
 import type {
   AIAgentBookMeta,
   AIAgentEnabledSkill,
@@ -37,6 +38,23 @@ import {
   releaseChatAbortController,
 } from "./aiChat";
 import { runCharacterPortraitExtract } from "./aiCharacterPortrait";
+import {
+  ZERO_TOKEN_USAGE,
+  addTokenUsage,
+  estimateAgentTurnTokens,
+  extractUsageFromChatJson,
+  type AITokenUsageTotals,
+} from "@shared/aiTokenUsage";
+import {
+  RAG_CHAPTER_DIGEST_MAX_CHARS,
+  RAG_CHAPTER_NO_COMPRESS_CHARS,
+  chapterDigestProgressUi,
+  compressChapterToDigest,
+  mergeChapterChunkRows,
+} from "./aiRagChapterDigest";
+
+/** 向渲染进程索取章节原文时的上限（与 currentChapterPlainText HARD_CAP 一致） */
+const RAG_CHAPTER_PLAIN_FETCH_MAX = 512_000;
 
 function normalizeBase(u: string): string {
   return u.replace(/\/+$/, "");
@@ -131,6 +149,7 @@ function buildAgentSystemPrompt(
       "## 工具使用纪律（避免无效循环）",
       "- 一旦 ragSearch 已返回结果，请阅读其中的 chapterIndex、chapterTitle 与片段正文：chapterIndex 从 0 起，**调用 ragContext 与用户可见 `（ch=N）` 时 N 均须使用该 chapterIndex**。",
       "- 若需展开同一章更多原文，应改用 ragContext(chapterIndex)，参数与检索结果中的 chapterIndex 相同（从 0 起），或换用不同的检索关键词。",
+      "- ragContext 对**全章**：优先从阅读器取章节原文（与侧栏字数一致）；原文 ≤1 万字时返回完整 mergedMarkdown；超过 1 万字则按每 1 万字一段压缩为全章提要（约 1 万字，`compressed: true`）。向量索引主要用于 ragSearch。",
       "- 信息已足够时，必须结束工具调用，直接输出最终自然语言答案，不要反复检索同一问题。",
       "- 当用户需要**角色外貌**、全身/衣着描写摘要或 **Stable Diffusion 中文 prompt** 草案（侧栏提交 SD 时会自动译英）时，调用 **extractCharacterAppearance**，参数 `characterName` 为角色名；返回 JSON（含 `excerpts`、`appearance_zh`、`sd_prompt_zh`、`negative_zh`、`confidence_note` 及 `gender`、`age_text`、`identity_zh`、`bio_zh`、`relations_zh` 等）与侧栏「角色」同源。用户开启防剧透时工具结果仅含当前阅读章节及之前的片段。",
       "",
@@ -470,6 +489,7 @@ async function streamOneRound(opts: {
   reasoning: string;
   toolCalls: AIChatToolCall[];
   sawDone: boolean;
+  usage: AITokenUsageTotals | null;
 }> {
   const { url, headers, body, signal, emit } = opts;
   const res = await fetch(url, {
@@ -502,6 +522,7 @@ async function streamOneRound(opts: {
   let reasoningAcc = "";
   const toolMap = new Map<number, MutableToolPart>();
   let sawDone = false;
+  let roundUsage: AITokenUsageTotals | null = null;
 
   const handleFrame = (frame: string): boolean => {
     const simple = parseOneSseEventBlock(frame);
@@ -514,6 +535,8 @@ async function streamOneRound(opts: {
     }
     const json = parseSseFrameJson(frame);
     if (!json) return false;
+    const usage = extractUsageFromChatJson(json);
+    if (usage) roundUsage = usage;
     const d = extractDelta(json);
     if (d.content) {
       contentAcc += d.content;
@@ -549,6 +572,7 @@ async function streamOneRound(opts: {
           reasoning: reasoningAcc,
           toolCalls: finalizeToolCalls(toolMap),
           sawDone,
+          usage: roundUsage,
         };
       }
     }
@@ -561,6 +585,7 @@ async function streamOneRound(opts: {
         reasoning: reasoningAcc,
         toolCalls: finalizeToolCalls(toolMap),
         sawDone,
+        usage: roundUsage,
       };
     }
   }
@@ -575,7 +600,27 @@ async function streamOneRound(opts: {
     throw new Error("EMPTY_STREAM");
   }
 
-  return { content: contentAcc, reasoning: reasoningAcc, toolCalls, sawDone };
+  return {
+    content: contentAcc,
+    reasoning: reasoningAcc,
+    toolCalls,
+    sawDone,
+    usage: roundUsage,
+  };
+}
+
+function buildAssistantPayloadJson(opts: {
+  reasoning: string;
+  tokenUsage: AITokenUsageTotals;
+  usageAvailable: boolean;
+}): string | null {
+  const o: Record<string, unknown> = {};
+  if (opts.reasoning.trim()) o.reasoning = opts.reasoning.trim();
+  if (opts.usageAvailable || opts.tokenUsage.totalTokens > 0) {
+    o.tokenUsage = opts.tokenUsage;
+    o.tokenUsageAvailable = opts.usageAvailable;
+  }
+  return Object.keys(o).length > 0 ? JSON.stringify(o) : null;
 }
 
 function previewJson(obj: unknown, max = 280): string {
@@ -643,34 +688,130 @@ async function runRagContext(
   bookHash: string,
   chapterIndex: number,
   maxChars: number,
-  range?: number,
+  range: number | undefined,
+  chat: AIChatEndpoint,
+  webContents: WebContents,
+  onToolProgress?: (progress: { title: string; detail: string }) => void,
+  onTokenUsage?: (usage: AITokenUsageTotals) => void,
+  signal?: AbortSignal,
 ): Promise<{ preview: string; full: string }> {
-  const cap = Math.min(24_000, Math.max(2000, maxChars || 12_000));
   const rows = listChunksForChapter(bookHash, chapterIndex);
-  if (rows.length === 0) {
-    const o = { error: "该章无索引分块", chapterIndex };
-    const full = JSON.stringify(o);
-    return { preview: full, full };
+
+  /** 带 range 的抽样：仍走向量分块节选 */
+  if (typeof range === "number" && range >= 0) {
+    if (rows.length === 0) {
+      const o = { error: "该章无索引分块", chapterIndex };
+      const full = JSON.stringify(o);
+      return { preview: full, full };
+    }
+    let selected = rows;
+    if (rows.length > 2 * range + 1) {
+      const mid = Math.floor(rows.length / 2);
+      const start = Math.max(0, mid - range);
+      const end = Math.min(rows.length, mid + range + 1);
+      selected = rows.slice(start, end);
+    }
+    const cap = Math.min(24_000, Math.max(2000, maxChars || 12_000));
+    let text = "";
+    for (const r of selected) {
+      const piece = `\n\n---\n${formatAiToolChapterHeading(r.chapterIndex, r.chapterTitle)}\n${r.content}`;
+      if (text.length + piece.length > cap) break;
+      text += piece;
+    }
+    const fullObj = {
+      chapterIndex,
+      mergedMarkdown: text.trim(),
+      source: "vector",
+      compressed: false,
+      truncated: text.length >= cap,
+      chunkCount: selected.length,
+    };
+    let full = JSON.stringify(fullObj);
+    if (full.length > MAX_TOOL_JSON_CHARS) {
+      full = `${full.slice(0, MAX_TOOL_JSON_CHARS)}\n…（已截断）`;
+    }
+    return { preview: previewJson(fullObj), full };
   }
-  let selected = rows;
-  if (typeof range === "number" && range >= 0 && rows.length > 2 * range + 1) {
-    const mid = Math.floor(rows.length / 2);
-    const start = Math.max(0, mid - range);
-    const end = Math.min(rows.length, mid + range + 1);
-    selected = rows.slice(start, end);
+
+  let chapterPlain =
+    (await fetchChapterPlainTextFromRenderer(
+      webContents,
+      chapterIndex,
+      RAG_CHAPTER_PLAIN_FETCH_MAX,
+    ))?.trim() ?? "";
+
+  let source: "reader" | "vector" = "reader";
+  if (!chapterPlain) {
+    if (rows.length === 0) {
+      const o = { error: "无法获取该章正文（阅读器无内容且向量库无分块）", chapterIndex };
+      const full = JSON.stringify(o);
+      return { preview: full, full };
+    }
+    chapterPlain = mergeChapterChunkRows(rows);
+    source = "vector";
   }
-  let text = "";
-  for (const r of selected) {
-    const piece = `\n\n---\n${formatAiToolChapterHeading(r.chapterIndex, r.chapterTitle)}\n${r.content}`;
-    if (text.length + piece.length > cap) break;
-    text += piece;
+
+  const sourceChars = chapterPlain.length;
+
+  if (sourceChars <= RAG_CHAPTER_NO_COMPRESS_CHARS) {
+    const fullObj = {
+      chapterIndex,
+      mergedMarkdown: chapterPlain,
+      source,
+      compressed: false,
+      sourceCharCount: sourceChars,
+      truncated: false,
+    };
+    let full = JSON.stringify(fullObj);
+    if (full.length > MAX_TOOL_JSON_CHARS) {
+      full = `${full.slice(0, MAX_TOOL_JSON_CHARS)}\n…（已截断）`;
+    }
+    return { preview: previewJson(fullObj), full };
   }
-  const fullObj = {
+
+  let digest: string;
+  let compressError: string | undefined;
+  try {
+    const compressed = await compressChapterToDigest({
+      chat,
+      fullText: chapterPlain,
+      maxDigestChars: RAG_CHAPTER_DIGEST_MAX_CHARS,
+      signal,
+      onSegmentProgress: (m, n) =>
+        onToolProgress?.(chapterDigestProgressUi(m, n)),
+    });
+    digest = compressed.digest;
+    onTokenUsage?.(compressed.usage);
+  } catch (e) {
+    compressError = e instanceof Error ? e.message : String(e);
+    digest = chapterPlain.slice(0, RAG_CHAPTER_DIGEST_MAX_CHARS);
+    if (chapterPlain.length > RAG_CHAPTER_DIGEST_MAX_CHARS) {
+      digest += "…";
+    }
+  }
+
+  const fullObj: Record<string, unknown> = {
     chapterIndex,
-    mergedMarkdown: text.trim(),
-    truncated: text.length >= cap,
-    chunkCount: selected.length,
+    mergedMarkdown: digest,
+    source,
+    compressed: true,
+    sourceCharCount: sourceChars,
+    digestCharCount: digest.length,
+    truncated: false,
+    notice:
+      "本章超过 1 万字，已按每 1 万字一段压缩为全章提要。写概要请依据此提要；具体对白可再用 ragSearch。",
   };
+  if (compressError) {
+    fullObj.compressFallback = compressError;
+    fullObj.notice =
+      "本章超长；压缩调用失败，已退回章首节选。可重试或检查对话模型配置。";
+  }
+  if (source === "vector") {
+    fullObj.vectorFallback = true;
+    fullObj.notice =
+      "未能从阅读器取得章节原文，已退回向量分块拼接（字数可能偏大）。建议保持阅读器已加载该书。";
+  }
+
   let full = JSON.stringify(fullObj);
   if (full.length > MAX_TOOL_JSON_CHARS) {
     full = `${full.slice(0, MAX_TOOL_JSON_CHARS)}\n…（已截断）`;
@@ -697,6 +838,10 @@ async function dispatchTool(
     portraitSpoilerSafe: boolean;
     /** extractCharacterAppearance：currentChapterIndex，可能为 -1 */
     portraitActiveChapterIdx: number;
+    chat: AIChatEndpoint;
+    webContents: WebContents;
+    onTokenUsage?: (usage: AITokenUsageTotals) => void;
+    signal?: AbortSignal;
   },
 ): Promise<string> {
   let args: Record<string, unknown> = {};
@@ -798,6 +943,21 @@ async function dispatchTool(
         ch,
         maxChars,
         range,
+        ctx.chat,
+        ctx.webContents,
+        (progress) => {
+          ctx.emit({
+            type: "tool_progress",
+            requestId: ctx.requestId,
+            toolCallId: ctx.toolCallId,
+            title: progress.title,
+            detail: progress.detail,
+          });
+        },
+        (usage) => {
+          ctx.onTokenUsage?.(usage);
+        },
+        ctx.signal,
       );
       ctx.emit({
         type: "tool_result",
@@ -926,6 +1086,9 @@ export async function runAgentChat(opts: {
     headers.Authorization = `Bearer ${chat.apiKey.trim()}`;
   }
 
+  let usageAcc: AITokenUsageTotals = { ...ZERO_TOKEN_USAGE };
+  let usageAvailable = false;
+
   try {
     const rows = listMessages(payload.threadId).filter(
       (r) => r.role !== "system",
@@ -945,6 +1108,43 @@ export async function runAgentChat(opts: {
       ragEnabled,
       chapterMatchSkillRagUnrestricted,
     );
+
+    const absorbTokenUsage = (part: AITokenUsageTotals | null | undefined) => {
+      if (!part) return;
+      usageAcc = addTokenUsage(usageAcc, part);
+      if (part.totalTokens > 0 || part.promptTokens > 0 || part.completionTokens > 0) {
+        usageAvailable = true;
+      }
+    };
+    const emitUsageFinal = () => {
+      emit({
+        type: "token_usage_final",
+        requestId,
+        promptTokens: usageAcc.promptTokens,
+        completionTokens: usageAcc.completionTokens,
+        totalTokens: usageAcc.totalTokens,
+        available: usageAvailable,
+      });
+    };
+
+    let historyJsonCharCount = 0;
+    for (const m of history) {
+      historyJsonCharCount += JSON.stringify(m).length;
+    }
+    const estimate = estimateAgentTurnTokens({
+      systemContent,
+      historyJsonCharCount,
+      maxCompletionTokens: chat.maxTokens,
+      ragEnabled,
+    });
+    emit({
+      type: "token_usage_estimate",
+      requestId,
+      promptTokens: estimate.promptTokens,
+      completionTokens: estimate.completionTokens,
+      totalTokens: estimate.totalTokens,
+      ragEnabled,
+    });
 
     /** 上一轮**实际执行**过的工具指纹；重复指纹则跳过嵌入/检索以打破死循环 */
     let lastExecutedToolFingerprint: string | null = null;
@@ -1001,10 +1201,12 @@ export async function runAgentChat(opts: {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.toLowerCase().includes("abort")) {
+          emitUsageFinal();
           emit({ type: "done", requestId });
           return;
         }
         if (msg === "EMPTY_STREAM") {
+          emitUsageFinal();
           emit({
             type: "error",
             requestId,
@@ -1013,9 +1215,12 @@ export async function runAgentChat(opts: {
           });
           return;
         }
+        emitUsageFinal();
         emit({ type: "error", requestId, message: msg });
         return;
       }
+
+      absorbTokenUsage(roundResult.usage);
 
       let { content, reasoning, toolCalls } = roundResult;
       if (finalizeMetaRound && toolCalls.length > 0) {
@@ -1032,6 +1237,7 @@ export async function runAgentChat(opts: {
         else consecutiveDuplicateToolRounds = 0;
 
         if (isDuplicateToolRound && consecutiveDuplicateToolRounds >= 3) {
+          emitUsageFinal();
           emit({
             type: "error",
             requestId,
@@ -1097,6 +1303,10 @@ export async function runAgentChat(opts: {
               aiConfig,
               portraitSpoilerSafe: payload.spoilerSafe === true,
               portraitActiveChapterIdx,
+              chat,
+              webContents,
+              onTokenUsage: absorbTokenUsage,
+              signal: ac.signal,
             });
           }
           appendAgentMessageRow({
@@ -1133,13 +1343,15 @@ export async function runAgentChat(opts: {
         threadId: payload.threadId,
         role: "assistant",
         content: answerText,
-        payload:
-          reasoning.trim() !== ""
-            ? JSON.stringify({ reasoning } satisfies Record<string, string>)
-            : null,
+        payload: buildAssistantPayloadJson({
+          reasoning,
+          tokenUsage: usageAcc,
+          usageAvailable,
+        }),
       });
 
       if (finalizeMetaRound && !answerText.trim()) {
+        emitUsageFinal();
         emit({
           type: "error",
           requestId,
@@ -1149,10 +1361,12 @@ export async function runAgentChat(opts: {
         return;
       }
 
+      emitUsageFinal();
       emit({ type: "done", requestId });
       return;
     }
 
+    emitUsageFinal();
     emit({
       type: "error",
       requestId,
@@ -1160,6 +1374,14 @@ export async function runAgentChat(opts: {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    emit({
+      type: "token_usage_final",
+      requestId,
+      promptTokens: usageAcc.promptTokens,
+      completionTokens: usageAcc.completionTokens,
+      totalTokens: usageAcc.totalTokens,
+      available: usageAvailable,
+    });
     if (msg.toLowerCase().includes("abort")) {
       emit({ type: "done", requestId });
       return;

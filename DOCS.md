@@ -139,7 +139,9 @@ src/
 │   ├── aiVectorDb.ts         # SQLite + sqlite-vec 向量库
 │   ├── aiEmbedding.ts        # 嵌入批处理与维度探测
 │   ├── aiChat.ts             # OpenAI 兼容流式对话
-│   ├── aiAgentChat.ts        # Agent 工具循环与 `ai:agent:event`
+│   ├── aiAgentChat.ts        # Agent 工具循环与 `ai:agent:event`（含 token 预估/汇总）
+│   ├── aiChapterPlainTextBridge.ts # ragContext：向渲染进程索取章节原文
+│   ├── aiRagChapterDigest.ts # 超长章分段压缩为全章提要
 │   ├── aiAgentTools.ts       # Agent 工具实现
 │   ├── aiCharacterPortrait.ts # 角色抽取、画风与文生图编排
 │   ├── aiTxt2Img.ts          # A1111 / Comfy 等文生图 API
@@ -180,6 +182,7 @@ src/
 │       │   ├── useFileListSelection.ts    # 文件列表编辑模式多选
 │       │   ├── useFileListMenus.ts        # 右键与分类浮层
 │       │   ├── useTxtStreamPipeline.ts    # 大文件流式解析与映射
+│       │   ├── useAiChapterPlainTextBridge.ts # 响应 `ai:chapter-plain-request` 回传章文
 │       │   └── useAiFoldContentSelectAll.ts # 助手折叠区全选
 │       ├── constants/
 │       │   ├── appUi.ts          # UI 常量、存储 key、侧栏与字号边界
@@ -263,7 +266,7 @@ src/
 │       │   ├── fullscreenSidebarFloat.ts # 全屏侧栏浮层命中
 │       │   ├── aiBookHash.ts             # 书籍哈希（渲染侧）
 │       │   ├── aiChunkBook.ts            # 按 token 切块
-│       │   ├── currentChapterPlainText.ts   # 当前章纯文本
+│       │   ├── currentChapterPlainText.ts   # 按章索引从阅读器切片（与侧栏字数一致）
 │       │   ├── readerSurroundingPlainText.ts # 视口附近节选
 │       │   ├── aiMarkdownMarkedSetup.ts  # marked + KaTeX 配置
 │       │   ├── aiMarkdownMarkedPrep.ts   # Markdown 预处理
@@ -273,7 +276,8 @@ src/
     ├── packageDerived.ts           # 从 package 派生的共享元数据
     ├── ebookExtensions.ts          # 电子书扩展名常量
     ├── ebookConvertPaths.ts        # 默认转换输出子目录名
-    ├── aiTypes.ts                  # AI 共享类型与默认配置
+    ├── aiTypes.ts                  # AI 共享类型与默认配置（含 Agent 事件）
+    ├── aiTokenUsage.ts             # usage 解析、对话 token 预估与展示文案
     ├── aiTxt2ImgIpc.ts             # 文生图 IPC 载荷类型
     ├── aiSkills.ts                 # 技能元数据与合并工具
     ├── aiAgentSkillToolNames.ts    # Agent 技能名常量
@@ -304,7 +308,9 @@ src/
 - **`aiVectorDb.ts`**：SQLite + sqlite-vec：分块、向量、`threads` / `messages` 表及迁移。
 - **`aiEmbedding.ts`**：嵌入请求批处理、维度探测（`probeEmbeddingDimension`）。
 - **`aiChat.ts`**：OpenAI 兼容流式对话（非 Agent 直聊路径）。
-- **`aiAgentChat.ts`**：带工具调用的 Agent 对话循环；向渲染进程推送 `ai:agent:event`。
+- **`aiAgentChat.ts`**：带工具调用的 Agent 对话循环；向渲染进程推送 `ai:agent:event`（含 `token_usage_estimate` / `token_usage_final`、`tool_progress` 等）；`ragContext` 优先经 **`aiChapterPlainTextBridge`** 向阅读器取章文，超长章由 **`aiRagChapterDigest`** 分段压缩；多轮与压缩调用的 usage 汇总后写入助手消息 `payload`。
+- **`aiChapterPlainTextBridge.ts`**：主进程 `fetchChapterPlainTextFromRenderer`：经 `ai:chapter-plain-request` / 一次性 `replyChannel` 向渲染层索取与阅读器一致的章节纯文本（超时 20s）。
+- **`aiRagChapterDigest.ts`**：`RAG_CHAPTER_NO_COMPRESS_CHARS`（1 万）内不压缩；超长章按每 1 万字段压缩，合并后 `mergedMarkdown` 上限约 1 万；`chapterDigestProgressUi` 供工具折叠区展示「读取章节原文（M/N）」进度。
 - **`aiAgentTools.ts`**：Agent 可调工具实现（检索章节、向量检索等，与 `@shared/aiAgentSkillToolNames` 等配合）。
 - **`aiCharacterPortrait.ts`**：角色检索抽取、全书风格推断、中英 SD 提示词、文生图落盘编排。
 - **`aiTxt2Img.ts`**：与 A1111 / Comfy 等兼容 API 交互（采样器列表、实际出图等）。
@@ -325,7 +331,7 @@ src/
 - **阅读器入参**：向 `ReaderMain` 传入阅读偏好与当前主题的 **`highlightColorsLight` / `highlightColorsDark`**（合并默认后）、**`monacoCustomHighlight`**、**`txtrDelimitedMatchCrossLine`**（与内容上色配合的成对符号跨行匹配）、以及当前文件的 **`highlightWordsByIndex`**。
 - **快捷键与配色**：维护 `shortcutBindings` 并传给 `AppHeader`；**`openColorScheme`** 打开配色弹窗。
 - **侧栏文件列表**：**分类筛选**、**排序模式**、**分类目录**（`fileCategory` / `fileSort` / `fileCategoryCatalog`）与 `FileListPanel`、`useAppPersistence` 联动。
-- **AI 与立绘**：**AI 技能**（`aiSkillsEnabled` / `aiSkillOverrides` / `aiCustomSkills`）、**助手选项**（`aiAssistantDeepThinking` / `aiAssistantSpoilerSafe`）、**角色立绘缓存目录**（`characterPortraitCacheDir`）等与设置/迁移联动。
+- **AI 与立绘**：**AI 技能**（`aiSkillsEnabled` / `aiSkillOverrides` / `aiCustomSkills`）、**助手选项**（`aiAssistantDeepThinking` / `aiAssistantSpoilerSafe`）、**角色立绘缓存目录**（`characterPortraitCacheDir`）等与设置/迁移联动；**`useAiChapterPlainTextBridge`**（`App.vue` 注册）响应主进程 `ragContext` 的章节原文索取。
 - **设置弹窗**：由 **`SettingsPanel.vue`** 组织 **`SettingsTabBar`** 与子面板 **`SettingsGeneralPanel`** / **`SettingsReadingPanel`** / **`SettingsEditPanel`** / **`SettingsAIPanel`** / **`SettingsVectorModelPanel`** / **`SettingsTxt2ImgPanel`**（页签文案「角色卡」，文生图与角色卡出图配置）/ **`SettingsSkillsPanel`**；技能编辑用 **`SettingsSkillEditModal.vue`**（见下文组件表）。
 - **全屏与浮层**：全屏时 **`fullscreenFileListPopoversOpen` / `fullscreenAiAssistantPopoversOpen`** 交给 `useAppReaderChrome`，避免 Teleport 浮层打开时误收起全屏侧栏。
 - **根级挂载**：`AppOverlays`、`AppDialogHost`、`AppToastHost` 等。
@@ -369,6 +375,7 @@ src/
     - 物理行/显示行映射、**`physicalSearchRangeToDisplayColumns`**（侧栏搜索命中 → Monaco 列，只读且开行首缩进时计入全角缩进）；**`readerEditMode`** 为 true 时不做缩进列偏移。
     - 插图锚点删行后同步收缩映射表。
     - 编辑态 **`resyncMirrorFromReader`** 将 Monaco 全文同步为 `physicalLineContents`（供搜索与底栏统计）。
+- **`useAiChapterPlainTextBridge.ts`**：订阅 `window.colorTxt.onChapterPlainRequest`，调用 **`getChapterPlainTextByIndex`**（`currentChapterPlainText.ts`）后 `replyChapterPlainText`。
 - **`useAiFoldContentSelectAll.ts`**：AI 阅读助手：工具调用 / 思考等折叠区正文的「全选」与键盘选择（与 `AiAssistantDetailsFold` 等配合）。
 
 ###### `constants/`
@@ -423,10 +430,10 @@ src/
 
 ###### `aiAssistant/`
 
-- **`aiAssistantTypes.ts`**：UI 消息 / 工具条 / 思考块等类型。
+- **`aiAssistantTypes.ts`**：UI 消息 / 工具条 / 思考块、`tokenEstimate` / `tokenUsage` 信息条等类型。
 - **`aiAssistantSegments.ts`**：助手消息分段与工具引用交错。
 - **`aiAssistantPlainText.ts`**：从 UI 模型提取可复制纯文本。
-- **`aiAssistantDbMessages.ts`**：SQLite 消息行与 UI 结构互转。
+- **`aiAssistantDbMessages.ts`**：SQLite 消息行与 UI 结构互转；助手 `payload` 可含 `reasoning`、`tokenUsage`、`tokenUsageAvailable`；历史加载时在助手气泡后插入 token 实际消耗条。
 - **`aiAssistantHistoryFormat.ts`**：历史快照格式相关。
 - **`aiAssistantExport.ts`**：对话导出（文件保存走主进程 `ai:export:save`）。
 
@@ -465,12 +472,12 @@ src/
 - **`fullscreenSidebarFloat.ts`**：侧栏 Teleport 浮层命中检测（与 `FULLSCREEN_SIDEBAR_FLOAT_SELECTOR` 等配合）。
 - **`aiBookHash.ts`**：书籍内容哈希（与主进程 `aiBookHash.ts` 算法一致，用于向量库 `book_hash`）。
 - **`aiChunkBook.ts`**：纯文本按 token 目标切块（与 `AIConfig` 中 chunk 字段语义对齐）。
-- **`currentChapterPlainText.ts`**：当前章纯文本抽取（供 Agent / 提示装配）。
+- **`currentChapterPlainText.ts`**：按 `chapterIndex` 从阅读器展示层切片（标题行至下一章前，与侧栏章字数一致；`HARD_CAP` 512_000），供 **`useAiChapterPlainTextBridge`** 与 `bookMeta` 装配。
 - **`readerSurroundingPlainText.ts`**：视口附近节选（注入 `AIAgentBookMeta.surroundingText`）。
 - **`aiMarkdownMarkedSetup.ts`**：`marked.use(marked-katex-extension)`：统一导出配置好的 `marked`（助手 Markdown 入口）。
 - **`aiMarkdownMarkedPrep.ts`**：助手消息正文预处理再交给 marked。
 - **`aiMarkdownChapterRef.ts`**：助手回复中章节引用类 token 的解析 / 链接化（与 `@shared/aiChapterRefPrompt` 约定配合）。
-- **`aiToolFoldBody.ts`**：工具调用折叠区正文 DOM 与 `AiToolFoldBody` 组件对齐的辅助。
+- **`aiToolFoldBody.ts`**：工具折叠区正文 HTML 辅助；将进度文案中的 **`当前进度：M/N`** 包为 `.aiDigestProgressFrac`（warning 加粗）。
 
 ##### `src/shared/`
 
@@ -484,6 +491,7 @@ src/
 - **`aiSkills.ts`**：内置技能元数据、用户覆盖结构、自定义技能 `AiCustomSkill` 及合并/规范化工具。
 - **`aiAgentSkillToolNames.ts`**：Agent 可调技能名常量（与主进程 `aiAgentTools` 等对齐）。
 - **`aiChapterRefPrompt.ts`**：助手回复中章节引用类 token 的提示词约定（与 `aiMarkdownChapterRef.ts` 配合）。
+- **`aiTokenUsage.ts`**：`extractUsageFromChatJson`、`addTokenUsage`；`estimateAgentTurnTokens`（对话前粗估，偏「多轮 + 工具 + ragContext」上界）；`formatTokenUsageEstimateLine` / `formatTokenUsageActualLine`。
 - **`characterTypes.ts`**：侧栏「角色」：`CharacterRosterEntry`、`CharacterBookStylePersisted`、`CharacterGender`（按书存 `file.meta`）。
 - **`characterPortraitPaths.ts`**：立绘缓存根默认子目录名 `CharacterPortrait`、按书名净化目录段、立绘/草稿/临时 PNG 文件名与绝对路径拼接。
 - **`chapterMatchBuiltinPatterns.ts`**：章节匹配三条内置正则（与 `renderer/chapter.ts` 同源）。
@@ -582,6 +590,7 @@ src/
 - **应用更新**：`checkForUpdates` / `downloadUpdate` / `quitAndInstall` 及 `onUpdater*` 事件订阅（含 `onUpdaterDownloadProgress`；打包环境下生效）。
 - 拖放文件真实路径（`getPathForFile`）。
 - **全局快捷键（显隐）**：`getGlobalShortcut`、`validateGlobalShortcut`、`setGlobalShortcut`、`suspendGlobalShortcutsForRecording`、`resumeGlobalShortcutsAfterRecording`（对应主进程 `shortcut:*` IPC）。
+- **AI 章节原文（`ragContext`）**：**`onChapterPlainRequest`** / **`replyChapterPlainText`**（`ai:chapter-plain-request` 与一次性 reply 通道）；**`window.colorTxt.ai.onAgentEvent`** 订阅 `ai:agent:event`（`reasoning_delta`、`content_delta`、`tool_*`、`token_usage_estimate`、`token_usage_final`、`round_end`、`done`、`error` 等，类型见 `@shared/aiTypes`）。
 
 #### `src/renderer/src/components/`（主要 Vue 组件）
 
@@ -635,10 +644,10 @@ src/
 | `PathPickerInput.vue`                                | 设置等场景下的目录绝对路径输入与主进程文件夹选择器（电子书转换输出目录、**角色立绘缓存根目录**等）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `AppDialogHost.vue`                                  | 挂载于 `App.vue`：渲染 `services/appDialog.ts` 队列（`appAlert` / `appConfirm` / `appPrompt`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `AppToastHost.vue`                                   | 挂载于 `App.vue`：渲染 `services/appToast.ts` 的顶部 Toast 列表                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `AiAssistantPanel.vue`                               | 侧栏 AI 阅读助手主面板：会话列表、输入、与 `AiAssistantChatMessages` 等配合                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `AiAssistantChatMessages.vue`                        | 助手对话消息列表：用户/模型气泡、工具调用折叠、思考块等                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `AiAssistantPanel.vue`                               | 侧栏 AI 阅读助手主面板：会话、输入、`onAgentEvent`、token 预估/实际条插入；**`findLiveAgentAssistant`**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `AiAssistantChatMessages.vue`                        | 助手对话消息列表：气泡、工具折叠、思考块（流式未封存显示「正在思考…」）、**Token 信息条**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `AiAssistantDetailsFold.vue`                         | 助手详情区折叠容器（与 `directives/aiStickScroll`、**`useAiFoldContentSelectAll`** 配合）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `AiToolFoldBody.vue`                                 | 单条工具调用折叠正文区（与 `utils/aiToolFoldBody.ts` 对齐）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `AiToolFoldBody.vue`                                 | 工具折叠正文；章文压缩进度 **`当前进度：M/N`** 样式（`utils/aiToolFoldBody.ts`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `AiMarkdown.vue`                                     | 助手回复 Markdown 渲染入口（内部用 `aiMarkdownMarkedSetup` / `aiMarkdownMarkedPrep`、章节引用 `aiMarkdownChapterRef`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `CharacterSidebarPanel.vue`                          | 侧栏「角色」：本书角色卡/立绘列表与交互入口。<br>与 `@shared/characterTypes`、`characterPortraitPaths`、主进程 `characterPortrait:*` IPC 配合                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `CharacterRosterCard.vue`                            | 单个角色条目卡片 UI                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -962,8 +971,29 @@ src/
     - 对当前书 **「建索引」** 时，渲染进程 **`buildBookVectorIndex.ts`** 按章节分块，经 preload 调主进程嵌入并写入 **`userData/ai/vector.sqlite`**（`better-sqlite3` + `sqlite-vec`）。
     - 修改嵌入 **向量维度** 并保存时，设置面板会 **`showMessageBox`** 提示将清空已建索引。
 - **文生图 / 角色卡**：**「角色卡」** 页配置 A1111 / ComfyUI 等兼容接口（见 `@shared/aiTypes` 的 `AITxt2ImgConfig`）；与主进程 **`aiTxt2Img.ts`**、`registerAiIpc` 暴露的 `ai:txt2img` 等 IPC 配合。立绘文件落在 **`characterPortraitCacheDir`**（默认 **`userData/CharacterPortrait`**，按书名分子目录，见 `@shared/characterPortraitPaths`），主进程 **`characterPortraitFs.ts`** 负责迁移与复制。
-- **技能与 Agent**：内置技能元数据与用户覆盖见 `@shared/aiSkills`；Agent 工具名与主进程 **`aiAgentTools.ts`** 对齐（`@shared/aiAgentSkillToolNames`）。流式对话与工具事件经 **`aiAgentChat.ts`** 推送到渲染层。
+- **技能与 Agent**：内置技能元数据与用户覆盖见 `@shared/aiSkills`；Agent 工具名与主进程 **`aiAgentTools.ts`** 对齐（`@shared/aiAgentSkillToolNames`）。流式对话与工具事件经 **`aiAgentChat.ts`** 推送到渲染层（`window.colorTxt.ai.onAgentEvent`）。
 - **会话与配置**：每本书（内容哈希）多会话，消息存 SQLite。运行时 **`userData/ai/config.json`**（**不含**聊天正文）。聊天 / 嵌入 / 文生图请求由主进程代理，经 IPC 流式回传（可中止）。
+
+### Agent 工具 `ragContext`（章节原文）
+
+向量索引仍主要用于 **`ragSearch`**；**`ragContext`** 拉取**整章**正文时：
+
+| 条件 | 行为 |
+| ---- | ---- |
+| 未传 `range`（全章） | 主进程经 **`fetchChapterPlainTextFromRenderer`** 向阅读器索取与侧栏字数一致的章节切片（`source: "reader"`） |
+| 阅读器无内容 | 回退 **`mergeChapterChunkRows`** 拼接向量分块（`source: "vector"`，字数可能因分块重叠偏大） |
+| 原文字数 ≤ **1 万** | `compressed: false`，`mergedMarkdown` 为完整章文 |
+| 原文字数 > **1 万** | 按每 **1 万** 字一段调用对话模型压缩，合并为约 **1 万** 字提要（`compressed: true`）；折叠区标题 **「读取章节原文（M/N）」**，正文两行说明 + **`当前进度：M/N`**（warning 色加粗，见 `aiToolFoldBody.ts`） |
+| 传入 `range` | 仍走向量库该章分块的中段抽样（与旧版节选逻辑一致，`source: "vector"`） |
+
+渲染侧 **`useAiChapterPlainTextBridge`**（`App.vue`）监听 **`ai:chapter-plain-request`**，用 **`getChapterPlainTextByIndex`** 回复；preload 暴露 **`onChapterPlainRequest`** / **`replyChapterPlainText`**。
+
+### Token 用量（预估与实际）
+
+- **发送后、助手折叠区之前**：主进程发出 **`token_usage_estimate`**（`estimateAgentTurnTokens`：system + 历史 JSON 字符数 + 固定工具轮缓冲 + 第二轮 prompt 比例项；向量检索开启时另加 **`ragContext` 结果缓冲**；输出按 `maxTokens` 的约 12% 粗估）。仅为参考，**简单寒暄/身份类问题常明显偏高**（实际往往单轮、无工具）。
+- **对话结束后**：先发 **`token_usage_final`**（汇总 Agent 各轮 `stream_options.include_usage` 与章节压缩中的 `chatCompletionOnce` usage），再发 **`done`**。渲染层在助手气泡后插入实际消耗条（`--info-*` 样式）；有实际值后移除同 `requestId` 的预估条。
+- **持久化**：最终助手消息的 SQLite **`payload`** JSON 可含 **`tokenUsage`**、**`tokenUsageAvailable`**（与 **`reasoning`** 并列）；历史重载时由 **`aiAssistantDbMessages`** 还原 token 条。
+- **事件路由注意**：`token_usage_final` 会把 token 条插在助手气泡**之后**，故处理 **`done` / `error`** 时须用 **`findLiveAgentAssistant()`**（按 `agentLive` 或末条 `assistant` 定位），不能假定 `messages` 最后一项仍是助手，否则无法结束「正在思考…」与等待状态。
 
 ### `userData` 中的 AI 相关路径
 
@@ -994,17 +1024,17 @@ src/
 | `SettingsSkillEditModal.vue` | 自定义技能新建/编辑弹窗 |
 | `AppPullFlashButton.vue` | 设置面板内刷新模型/采样器列表等，完成态闪光反馈 |
 | `PathPickerInput.vue` | 目录选择（含 **角色立绘缓存根目录** 等） |
-| `AiAssistantPanel.vue` | 侧栏 AI 阅读助手主面板：会话列表、输入等 |
-| `AiAssistantChatMessages.vue` | 助手对话消息列表：气泡、工具折叠、思考块等 |
+| `AiAssistantPanel.vue` | 侧栏 AI 阅读助手主面板：会话、输入、`onAgentEvent`（流式增量、工具、`token_usage_*`、`done`/`error`）；**`findLiveAgentAssistant`** 定位 live 助手行 |
+| `AiAssistantChatMessages.vue` | 消息列表：用户/助手气泡、思考块、工具折叠、**预估/实际 Token** 信息条（`aiInfoBanner`） |
 | `AiAssistantDetailsFold.vue` | 助手详情折叠（与 `directives/aiStickScroll`、`useAiFoldContentSelectAll` 配合） |
-| `AiToolFoldBody.vue` | 单条工具调用折叠正文区 |
+| `AiToolFoldBody.vue` | 工具折叠正文；超长章压缩进度中 **`当前进度：M/N`** 高亮（`utils/aiToolFoldBody.ts`） |
 | `AiMarkdown.vue` | 助手回复 Markdown（`aiMarkdownMarkedSetup` / `Prep`、`aiMarkdownChapterRef`） |
 | `CharacterSidebarPanel.vue` | 侧栏「角色」：角色卡/立绘列表与主进程 `characterPortrait:*` IPC 等配合 |
 | `CharacterRosterCard.vue` | 单个角色条目卡片 UI |
 
 ### 源码与 IPC 速查
 
-主进程 **`registerAiIpc.ts`** 集中注册 `ai:*` IPC；**`aiConfig.ts`**、**`aiVectorDb.ts`**、**`aiEmbedding.ts`**、**`aiChat.ts`**、**`aiAgentChat.ts`**、**`aiAgentTools.ts`**、**`aiCharacterPortrait.ts`**、**`aiTxt2Img.ts`**、**`aiBookHash.ts`**、**`characterPortraitFs.ts`**、**`resolveSqliteVecPath.ts`** 等分工见 **「开发」** → **「`src/` 目录树各文件补充说明」** 中 `src/main/`（其余模块）及渲染侧 `ai/`、`aiAssistant/`、`shared/` 下各 `ai*` 条目。预加载暴露的 `window.colorTxt.ai.*` 等见 **「`src/preload/index.ts`（预加载）」**。
+主进程 **`registerAiIpc.ts`** 集中注册 `ai:*` IPC；**`aiConfig.ts`**、**`aiVectorDb.ts`**、**`aiEmbedding.ts`**、**`aiChat.ts`**、**`aiAgentChat.ts`**、**`aiChapterPlainTextBridge.ts`**、**`aiRagChapterDigest.ts`**、**`aiAgentTools.ts`**、**`aiCharacterPortrait.ts`**、**`aiTxt2Img.ts`**、**`aiBookHash.ts`**、**`characterPortraitFs.ts`**、**`resolveSqliteVecPath.ts`** 等分工见 **「开发」** → **「`src/` 目录树各文件补充说明」** 中 `src/main/`（其余模块）及渲染侧 `ai/`、`aiAssistant/`、`shared/`（含 **`aiTokenUsage.ts`**）下各 `ai*` 条目。预加载暴露的 `window.colorTxt.ai.*`、`onChapterPlainRequest` 等见 **「`src/preload/index.ts`（预加载）」**。
 
 ## 数据存储说明
 

@@ -68,7 +68,13 @@ export function buildAssistantChatExportMarkdown(
 ): string {
   const lines: string[] = [`# ${title}`, ""];
   for (const m of messages) {
-    if (m.role === "indexBanner") continue;
+    if (
+      m.role === "indexBanner" ||
+      m.role === "tokenEstimate" ||
+      m.role === "tokenUsage"
+    ) {
+      continue;
+    }
     if (m.role === "user") {
       lines.push("## 你", "", m.content, "", "---", "");
       continue;
@@ -131,7 +137,14 @@ export function buildAssistantChatExportJson(
   const payload = {
     title,
     exportedAt,
-    messages: messages.filter((m) => m.role !== "indexBanner").map((m) => {
+    messages: messages
+      .filter(
+        (m) =>
+          m.role !== "indexBanner" &&
+          m.role !== "tokenEstimate" &&
+          m.role !== "tokenUsage",
+      )
+      .map((m) => {
       if (m.role === "user") {
         return {
           id: m.id,

@@ -9,6 +9,10 @@ import {
 } from "../aiAssistant/aiAssistantSegments";
 import type { UiMsg } from "../aiAssistant/aiAssistantTypes";
 import { assistantAnswerMdSource } from "../aiAssistant/aiAssistantPlainText";
+import {
+  formatTokenUsageActualLine,
+  formatTokenUsageEstimateLine,
+} from "@shared/aiTokenUsage";
 import { icons } from "../icons";
 
 defineProps<{
@@ -35,7 +39,40 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
   <!-- 与父级 .aiList 一致：原先每条消息是 .aiList 的直接子节点才吃到 gap；抽成子组件后须在内部自己做纵向间距 -->
   <div class="aiChatMessagesStack">
     <template v-for="m in messages" :key="m.id">
-      <div v-if="m.role === 'indexBanner'" class="aiMsg aiMsg--bot">
+      <div
+        v-if="m.role === 'tokenEstimate' || m.role === 'tokenUsage'"
+        class="aiMsg aiMsg--bot"
+      >
+        <div class="aiMsgInner">
+          <div class="aiInfoBanner" role="status" aria-live="polite">
+            <template v-if="m.role === 'tokenEstimate'">
+              {{
+                formatTokenUsageEstimateLine(
+                  {
+                    promptTokens: m.promptTokens,
+                    completionTokens: m.completionTokens,
+                    totalTokens: m.totalTokens,
+                  },
+                  m.ragEnabled,
+                )
+              }}
+            </template>
+            <template v-else>
+              {{
+                formatTokenUsageActualLine(
+                  {
+                    promptTokens: m.promptTokens,
+                    completionTokens: m.completionTokens,
+                    totalTokens: m.totalTokens,
+                  },
+                  m.available,
+                )
+              }}
+            </template>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="m.role === 'indexBanner'" class="aiMsg aiMsg--bot">
         <div class="aiMsgInner">
           <div
             v-if="m.phase !== 'error'"
@@ -123,7 +160,10 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
                   />
                 </template>
                 <template #title>{{
-                  toolDisplayLabel(row.tool.name, skillToolLabels)
+                  row.tool.status === "running" &&
+                  (row.tool.progressTitle ?? "").trim()
+                    ? row.tool.progressTitle
+                    : toolDisplayLabel(row.tool.name, skillToolLabels)
                 }}</template>
                 <AiToolFoldBody :tool="row.tool" />
               </AiAssistantDetailsFold>
@@ -174,8 +214,24 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
   font-size: 12px;
   padding: 8px;
   border-radius: 6px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.aiIndexBanner {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--fg);
+}
+
+.aiInfoBanner {
+  font-size: 12px;
+  padding: 8px;
+  border-radius: 6px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  color: var(--info);
 }
 
 .aiIndexErr {

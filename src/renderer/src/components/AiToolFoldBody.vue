@@ -106,4 +106,9 @@ const rendered = computed(() => toolFoldBodyRendered(props.tool));
 .aiFoldBody--json :deep(.aiJsonKw) {
   color: color-mix(in srgb, #a855f7 48%, var(--fg));
 }
+
+.aiFoldBody :deep(.aiDigestProgressFrac) {
+  color: var(--warning);
+  font-weight: 700;
+}
 </style>

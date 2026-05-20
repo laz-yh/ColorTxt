@@ -5,6 +5,8 @@ export type ToolFoldBodySource = {
   preview: string;
   /** 工具入参摘要（多为单行 JSON），展示在折叠正文「请求」区 */
   argsPreview?: string;
+  status?: "running" | "done" | "error";
+  progressMessage?: string;
 };
 
 function escapeHtml(s: string): string {
@@ -130,11 +132,30 @@ export function toolFoldArgsRendered(
   return toolBodyDisplayHtml(raw);
 }
 
+/** 章节压缩进度：「当前进度：M/N」中的 M/N 用 warning 色加粗 */
+function renderToolProgressHtml(progress: string): string {
+  const lines = progress.split("\n");
+  const htmlLines = lines.map((line) => {
+    const m = /^当前进度：(\d+)\/(\d+)\s*$/.exec(line);
+    if (m) {
+      return `当前进度：<span class="aiDigestProgressFrac">${escapeHtml(m[1]!)}/${escapeHtml(m[2]!)}</span>`;
+    }
+    return escapeHtml(line);
+  });
+  return htmlLines.join("\n");
+}
+
 export function toolFoldBodyRendered(tool: ToolFoldBodySource): {
   html: string;
   isJson: boolean;
 } {
   const raw = tool.full.trim() || tool.preview.trim();
-  if (!raw) return { html: escapeHtml("（执行中…）"), isJson: false };
+  if (!raw) {
+    const progress = (tool.progressMessage ?? "").trim();
+    if (tool.status === "running" && progress) {
+      return { html: renderToolProgressHtml(progress), isJson: false };
+    }
+    return { html: escapeHtml("（执行中…）"), isJson: false };
+  }
   return toolBodyDisplayHtml(raw);
 }

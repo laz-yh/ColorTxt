@@ -13,26 +13,22 @@ export type ReaderLinesSource = {
 };
 
 /**
- * 当前阅读位置所在章节全文（从章节标题行到下一章标题行前一行）。
- * `activeChapterIdx < 0` 时用 `getProbeLine()` 推断章节。
+ * 指定章节全文（从章节标题行到下一章标题行前一行），与向量索引所用展示正文一致。
  */
-export function getCurrentChapterPlainText(
+export function getChapterPlainTextByIndex(
   reader: ReaderLinesSource | null | undefined,
   chapters: readonly Chapter[],
-  activeChapterIdx: number,
-  maxChars = 80_000,
+  chapterIndex: number,
+  maxChars = HARD_CAP,
 ): string {
   if (!reader || chapters.length === 0) return "";
-  let idx = activeChapterIdx;
-  if (idx < 0) {
-    const probe = Math.max(1, Math.floor(reader.getProbeLine?.() ?? 1));
-    idx = pickActiveChapterIdx(chapters, probe);
-  }
-  if (idx < 0) return "";
-  const startLine = chapters[idx]!.lineNumber;
+  if (chapterIndex < 0 || chapterIndex >= chapters.length) return "";
+  const startLine = chapters[chapterIndex]!.lineNumber;
   const lc = reader.getModelLineCount();
   const endExclusive =
-    idx + 1 < chapters.length ? chapters[idx + 1]!.lineNumber : lc + 1;
+    chapterIndex + 1 < chapters.length
+      ? chapters[chapterIndex + 1]!.lineNumber
+      : lc + 1;
   const cap = Math.min(Math.max(2048, maxChars), HARD_CAP);
   const parts: string[] = [];
   let total = 0;
@@ -52,7 +48,27 @@ export function getCurrentChapterPlainText(
 
   const full = reader.getAllText?.();
   if (!full) return "";
-  return sliceChapterFromFullText(full, chapters, idx, cap);
+  return sliceChapterFromFullText(full, chapters, chapterIndex, cap);
+}
+
+/**
+ * 当前阅读位置所在章节全文（从章节标题行到下一章标题行前一行）。
+ * `activeChapterIdx < 0` 时用 `getProbeLine()` 推断章节。
+ */
+export function getCurrentChapterPlainText(
+  reader: ReaderLinesSource | null | undefined,
+  chapters: readonly Chapter[],
+  activeChapterIdx: number,
+  maxChars = 80_000,
+): string {
+  if (!reader || chapters.length === 0) return "";
+  let idx = activeChapterIdx;
+  if (idx < 0) {
+    const probe = Math.max(1, Math.floor(reader.getProbeLine?.() ?? 1));
+    idx = pickActiveChapterIdx(chapters, probe);
+  }
+  if (idx < 0) return "";
+  return getChapterPlainTextByIndex(reader, chapters, idx, maxChars);
 }
 
 /**

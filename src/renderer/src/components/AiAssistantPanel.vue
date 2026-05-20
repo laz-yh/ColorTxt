@@ -28,6 +28,10 @@ import {
 import { dirnameFs, joinFs } from "../ebook/pathUtils";
 import AiAssistantChatMessages from "./AiAssistantChatMessages.vue";
 import { rowsToUiMessages } from "../aiAssistant/aiAssistantDbMessages";
+import type {
+  UiTokenEstimateMsg,
+  UiTokenUsageMsg,
+} from "../aiAssistant/aiAssistantTypes";
 import {
   buildChatExportDefaultName,
   buildAssistantChatExportJson,
@@ -49,6 +53,7 @@ import {
 import type {
   AiHistoryThreadGroup,
   AiThreadListRow,
+  UiAssistantMsg,
   UiMsg,
 } from "../aiAssistant/aiAssistantTypes";
 import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
@@ -762,6 +767,83 @@ watch(
   },
 );
 
+function insertTokenEstimate(ev: {
+  requestId: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  ragEnabled: boolean;
+}) {
+  if (
+    messages.value.some(
+      (m) => m.role === "tokenEstimate" && m.requestId === ev.requestId,
+    )
+  ) {
+    return;
+  }
+  const aiIdx = messages.value.findIndex(
+    (m) => m.role === "assistant" && m.agentLive,
+  );
+  if (aiIdx < 0) return;
+  const row: UiTokenEstimateMsg = {
+    id: `tok_est_${ev.requestId}`,
+    role: "tokenEstimate",
+    requestId: ev.requestId,
+    promptTokens: ev.promptTokens,
+    completionTokens: ev.completionTokens,
+    totalTokens: ev.totalTokens,
+    ragEnabled: ev.ragEnabled,
+  };
+  messages.value.splice(aiIdx, 0, row);
+}
+
+function finalizeTokenUsage(ev: {
+  requestId: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  available: boolean;
+}) {
+  messages.value = messages.value.filter(
+    (m) =>
+      !(
+        (m.role === "tokenEstimate" || m.role === "tokenUsage") &&
+        m.requestId === ev.requestId
+      ),
+  );
+  let aiIdx = -1;
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i]?.role === "assistant") {
+      aiIdx = i;
+      break;
+    }
+  }
+  if (aiIdx < 0) return;
+  const row: UiTokenUsageMsg = {
+    id: `tok_use_${ev.requestId}`,
+    role: "tokenUsage",
+    requestId: ev.requestId,
+    promptTokens: ev.promptTokens,
+    completionTokens: ev.completionTokens,
+    totalTokens: ev.totalTokens,
+    available: ev.available,
+  };
+  messages.value.splice(aiIdx + 1, 0, row);
+}
+
+/** token 横幅插在助手气泡之后时，列表末尾不再是 assistant；须按 agentLive/末条助手定位 */
+function findLiveAgentAssistant(): UiAssistantMsg | undefined {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i];
+    if (m?.role === "assistant" && m.agentLive) return m;
+  }
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i];
+    if (m?.role === "assistant") return m;
+  }
+  return undefined;
+}
+
 onMounted(() => {
   document.addEventListener("pointerdown", onHistoryDocPointerDown);
   document.addEventListener("keydown", onHistoryDocKeydown, true);
@@ -769,19 +851,35 @@ onMounted(() => {
   void nextTick(() => autosizeComposerInput());
   offAgent = window.colorTxt.ai.onAgentEvent((ev: AIAgentRendererEvent) => {
     if (ev.requestId !== activeRequestId.value) return;
-    const last = messages.value[messages.value.length - 1];
-    if (!last || last.role !== "assistant") return;
+
+    if (ev.type === "token_usage_estimate") {
+      insertTokenEstimate(ev);
+      void nextTick(() => maybeScrollListToBottom());
+      return;
+    }
+    if (ev.type === "token_usage_final") {
+      finalizeTokenUsage(ev);
+      void nextTick(() => maybeScrollListToBottom());
+      return;
+    }
+
+    const liveAssistant = findLiveAgentAssistant();
 
     switch (ev.type) {
       case "reasoning_delta":
-        appendReasoningDelta(last, ev.delta);
+        if (!liveAssistant) return;
+        appendReasoningDelta(liveAssistant, ev.delta);
         break;
       case "content_delta":
-        last.answer += ev.delta;
+        if (!liveAssistant) return;
+        /** 开始输出正文时封存思考块，避免无 tool 轮次结束后仍显示「正在思考…」 */
+        sealLiveThinkingBeforeTool(liveAssistant);
+        liveAssistant.answer += ev.delta;
         break;
       case "tool_executing":
-        sealLiveThinkingBeforeTool(last);
-        last.tools.push({
+        if (!liveAssistant) return;
+        sealLiveThinkingBeforeTool(liveAssistant);
+        liveAssistant.tools.push({
           id: `live_${ev.toolCallId}_${Date.now()}`,
           toolCallId: ev.toolCallId,
           name: ev.name,
@@ -790,11 +888,23 @@ onMounted(() => {
           preview: "",
           full: "",
           open: false,
+          progressTitle: "",
+          progressMessage: "",
         });
-        last.segments.push({ kind: "toolRef", toolCallId: ev.toolCallId });
+        liveAssistant.segments.push({ kind: "toolRef", toolCallId: ev.toolCallId });
         break;
+      case "tool_progress": {
+        if (!liveAssistant) return;
+        const t = liveAssistant.tools.find((x) => x.toolCallId === ev.toolCallId);
+        if (t) {
+          t.progressTitle = ev.title;
+          t.progressMessage = ev.detail;
+        }
+        break;
+      }
       case "tool_result": {
-        const t = last.tools.find((x) => x.toolCallId === ev.toolCallId);
+        if (!liveAssistant) return;
+        const t = liveAssistant.tools.find((x) => x.toolCallId === ev.toolCallId);
         if (t) {
           t.status = ev.ok ? "done" : "error";
           t.preview = ev.preview;
@@ -803,31 +913,36 @@ onMounted(() => {
         break;
       }
       case "round_end":
+        if (!liveAssistant) return;
         /** 多轮 tool 之间模型常在 assistant.content 里重复输出草稿；清空以免叠在同一条气泡里 */
-        last.answer = "";
+        liveAssistant.answer = "";
         break;
       case "done":
         streaming.value = false;
         chatAwaitingReply.value = false;
         currentTurnAbort.value = null;
-        last.agentLive = false;
         awaitingAgentDone.value = false;
+        if (liveAssistant) {
+          liveAssistant.agentLive = false;
+          finalizeLiveThinkingAfterStop(liveAssistant);
+        }
         if (agentUserAbort.value) {
           agentUserAbort.value = false;
-          finalizeLiveThinkingAfterStop(last);
-          void (async () => {
-            const tid = threadId.value;
-            if (!tid || last.role !== "assistant") return;
-            const aid = await window.colorTxt.ai.messageAppend(
-              tid,
-              "assistant",
-              assistantPlainText(last),
-              true,
-            );
-            last.id = aid;
-            last.createdAt = Date.now();
-            await maybeRenameThreadFromFirstExchange(tid);
-          })();
+          if (liveAssistant) {
+            void (async () => {
+              const tid = threadId.value;
+              if (!tid) return;
+              const aid = await window.colorTxt.ai.messageAppend(
+                tid,
+                "assistant",
+                assistantPlainText(liveAssistant),
+                true,
+              );
+              liveAssistant.id = aid;
+              liveAssistant.createdAt = Date.now();
+              await maybeRenameThreadFromFirstExchange(tid);
+            })();
+          }
           break;
         }
         void (async () => {
@@ -842,14 +957,16 @@ onMounted(() => {
         streaming.value = false;
         chatAwaitingReply.value = false;
         currentTurnAbort.value = null;
-        last.agentLive = false;
         awaitingAgentDone.value = false;
         agentUserAbort.value = false;
-        finalizeLiveThinkingAfterStop(last);
-        if (last.answer.trim()) last.errorDetail = ev.message;
-        else {
-          last.answer = ev.message;
-          last.error = true;
+        if (liveAssistant) {
+          liveAssistant.agentLive = false;
+          finalizeLiveThinkingAfterStop(liveAssistant);
+          if (liveAssistant.answer.trim()) liveAssistant.errorDetail = ev.message;
+          else {
+            liveAssistant.answer = ev.message;
+            liveAssistant.error = true;
+          }
         }
         break;
       default:

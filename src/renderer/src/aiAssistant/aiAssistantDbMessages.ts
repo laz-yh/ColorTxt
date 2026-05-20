@@ -1,4 +1,5 @@
 import type { AIChatToolCall } from "@shared/aiTypes";
+import type { AITokenUsageTotals } from "@shared/aiTokenUsage";
 import type {
   DbMsgRow,
   UiAssistantSegment,
@@ -70,6 +71,56 @@ function parsePayloadReasoning(payload: string | null | undefined): string {
   } catch {
     return "";
   }
+}
+
+function parsePayloadTokenUsage(payload: string | null | undefined): {
+  usage: AITokenUsageTotals | null;
+  available: boolean;
+} {
+  if (!payload?.trim()) return { usage: null, available: false };
+  try {
+    const o = JSON.parse(payload) as {
+      tokenUsage?: AITokenUsageTotals;
+      tokenUsageAvailable?: boolean;
+    };
+    const u = o.tokenUsage;
+    if (
+      !u ||
+      typeof u.promptTokens !== "number" ||
+      typeof u.completionTokens !== "number" ||
+      typeof u.totalTokens !== "number"
+    ) {
+      return { usage: null, available: false };
+    }
+    return {
+      usage: {
+        promptTokens: u.promptTokens,
+        completionTokens: u.completionTokens,
+        totalTokens: u.totalTokens,
+      },
+      available: o.tokenUsageAvailable === true,
+    };
+  } catch {
+    return { usage: null, available: false };
+  }
+}
+
+function pushTokenUsageBannerAfterAssistant(
+  out: UiMsg[],
+  assistantRowId: string,
+  payload: string | null | undefined,
+): void {
+  const { usage, available } = parsePayloadTokenUsage(payload);
+  if (!usage || usage.totalTokens <= 0) return;
+  out.push({
+    id: `tok_use_${assistantRowId}`,
+    role: "tokenUsage",
+    requestId: 0,
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    totalTokens: usage.totalTokens,
+    available,
+  });
 }
 
 /** 旧版持久化把「用户取消了生成」拼进正文；界面另有 aborted 横幅，加载时去掉尾缀以免重复 */
@@ -239,6 +290,7 @@ export function rowsToUiMessages(rows: DbMsgRow[]): UiMsg[] {
               createdAt: row.createdAt,
               aborted: mergedAborted,
             });
+            pushTokenUsageBannerAfterAssistant(out, row.id, row.payload);
             i = j + 1;
             mergedFinal = true;
             break;
@@ -263,6 +315,7 @@ export function rowsToUiMessages(rows: DbMsgRow[]): UiMsg[] {
             createdAt: r.createdAt,
             aborted: r.aborted,
           });
+          pushTokenUsageBannerAfterAssistant(out, r.id, r.payload);
           i = j;
         }
         continue;
@@ -299,6 +352,7 @@ export function rowsToUiMessages(rows: DbMsgRow[]): UiMsg[] {
         createdAt: r.createdAt,
         aborted: r.aborted,
       });
+      pushTokenUsageBannerAfterAssistant(out, r.id, r.payload);
       i++;
       continue;
     }

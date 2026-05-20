@@ -637,6 +637,28 @@ const api = {
       return () => ipcRenderer.off("ai:agent:event", fn);
     },
   },
+  /** 主进程 ragContext 向阅读器索取章节原文 */
+  onChapterPlainRequest: (
+    cb: (payload: {
+      replyChannel: string;
+      chapterIndex: number;
+      maxChars: number;
+    }) => void,
+  ) => {
+    const fn = (
+      _: unknown,
+      payload: {
+        replyChannel: string;
+        chapterIndex: number;
+        maxChars: number;
+      },
+    ) => cb(payload);
+    ipcRenderer.on("ai:chapter-plain-request", fn);
+    return () => ipcRenderer.off("ai:chapter-plain-request", fn);
+  },
+  replyChapterPlainText: (replyChannel: string, text: string) => {
+    ipcRenderer.send(replyChannel, text);
+  },
 };
 
 contextBridge.exposeInMainWorld("colorTxt", api);

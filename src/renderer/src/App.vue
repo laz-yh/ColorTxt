@@ -48,6 +48,7 @@ import { useAppReaderUiPrefs } from "./composables/useAppReaderUiPrefs";
 import { useAppShellThemeWatch } from "./composables/useAppShellThemeWatch";
 import { useAppSyncCurrentFileWatch } from "./composables/useAppSyncCurrentFileWatch";
 import { useAppWindowBindings } from "./composables/useAppWindowBindings";
+import { useAiChapterPlainTextBridge } from "./composables/useAiChapterPlainTextBridge";
 import { isMarkdownFilePath } from "./ebook/ebookFormat";
 import { useAppVoiceRead } from "./composables/useAppVoiceRead";
 import { useTxtStreamPipeline } from "./composables/useTxtStreamPipeline";
@@ -247,6 +248,8 @@ const totalLineCount = ref(0);
 
 const chapters = ref<Chapter[]>([]);
 const activeChapterIdx = ref<number>(-1);
+
+useAiChapterPlainTextBridge(readerRef, chapters);
 const showChapterCounts = ref(defaultShowChapterCounts);
 /** AI 阅读助手工具栏：深度思考 / 防剧透（持久化至 colorTxt.ui.settings） */
 const aiAssistantDeepThinking = ref(false);

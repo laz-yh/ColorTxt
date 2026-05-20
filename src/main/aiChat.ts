@@ -7,6 +7,10 @@ import type {
   AIChatEndpoint,
   AIChatStreamPayload,
 } from "@shared/aiTypes";
+import {
+  extractUsageFromChatJson,
+  type AITokenUsageTotals,
+} from "@shared/aiTokenUsage";
 
 function normalizeBase(u: string): string {
   return u.replace(/\/+$/, "");
@@ -270,6 +274,11 @@ function extractNonStreamAssistantContent(json: unknown): string {
   return "";
 }
 
+export type ChatCompletionOnceResult = {
+  text: string;
+  usage: AITokenUsageTotals | null;
+};
+
 /** 单次非流式 chat/completions（摘录 JSON、测试等） */
 export async function chatCompletionOnce(opts: {
   chat: AIChatEndpoint;
@@ -277,7 +286,7 @@ export async function chatCompletionOnce(opts: {
   maxTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
-}): Promise<string> {
+}): Promise<ChatCompletionOnceResult> {
   const url = `${normalizeBase(opts.chat.baseUrl)}/chat/completions`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -327,7 +336,7 @@ export async function chatCompletionOnce(opts: {
 
   const text = extractNonStreamAssistantContent(parsed).trim();
   if (!text) throw new Error("模型未返回正文");
-  return text;
+  return { text, usage: extractUsageFromChatJson(parsed) };
 }
 
 export async function streamChatCompletion(opts: {
