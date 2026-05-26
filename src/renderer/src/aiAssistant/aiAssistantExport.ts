@@ -70,7 +70,6 @@ export function buildAssistantChatExportMarkdown(
   for (const m of messages) {
     if (
       m.role === "indexBanner" ||
-      m.role === "tokenEstimate" ||
       m.role === "tokenUsage"
     ) {
       continue;
@@ -141,7 +140,6 @@ export function buildAssistantChatExportJson(
       .filter(
         (m) =>
           m.role !== "indexBanner" &&
-          m.role !== "tokenEstimate" &&
           m.role !== "tokenUsage",
       )
       .map((m) => {

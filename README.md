@@ -80,7 +80,45 @@
 
 ### 关于「AI」功能
 
-只测试了本地 LM Studio + WebUI，未对云端服务进行测试。
+**对话模型**：用于「AI 阅读助手」对话，以及「角色卡」整理检索结果、推断画风；
+
+**向量模型**：用于全文检索（RAG），支持 **内置本地模型** 和 **远程嵌入 API**。
+
+远程接口目前只支持 OpenAI 规范，以下为预设的服务商列表：
+
+| 服务商                       | 默认接口地址                                              |
+| ---------------------------- | --------------------------------------------------------- |
+| 本地 LM Studio               | `http://127.0.0.1:1234/v1`                                |
+| 本地 Ollama（OpenAI 兼容）   | `http://127.0.0.1:11434/v1`                               |
+| DeepSeek                     | `https://api.deepseek.com/v1`                             |
+| 阿里云通义（DashScope）      | `https://dashscope.aliyuncs.com/compatible-mode/v1`       |
+| 智谱 GLM                     | `https://open.bigmodel.cn/api/paas/v4`                    |
+| Moonshot（Kimi）             | `https://api.moonshot.cn/v1`                              |
+| 硅基流动                     | `https://api.siliconflow.cn/v1`                           |
+| OpenAI                       | `https://api.openai.com/v1`                               |
+| OpenRouter                   | `https://openrouter.ai/api/v1`                            |
+| Google Gemini（OpenAI 兼容） | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| _自定义 OpenAI 兼容服务_     | _（手动输入接口地址）_                                    |
+
+OpenAI 接口拼接方式：
+
+- 拉取模型列表：`GET {接口地址}/models`
+- 对话：`POST {接口地址}/chat/completions`
+- 调用嵌入模型：`POST {接口地址}/embeddings`
+
+**内置本地模型**：下载模型到本地运行，无需 API（模型文件没有打包，需要在「设置」中手动下载）：
+
+| 内置模型                                       | 说明                                |
+| ---------------------------------------------- | ----------------------------------- |
+| BGE Small ZH v1.5 _（~47 MB，维度：512）_      | 高质量中文嵌入                      |
+| Multilingual E5 Small _（~118 MB，维度：384）_ | 多语言支持（100+ 语言），综合性能好 |
+
+**文生图**：用于「角色卡」生成角色立绘，目前只支持本地 WebUI/ComfyUI 或兼容接口：
+
+| 接口类型                       | 默认接口地址            |
+| ------------------------------ | ----------------------- |
+| AUTOMATIC1111 WebUI（txt2img） | `http://127.0.0.1:7860` |
+| ComfyUI（HTTP 队列）           | `http://127.0.0.1:8188` |
 
 ## 预设字体
 
@@ -96,13 +134,10 @@
 - 名称中的「**-简**」表示对应 **简体中文（SC）** 字体族，与 macOS 字体册中常见命名一致；并非「只能显示简体字」，而是字形与排版习惯面向简体场景。
 - **Linux** 环境需自行安装常见中文字体包（如 Noto CJK、文泉驿、文鼎 UKai 等），否则可能回退到系统默认字体。
 
-## 开发
+## 其他
 
-见 [开发文档](./DOCS.md)
-
-## 更新日志
-
-见 [更新日志](./CHANGELOG.md)
+- [开发文档](./DOCS.md)
+- [更新日志](./CHANGELOG.md)
 
 ## 相关
 

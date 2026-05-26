@@ -42,6 +42,7 @@ import {
   validateGlobalShortcut,
 } from "./globalShortcuts";
 import { registerAiIpcHandlers } from "./registerAiIpc";
+import { registerSecretsIpcHandlers } from "./registerSecretsIpc";
 import {
   copyImageToAbsolutePath,
   migrateCharacterPortraitCacheRoot,
@@ -868,4 +869,5 @@ export function registerMainIpcHandlers(
   );
 
   registerAiIpcHandlers();
+  registerSecretsIpcHandlers();
 }

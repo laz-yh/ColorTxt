@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, toRaw, useTemplateRef, watch } from "vue";
 import type { AIConfig } from "@shared/aiTypes";
-import { defaultAIConfig } from "@shared/aiTypes";
+import {
+  defaultAIConfig,
+  EMPTY_TOKEN_PRICE_PER_MILLION,
+  normalizeTokenPricePerMillion,
+} from "@shared/aiTypes";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import {
   mergeAiCustomSkills,
@@ -39,10 +43,15 @@ import {
   APP_DISPLAY_NAME,
 } from "../constants/appUi";
 import { appAlert } from "../services/appDialog";
+import { getBuiltinEmbeddingBlockMessage } from "../ai/embeddingReady";
 import { icons } from "../icons";
 import {
   resolveDefaultCharacterPortraitCacheDirSync,
+  resolveDefaultAiDataCacheDirSync,
+  resolveDefaultBuiltinModelCacheDirSync,
   resolveDefaultEbookConvertOutputDirSync,
+  resolveEffectiveAiDataCacheDir,
+  resolveEffectiveBuiltinModelCacheDir,
 } from "../utils/defaultCacheDirs";
 import type { VoiceReadSettings } from "../constants/voiceRead";
 import {
@@ -136,6 +145,8 @@ const draftCharacterPortraitCacheDir = ref("");
 const draftAi = ref<AIConfig>(structuredClone(defaultAIConfig));
 const showAiExtensionTabs = computed(() => draftAi.value.aiEnabled);
 const loadedAiDimension = ref(1536);
+const loadedAiDataCacheDir = ref("");
+const loadedBuiltinModelCacheDir = ref("");
 const draftAiSkillsEnabled = ref<Record<string, boolean>>(
   mergeAiSkillsEnabled(undefined, []),
 );
@@ -180,10 +191,23 @@ async function syncAiFromMain() {
   try {
     const c = await window.colorTxt.ai.configGet();
     draftAi.value = structuredClone(c);
+    draftAi.value.chat.tokenPricePerMillion = normalizeTokenPricePerMillion(
+      draftAi.value.chat.tokenPricePerMillion,
+    );
     loadedAiDimension.value = c.embedding.dimension;
+    loadedAiDataCacheDir.value = await resolveEffectiveAiDataCacheDir(
+      c.aiDataCacheDir,
+    );
+    loadedBuiltinModelCacheDir.value =
+      await resolveEffectiveBuiltinModelCacheDir(
+        c.embedding.builtinModelCacheDir,
+      );
   } catch {
     draftAi.value = structuredClone(defaultAIConfig);
     loadedAiDimension.value = defaultAIConfig.embedding.dimension;
+    loadedAiDataCacheDir.value = await resolveEffectiveAiDataCacheDir("");
+    loadedBuiltinModelCacheDir.value =
+      await resolveEffectiveBuiltinModelCacheDir("");
   }
 }
 
@@ -252,11 +276,15 @@ function resetEditDraft() {
 
 function resetAiDraft() {
   const def = defaultAIConfig;
+  const chat = structuredClone(def.chat);
+  chat.tokenPricePerMillion = { ...EMPTY_TOKEN_PRICE_PER_MILLION };
   draftAi.value = {
     ...draftAi.value,
     aiEnabled: def.aiEnabled,
-    chat: structuredClone(def.chat),
+    aiDataCacheDir: resolveDefaultAiDataCacheDirSync(),
+    chat,
     quickQuestions: structuredClone(def.quickQuestions),
+    showTokenUsage: def.showTokenUsage,
   };
 }
 
@@ -265,7 +293,10 @@ function resetVectorModelDraft() {
   draftAi.value = {
     ...draftAi.value,
     embeddingEnabled: def.embeddingEnabled,
-    embedding: structuredClone(def.embedding),
+    embedding: {
+      ...structuredClone(def.embedding),
+      builtinModelCacheDir: resolveDefaultBuiltinModelCacheDirSync(),
+    },
     ragTopK: def.ragTopK,
   };
 }
@@ -307,8 +338,15 @@ function onCancel() {
 }
 
 async function onConfirm() {
+  if (!window.colorTxt) return;
+
+  const builtinEmbedBlock = await getBuiltinEmbeddingBlockMessage(draftAi.value);
+  if (builtinEmbedBlock) {
+    await appAlert(builtinEmbedBlock);
+    return;
+  }
+
   if (draftAi.value.embedding.dimension !== loadedAiDimension.value) {
-    if (!window.colorTxt) return;
     const r = await window.colorTxt.showMessageBox({
       type: "warning",
       title: APP_DISPLAY_NAME,
@@ -320,6 +358,69 @@ async function onConfirm() {
       noLink: true,
     });
     if (r.response !== 1) return;
+  }
+
+  const nextDataCacheDir = await resolveEffectiveAiDataCacheDir(
+    draftAi.value.aiDataCacheDir,
+  );
+  const prevDataCacheDir = loadedAiDataCacheDir.value.trim();
+  if (
+    prevDataCacheDir &&
+    nextDataCacheDir &&
+    prevDataCacheDir !== nextDataCacheDir
+  ) {
+    const r = await window.colorTxt.showMessageBox({
+      type: "warning",
+      title: APP_DISPLAY_NAME,
+      buttons: ["取消", "继续迁移并保存"],
+      defaultId: 1,
+      cancelId: 0,
+      message:
+        "AI 数据缓存目录已变更，保存后将迁移 AI 配置（含 API 密钥）与向量库/对话记录。",
+      detail: `从：${prevDataCacheDir}\n到：${nextDataCacheDir}`,
+      noLink: true,
+    });
+    if (r.response !== 1) return;
+    const mig = await window.colorTxt.ai.migrateDataCacheRoot({
+      from: prevDataCacheDir,
+      to: nextDataCacheDir,
+    });
+    if (!mig.ok) {
+      await appAlert(mig.error ?? "迁移 AI 数据缓存失败，已保留原目录。");
+      return;
+    }
+  }
+
+  if (draftAi.value.embedding.provider === "builtin") {
+    const nextModelCacheDir = await resolveEffectiveBuiltinModelCacheDir(
+      draftAi.value.embedding.builtinModelCacheDir,
+    );
+    const prevModelCacheDir = loadedBuiltinModelCacheDir.value.trim();
+    if (
+      prevModelCacheDir &&
+      nextModelCacheDir &&
+      prevModelCacheDir !== nextModelCacheDir
+    ) {
+      const r = await window.colorTxt.showMessageBox({
+        type: "warning",
+        title: APP_DISPLAY_NAME,
+        buttons: ["取消", "继续迁移并保存"],
+        defaultId: 1,
+        cancelId: 0,
+        message: "模型缓存目录已变更，保存后将迁移已下载/放置的内置模型文件。",
+        detail: `从：${prevModelCacheDir}\n到：${nextModelCacheDir}`,
+        noLink: true,
+      });
+      if (r.response !== 1) return;
+      const mig = await window.colorTxt.ai.migrateBuiltinModelCacheRoot({
+        from: prevModelCacheDir,
+        to: nextModelCacheDir,
+      });
+      if (!mig.ok) {
+        await appAlert(mig.error ?? "迁移模型缓存失败，已保留原目录。");
+        return;
+      }
+    }
   }
 
   if (voiceReadDashScopeRequiresApiKey(draftVoiceRead.value)) {
@@ -336,6 +437,13 @@ async function onConfirm() {
     return;
   }
   loadedAiDimension.value = draftAi.value.embedding.dimension;
+  loadedAiDataCacheDir.value = nextDataCacheDir;
+  if (draftAi.value.embedding.provider === "builtin") {
+    loadedBuiltinModelCacheDir.value =
+      await resolveEffectiveBuiltinModelCacheDir(
+        draftAi.value.embedding.builtinModelCacheDir,
+      );
+  }
 
   emit("apply", {
     restoreSessionOnStartup: draftRestore.value,

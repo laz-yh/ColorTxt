@@ -654,6 +654,15 @@ const triggerMainText = computed(() => {
   box-sizing: border-box;
   line-height: 1.2;
 }
+.customSelectPanel :deep(.appShellMenuItemRowBody) {
+  align-items: flex-start;
+}
+.customSelectPanel :deep(.appShellMenuItemLabelText) {
+  white-space: normal;
+  word-break: break-all;
+  overflow: visible;
+  text-overflow: clip;
+}
 .customSelectPanel :deep(.appShellMenuItem--stacked) {
   min-height: 0;
 }

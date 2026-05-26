@@ -1,5 +1,6 @@
 import type { Chapter } from "../chapter";
 import { chunkNovelForAi } from "../utils/aiChunkBook";
+import { getBuiltinEmbeddingBlockMessage } from "./embeddingReady";
 
 /** 与 AI 阅读助手 / 角色侧栏历史实现一致 */
 export const AI_BOOK_VECTOR_INDEX_EMBED_BATCH = 20;
@@ -61,6 +62,12 @@ export async function runAiBookVectorIndexBuild(params: {
 
   hooks.clearError();
   const cfg = await window.colorTxt.ai.configGet();
+  const blockMsg = await getBuiltinEmbeddingBlockMessage(cfg);
+  if (blockMsg) {
+    hooks.setPhaseError();
+    hooks.setError(blockMsg);
+    return false;
+  }
   hooks.onPhase("chunking");
   const drafts = chunkNovelForAi({
     fullText,

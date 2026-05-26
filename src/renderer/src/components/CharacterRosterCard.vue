@@ -38,16 +38,23 @@ function backScrollWheelDeltaY(ev: WheelEvent): number {
 function onBackScrollWheel(ev: WheelEvent) {
   const el = backScrollEl.value;
   if (!el || !el.contains(ev.target as Node)) return;
-  const maxScroll = el.scrollHeight - el.clientHeight;
-  if (maxScroll <= 0) return;
   const dy = backScrollWheelDeltaY(ev);
-  const next = Math.min(maxScroll, Math.max(0, el.scrollTop + dy));
-  if (
-    next === el.scrollTop &&
-    (dy > 0 ? el.scrollTop >= maxScroll - 0.5 : el.scrollTop <= 0)
-  ) {
+  const maxScroll = el.scrollHeight - el.clientHeight;
+  if (maxScroll <= 0) {
+    if (dy !== 0) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
     return;
   }
+  const atTop = el.scrollTop <= 0.5;
+  const atBottom = el.scrollTop >= maxScroll - 0.5;
+  if ((dy > 0 && atBottom) || (dy < 0 && atTop)) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+  const next = Math.min(maxScroll, Math.max(0, el.scrollTop + dy));
   el.scrollTop = next;
   ev.preventDefault();
   ev.stopPropagation();

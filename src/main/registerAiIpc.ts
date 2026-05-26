@@ -1,4 +1,4 @@
-import { dialog, ipcMain, type FileFilter } from "electron";
+import { app, dialog, ipcMain, type FileFilter } from "electron";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -16,6 +16,38 @@ import {
   saveAiConfig,
 } from "./aiConfig";
 import { embedTexts, probeEmbeddingDimension } from "./aiEmbedding";
+import { fetchOpenAiCompatModelIds } from "./openAiCompatModelList";
+import { normalizeChatPresetBaseUrl } from "@shared/apiEndpointPresets";
+import {
+  migrateAiDataCacheRoot,
+  migrateBuiltinModelCacheRoot,
+  openPathInShell,
+  upgradeLegacyAiDataLayoutIfNeeded,
+} from "./aiDataFs";
+import {
+  getDefaultAiDataCacheDirSync,
+  getDefaultBuiltinModelCacheDirSync,
+} from "./aiConfig";
+import {
+  resolveAiDataCacheRoot,
+  resolveBuiltinModelCacheRoot,
+} from "./aiPaths";
+import {
+  BUILTIN_EMBEDDING_MODELS,
+  getBuiltinEmbeddingModel,
+} from "@shared/builtinEmbeddingModels";
+import {
+  classifyEmbeddingErrorMessage,
+  userFacingEmbeddingError,
+} from "@shared/aiEmbeddingErrors";
+import {
+  clearBuiltinModelCache,
+  disposeLocalEmbeddingBackend,
+  getLoadedBuiltinModelId,
+  isBuiltinModelDownloaded,
+  loadBuiltinEmbeddingModel,
+} from "./embedding/localEmbeddingBackend";
+import { reopenAiVectorDb } from "./aiVectorDb";
 import { runAgentChat } from "./aiAgentChat";
 import { abortChatRequest, streamChatCompletion } from "./aiChat";
 import {
@@ -72,6 +104,13 @@ async function cfg(): Promise<AIConfig> {
 
 function normalizeBase(u: string): string {
   return u.replace(/\/+$/, "");
+}
+
+function draftOpenAiCompatBaseUrl(draft: Record<string, unknown>): string | null {
+  const baseUrl =
+    typeof draft.baseUrl === "string" ? draft.baseUrl.trim() : "";
+  const normalized = normalizeChatPresetBaseUrl(baseUrl);
+  return normalized || null;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -251,6 +290,9 @@ function takeEmbedAbortController(requestId: number): AbortController {
 }
 
 export function registerAiIpcHandlers(): void {
+  void upgradeLegacyAiDataLayoutIfNeeded();
+  void loadAiConfig();
+
   ipcMain.handle("ai:config:get", async () => {
     cachedConfig = await loadAiConfig();
     openOrRecreateAiVectorDb(cachedConfig.embedding.dimension);
@@ -267,16 +309,198 @@ export function registerAiIpcHandlers(): void {
       const prev = await loadAiConfig();
       const next = mergeAiConfigWithDefaults(nextRaw);
       const dimChanged = prev.embedding.dimension !== next.embedding.dimension;
+      const dataDirChanged =
+        resolveAiDataCacheRoot(prev) !== resolveAiDataCacheRoot(next);
+      const embeddingRuntimeChanged =
+        prev.embedding.provider !== next.embedding.provider ||
+        prev.embedding.builtinModel !== next.embedding.builtinModel ||
+        prev.embedding.remoteModel !== next.embedding.remoteModel ||
+        prev.embedding.baseUrl !== next.embedding.baseUrl ||
+        prev.embedding.apiKey !== next.embedding.apiKey ||
+        prev.embedding.builtinModelCacheDir !==
+          next.embedding.builtinModelCacheDir ||
+        prev.embedding.hfRemoteHost !== next.embedding.hfRemoteHost;
+      if (embeddingRuntimeChanged) {
+        await disposeLocalEmbeddingBackend();
+      }
       await saveAiConfig(next);
       cachedConfig = next;
       if (dimChanged) {
         resetEmbeddingDimension(next.embedding.dimension);
+      } else if (dataDirChanged) {
+        reopenAiVectorDb(next.embedding.dimension);
       } else {
         openOrRecreateAiVectorDb(next.embedding.dimension);
       }
       return { ok: true };
     },
   );
+
+  ipcMain.handle("ai:paths:defaultDataCacheDir", () =>
+    getDefaultAiDataCacheDirSync(),
+  );
+  ipcMain.handle("ai:paths:defaultModelCacheDir", () =>
+    getDefaultBuiltinModelCacheDirSync(),
+  );
+
+  ipcMain.handle(
+    "ai:migrateDataCacheRoot",
+    async (
+      _evt,
+      payload: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!isRecord(payload)) return { ok: false, error: "无效参数" };
+      const from = typeof payload.from === "string" ? payload.from.trim() : "";
+      const to = typeof payload.to === "string" ? payload.to.trim() : "";
+      if (!from || !to) return { ok: false, error: "缺少 from 或 to" };
+      const r = await migrateAiDataCacheRoot(from, to);
+      if (!r.ok) return r;
+      cachedConfig = await loadAiConfig();
+      reopenAiVectorDb(cachedConfig.embedding.dimension);
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle(
+    "ai:migrateBuiltinModelCacheRoot",
+    async (
+      _evt,
+      payload: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!isRecord(payload)) return { ok: false, error: "无效参数" };
+      const from = typeof payload.from === "string" ? payload.from.trim() : "";
+      const to = typeof payload.to === "string" ? payload.to.trim() : "";
+      if (!from || !to) return { ok: false, error: "缺少 from 或 to" };
+      const r = await migrateBuiltinModelCacheRoot(from, to);
+      if (!r.ok) return r;
+      await disposeLocalEmbeddingBackend();
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle(
+    "ai:paths:openDataCacheDir",
+    async (_evt, dirRaw: unknown) => {
+      const dir =
+        typeof dirRaw === "string" && dirRaw.trim()
+          ? dirRaw.trim()
+          : getDefaultAiDataCacheDirSync();
+      await openPathInShell(dir);
+    },
+  );
+
+  ipcMain.handle(
+    "ai:paths:openModelCacheDir",
+    async (_evt, dirRaw: unknown, cfgRaw: unknown) => {
+      const resolvedCfg = isRecord(cfgRaw)
+        ? mergeAiConfigWithDefaults(cfgRaw)
+        : await cfg();
+      const dir =
+        typeof dirRaw === "string" && dirRaw.trim()
+          ? dirRaw.trim()
+          : resolveBuiltinModelCacheRoot(resolvedCfg);
+      await openPathInShell(dir);
+    },
+  );
+
+  ipcMain.handle("ai:embedding:builtin:list", () => ({
+    ok: true as const,
+    models: BUILTIN_EMBEDDING_MODELS,
+  }));
+
+  ipcMain.handle("ai:embedding:builtin:status", () => ({
+    ok: true as const,
+    loadedModelId: getLoadedBuiltinModelId(),
+    loaded: Boolean(getLoadedBuiltinModelId()),
+  }));
+
+  ipcMain.handle(
+    "ai:embedding:builtin:isCached",
+    async (
+      _evt,
+      draft: unknown,
+    ): Promise<{ ok: true; cached: boolean } | { ok: false; error: string }> => {
+      if (!isRecord(draft)) return { ok: false, error: "无效参数" };
+      const modelId = typeof draft.modelId === "string" ? draft.modelId : "";
+      const cfgDraft = isRecord(draft.config)
+        ? mergeAiConfigWithDefaults(draft.config)
+        : await cfg();
+      if (!modelId.trim()) return { ok: false, error: "缺少 modelId" };
+      try {
+        const cached = await isBuiltinModelDownloaded(cfgDraft, modelId);
+        return { ok: true, cached };
+      } catch (e) {
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "ai:embedding:builtin:load",
+    async (
+      evt,
+      draft: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string; code?: string }> => {
+      if (!isRecord(draft)) return { ok: false, error: "无效参数" };
+      const modelId = typeof draft.modelId === "string" ? draft.modelId : "";
+      const cfgDraft = isRecord(draft.config)
+        ? mergeAiConfigWithDefaults(draft.config)
+        : await cfg();
+      if (!modelId.trim()) return { ok: false, error: "缺少 modelId" };
+      if (cfgDraft.embedding.provider !== "builtin") {
+        return { ok: false, error: "当前未选择内置嵌入" };
+      }
+      try {
+        await loadBuiltinEmbeddingModel(cfgDraft, modelId, (progress) => {
+          evt.sender.send("ai:embedding:loadProgress", {
+            modelId,
+            progress,
+          });
+        });
+        return { ok: true };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const code = classifyEmbeddingErrorMessage(msg);
+        return {
+          ok: false,
+          error: userFacingEmbeddingError(code, msg),
+          code,
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "ai:embedding:builtin:clearCache",
+    async (
+      _evt,
+      draft: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!isRecord(draft)) return { ok: false, error: "无效参数" };
+      const modelId = typeof draft.modelId === "string" ? draft.modelId : "";
+      const cfgDraft = isRecord(draft.config)
+        ? mergeAiConfigWithDefaults(draft.config)
+        : await cfg();
+      if (!modelId.trim()) return { ok: false, error: "缺少 modelId" };
+      try {
+        await clearBuiltinModelCache(cfgDraft, modelId);
+        await disposeLocalEmbeddingBackend();
+        return { ok: true };
+      } catch (e) {
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    },
+  );
+
+  app.on("before-quit", () => {
+    void disposeLocalEmbeddingBackend();
+  });
 
   ipcMain.handle(
     "ai:embedding:embed",
@@ -296,7 +520,7 @@ export function registerAiIpcHandlers(): void {
         reqId !== undefined
           ? takeEmbedAbortController(reqId).signal
           : undefined;
-      return embedTexts(c.embedding, arr, signal);
+      return embedTexts(c.embedding, arr, signal, c);
     },
   );
 
@@ -475,29 +699,20 @@ export function registerAiIpcHandlers(): void {
       { ok: true; models: string[] } | { ok: false; error: string }
     > => {
       if (!isRecord(draft)) return { ok: false, error: "无效参数" };
-      const baseUrl = typeof draft.baseUrl === "string" ? draft.baseUrl : "";
-      const apiKey = typeof draft.apiKey === "string" ? draft.apiKey : "";
-      if (!baseUrl.trim()) return { ok: false, error: "缺少 baseUrl" };
-      try {
-        const url = `${normalizeBase(baseUrl)}/models`;
-        const headers: Record<string, string> = {};
-        if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
-        const res = await fetch(url, { headers });
-        if (!res.ok) {
-          const t = await res.text().catch(() => "");
-          return { ok: false, error: `HTTP ${res.status}: ${t.slice(0, 200)}` };
-        }
-        const json = (await res.json()) as { data?: Array<{ id?: string }> };
-        const models = (json.data ?? [])
-          .map((x) => x.id)
-          .filter((x): x is string => typeof x === "string");
-        return { ok: true, models };
-      } catch (e) {
+      const provider =
+        draft.provider === "builtin" ? "builtin" : ("remote" as const);
+      if (provider === "builtin") {
         return {
-          ok: false,
-          error: e instanceof Error ? e.message : String(e),
+          ok: true,
+          models: BUILTIN_EMBEDDING_MODELS.map((m) => m.id),
         };
       }
+      const apiKey = typeof draft.apiKey === "string" ? draft.apiKey : "";
+      const baseUrl = draftOpenAiCompatBaseUrl(draft);
+      if (!baseUrl) {
+        return { ok: false, error: "缺少接口地址" };
+      }
+      return fetchOpenAiCompatModelIds({ baseUrl, apiKey });
     },
   );
 
@@ -585,23 +800,55 @@ export function registerAiIpcHandlers(): void {
       draft: unknown,
     ): Promise<{ ok: true } | { ok: false; error: string }> => {
       if (!isRecord(draft)) return { ok: false, error: "无效参数" };
-      const baseUrl = typeof draft.baseUrl === "string" ? draft.baseUrl : "";
+      const provider =
+        draft.provider === "builtin" ? "builtin" : ("remote" as const);
       const apiKey = typeof draft.apiKey === "string" ? draft.apiKey : "";
-      const model = typeof draft.model === "string" ? draft.model : "";
+      const legacyModel = typeof draft.model === "string" ? draft.model : "";
+      const builtinModel =
+        typeof draft.builtinModel === "string"
+          ? draft.builtinModel
+          : legacyModel;
+      const remoteModel =
+        typeof draft.remoteModel === "string"
+          ? draft.remoteModel
+          : legacyModel;
       const dimension =
         typeof draft.dimension === "number" ? draft.dimension : 0;
-      if (!baseUrl.trim() || !model.trim() || dimension <= 0)
-        return { ok: false, error: "缺少参数" };
-      try {
-        await embedTexts(
-          {
-            baseUrl,
-            apiKey,
-            model,
-            dimension,
-          },
-          ["ping"],
+      if (provider === "builtin") {
+        if (!builtinModel.trim() || dimension <= 0) {
+          return { ok: false, error: "缺少内置模型或维度" };
+        }
+        const c = mergeAiConfigWithDefaults(
+          isRecord(draft.config) ? draft.config : {},
         );
+        c.embedding.provider = "builtin";
+        c.embedding.builtinModel = builtinModel.trim();
+        c.embedding.dimension = dimension;
+        try {
+          await embedTexts(c.embedding, ["ping"], undefined, c);
+          return { ok: true };
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const code = classifyEmbeddingErrorMessage(msg);
+          return { ok: false, error: userFacingEmbeddingError(code, msg) };
+        }
+      }
+      const baseUrl = draftOpenAiCompatBaseUrl(draft);
+      if (!baseUrl || !remoteModel.trim() || dimension <= 0) {
+        return { ok: false, error: "缺少参数" };
+      }
+      try {
+        const remoteEndpoint: AIConfig["embedding"] = {
+          provider: "remote",
+          baseUrl,
+          apiKey,
+          remoteModel: remoteModel.trim(),
+          builtinModel: "",
+          dimension,
+          hfRemoteHost: "",
+          builtinModelCacheDir: "",
+        };
+        await embedTexts(remoteEndpoint, ["ping"]);
         return { ok: true };
       } catch (e) {
         return {
@@ -621,17 +868,38 @@ export function registerAiIpcHandlers(): void {
       { ok: true; dimension: number } | { ok: false; error: string }
     > => {
       if (!isRecord(draft)) return { ok: false, error: "无效参数" };
-      const baseUrl = typeof draft.baseUrl === "string" ? draft.baseUrl : "";
+      const provider =
+        draft.provider === "builtin" ? "builtin" : ("remote" as const);
       const apiKey = typeof draft.apiKey === "string" ? draft.apiKey : "";
-      const model = typeof draft.model === "string" ? draft.model : "";
-      if (!baseUrl.trim() || !model.trim()) {
-        return { ok: false, error: "需要 Embedding Base URL 与模型" };
+      const legacyModel = typeof draft.model === "string" ? draft.model : "";
+      const builtinModel =
+        typeof draft.builtinModel === "string"
+          ? draft.builtinModel
+          : legacyModel;
+      const remoteModel =
+        typeof draft.remoteModel === "string"
+          ? draft.remoteModel
+          : legacyModel;
+      if (provider === "builtin") {
+        if (!builtinModel.trim()) return { ok: false, error: "需要选择内置模型" };
+        const m = getBuiltinEmbeddingModel(builtinModel.trim());
+        if (!m) return { ok: false, error: "未知内置模型" };
+        return { ok: true, dimension: m.dimension };
+      }
+      if (!remoteModel.trim()) {
+        return { ok: false, error: "需要嵌入模型" };
+      }
+      const baseUrl = draftOpenAiCompatBaseUrl(draft);
+      if (!baseUrl) {
+        return { ok: false, error: "需要接口地址" };
       }
       try {
         const dimension = await probeEmbeddingDimension({
+          provider: "remote",
           baseUrl,
           apiKey,
-          model,
+          remoteModel: remoteModel.trim(),
+          builtinModel: "",
         });
         return { ok: true, dimension };
       } catch (e) {

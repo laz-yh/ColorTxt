@@ -13,6 +13,7 @@ import {
   type VoiceReadEngineId,
   type VoiceReadSettings,
 } from "../constants/voiceRead";
+import { useSecretStorageHint } from "../composables/useSecretStorageHint";
 import {
   VoiceReadLinePlayer,
   type VoiceReadPreviewDownload,
@@ -37,6 +38,8 @@ const draft = computed({
   get: () => props.modelValue,
   set: (v: VoiceReadSettings) => emit("update:modelValue", v),
 });
+
+const { secretStorageHint } = useSecretStorageHint();
 
 const selectListsEmpty: CustomSelectItem[] = [];
 
@@ -307,6 +310,7 @@ const pitchDisabled = computed(
           <a href="#" @click.prevent="openDashScopeApiKeyPage">获取 API 密钥</a
           >，使用 qwen3-tts-flash 模型。
         </p>
+        <p class="settingsHint">{{ secretStorageHint }}</p>
       </div>
 
       <div class="settingsRow">

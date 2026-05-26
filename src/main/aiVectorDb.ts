@@ -1,16 +1,60 @@
 import crypto from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import Database from "better-sqlite3";
-import { app } from "electron";
 import path from "node:path";
 import type { AIChunkRecord, AIIndexSearchHit } from "@shared/aiTypes";
 import { resolveSqliteVecLoadPath } from "./resolveSqliteVecPath";
+import {
+  bootstrapFilePath,
+  defaultAiDataCacheRoot,
+  legacyVectorDbPath,
+} from "./aiPaths";
+import { app } from "electron";
 
 let db: Database.Database | null = null;
 let openedDim = 0;
+let openedDbPath: string | null = null;
+
+function readDataCacheRootBootstrapSync(): string | null {
+  try {
+    const buf = readFileSync(bootstrapFilePath(), "utf-8");
+    const o = JSON.parse(buf) as { dataCacheDir?: string };
+    const p = typeof o.dataCacheDir === "string" ? o.dataCacheDir.trim() : "";
+    return p || null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveVectorDbPathSync(): string {
+  const boot = readDataCacheRootBootstrapSync();
+  if (boot) return path.join(path.resolve(boot), "vector.sqlite");
+  const userData = app.getPath("userData");
+  const legacy = legacyVectorDbPath(userData);
+  if (existsSync(legacy)) return legacy;
+  return path.join(defaultAiDataCacheRoot(userData), "vector.sqlite");
+}
 
 function dbPath(): string {
-  return path.join(app.getPath("userData"), "ai", "vector.sqlite");
+  return openedDbPath ?? resolveVectorDbPathSync();
+}
+
+export function closeAiVectorDb(): void {
+  if (db) {
+    try {
+      db.close();
+    } catch {
+      // ignore
+    }
+    db = null;
+    openedDim = 0;
+    openedDbPath = null;
+  }
+}
+
+export function reopenAiVectorDb(embeddingDim: number): Database.Database {
+  closeAiVectorDb();
+  return openOrRecreateAiVectorDb(embeddingDim);
 }
 
 function migrateMessagesForAgent(database: Database.Database) {
@@ -143,11 +187,13 @@ export function openOrRecreateAiVectorDb(embeddingDim: number): Database.Databas
     }
     db = null;
     openedDim = 0;
+    openedDbPath = null;
   }
 
-  mkdirSync(path.dirname(dbPath()), { recursive: true });
+  const file = dbPath();
+  mkdirSync(path.dirname(file), { recursive: true });
 
-  const database = new Database(dbPath());
+  const database = new Database(file);
   database.pragma("journal_mode = WAL");
   database.pragma("foreign_keys = ON");
 
@@ -159,6 +205,7 @@ export function openOrRecreateAiVectorDb(embeddingDim: number): Database.Databas
 
   db = database;
   openedDim = embeddingDim;
+  openedDbPath = file;
   return database;
 }
 
@@ -177,11 +224,13 @@ export function resetEmbeddingDimension(newDim: number): void {
     }
     db = null;
     openedDim = 0;
+    openedDbPath = null;
   }
 
-  mkdirSync(path.dirname(dbPath()), { recursive: true });
+  const file = dbPath();
+  mkdirSync(path.dirname(file), { recursive: true });
 
-  const database = new Database(dbPath());
+  const database = new Database(file);
   database.pragma("journal_mode = WAL");
   database.pragma("foreign_keys = ON");
 
@@ -194,6 +243,7 @@ export function resetEmbeddingDimension(newDim: number): void {
 
   db = database;
   openedDim = newDim;
+  openedDbPath = file;
 }
 
 export function indexHasBook(bookHash: string): boolean {

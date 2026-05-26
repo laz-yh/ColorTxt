@@ -14,6 +14,11 @@ import { chatCompletionOnce } from "./aiChat";
 import { fetchTxt2ImgImageBuffer } from "./aiTxt2Img";
 import { embedTexts } from "./aiEmbedding";
 import { searchChunks } from "./aiVectorDb";
+import {
+  addTokenUsage,
+  type AITokenUsageTotals,
+  ZERO_TOKEN_USAGE,
+} from "@shared/aiTokenUsage";
 
 /** 与「文生图接口」报错区分，便于侧栏立绘生成排障 */
 const PORTRAIT_TRANSLATE_ERR_PREFIX = "提示词译英（对话模型）";
@@ -59,18 +64,24 @@ function bookStyleSearchQueries(fileTitle: string): string[] {
 
 async function mergedRagHitsForPortrait(opts: {
   bookHash: string;
-  embedding: AIConfig["embedding"];
+  aiConfig: AIConfig;
   queries: string[];
   topKPerQuery: number;
   spoilerMaxChapterIndex: number | null;
 }): Promise<AIIndexSearchHit[]> {
-  const { bookHash, embedding, queries, topKPerQuery, spoilerMaxChapterIndex } =
+  const { bookHash, aiConfig, queries, topKPerQuery, spoilerMaxChapterIndex } =
     opts;
+  const embedding = aiConfig.embedding;
   const k = Math.min(12, Math.max(1, topKPerQuery));
   const bestByChunk = new Map<string, AIIndexSearchHit>();
 
   for (const q of queries) {
-    const vectors = await embedTexts(embedding, [q.trim() || "."]);
+    const vectors = await embedTexts(
+      embedding,
+      [q.trim() || "."],
+      undefined,
+      aiConfig,
+    );
     const vec = vectors[0];
     if (!vec) continue;
     const fetchN =
@@ -251,6 +262,27 @@ function normalizeExtractFromParsed(
   };
 }
 
+function absorbChatUsage(
+  acc: { usage: AITokenUsageTotals; available: boolean },
+  part: AITokenUsageTotals | null | undefined,
+): void {
+  if (!part) return;
+  acc.usage = addTokenUsage(acc.usage, part);
+  acc.available = true;
+}
+
+function attachTokenUsage<T extends PortraitExtractResult | BookStyleInferResult>(
+  result: T,
+  acc: { usage: AITokenUsageTotals; available: boolean },
+): T {
+  if (!acc.available && acc.usage.totalTokens <= 0) return result;
+  return {
+    ...result,
+    tokenUsage: acc.usage,
+    tokenUsageAvailable: acc.available,
+  };
+}
+
 async function callPortraitLlm(opts: {
   chat: AIChatEndpoint;
   characterName: string;
@@ -300,20 +332,23 @@ ${retrievalContext || "（无检索结果）"}
     { role: "user" as const, content: userMain },
   ];
 
-  const { text: raw } = await chatCompletionOnce({
+  const usageAcc = { usage: ZERO_TOKEN_USAGE, available: false };
+
+  const { text: raw, usage: usage1 } = await chatCompletionOnce({
     chat,
     messages,
     maxTokens: Math.min(chat.maxTokens, 4096),
     temperature: Math.min(chat.temperature, 0.6),
     signal,
   });
+  absorbChatUsage(usageAcc, usage1);
 
   const stripped = stripJsonFence(raw);
   let parsed: unknown;
   try {
     parsed = JSON.parse(stripped) as unknown;
   } catch {
-    const { text: raw2 } = await chatCompletionOnce({
+    const { text: raw2, usage: usage2 } = await chatCompletionOnce({
       chat,
       messages: [
         { role: "system", content: system },
@@ -326,14 +361,15 @@ ${retrievalContext || "（无检索结果）"}
       temperature: 0.2,
       signal,
     });
+    absorbChatUsage(usageAcc, usage2);
     const stripped2 = stripJsonFence(raw2);
     try {
       parsed = JSON.parse(stripped2) as unknown;
     } catch {
-      return normalizeExtractFromParsed(null, hits);
+      return attachTokenUsage(normalizeExtractFromParsed(null, hits), usageAcc);
     }
   }
-  return normalizeExtractFromParsed(parsed, hits);
+  return attachTokenUsage(normalizeExtractFromParsed(parsed, hits), usageAcc);
 }
 
 export type PortraitTranslateSdArgs = {
@@ -517,7 +553,9 @@ ${opts.retrievalContext || "（无）"}
 
 请输出 JSON。`;
 
-  const { text: raw } = await chatCompletionOnce({
+  const usageAcc = { usage: ZERO_TOKEN_USAGE, available: false };
+
+  const { text: raw, usage: usage1 } = await chatCompletionOnce({
     chat: opts.chat,
     messages: [
       { role: "system", content: system },
@@ -527,12 +565,16 @@ ${opts.retrievalContext || "（无）"}
     temperature: Math.min(opts.chat.temperature, 0.55),
     signal: opts.signal,
   });
+  absorbChatUsage(usageAcc, usage1);
 
   const stripped = stripJsonFence(raw.trim());
   try {
-    return normalizeStyleFromParsed(JSON.parse(stripped) as unknown);
+    return attachTokenUsage(
+      normalizeStyleFromParsed(JSON.parse(stripped) as unknown),
+      usageAcc,
+    );
   } catch {
-    const { text: raw2 } = await chatCompletionOnce({
+    const { text: raw2, usage: usage2 } = await chatCompletionOnce({
       chat: opts.chat,
       messages: [
         { role: "system", content: system },
@@ -545,11 +587,15 @@ ${opts.retrievalContext || "（无）"}
       temperature: 0.2,
       signal: opts.signal,
     });
+    absorbChatUsage(usageAcc, usage2);
     const s2 = stripJsonFence(raw2.trim());
     try {
-      return normalizeStyleFromParsed(JSON.parse(s2) as unknown);
+      return attachTokenUsage(
+        normalizeStyleFromParsed(JSON.parse(s2) as unknown),
+        usageAcc,
+      );
     } catch {
-      return normalizeStyleFromParsed(null);
+      return attachTokenUsage(normalizeStyleFromParsed(null), usageAcc);
     }
   }
 }
@@ -576,7 +622,7 @@ export async function runBookStyleInference(
   try {
     hits = await mergedRagHitsForPortrait({
       bookHash: args.bookHash.trim(),
-      embedding: cfg.embedding,
+      aiConfig: cfg,
       queries,
       topKPerQuery: cfg.ragTopK,
       spoilerMaxChapterIndex,
@@ -637,7 +683,7 @@ export async function runCharacterPortraitExtract(
   try {
     hits = await mergedRagHitsForPortrait({
       bookHash: args.bookHash.trim(),
-      embedding: cfg.embedding,
+      aiConfig: cfg,
       queries,
       topKPerQuery: cfg.ragTopK,
       spoilerMaxChapterIndex,

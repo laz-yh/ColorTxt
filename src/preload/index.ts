@@ -2,6 +2,10 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { FileFilter } from "electron";
 import { EBOOK_CONVERT_DEFAULT_SUBDIR } from "@shared/ebookConvertPaths";
 import { CHARACTER_PORTRAIT_DEFAULT_SUBDIR } from "@shared/characterPortraitPaths";
+import {
+  defaultAiDataCacheRoot,
+  defaultBuiltinModelCacheRoot,
+} from "@shared/aiDataPaths";
 import { APP_DISPLAY_NAME } from "@shared/packageDerived";
 import type {
   AIAgentRendererEvent,
@@ -13,6 +17,7 @@ import type {
   BookStyleInferResult,
   PortraitExtractResult,
 } from "@shared/aiTypes";
+import type { BuiltinEmbeddingIpcPayload } from "@shared/builtinEmbeddingIpc";
 import type {
   ColorTxtShowMessageBoxOptions,
   ColorTxtShowMessageBoxResult,
@@ -179,6 +184,35 @@ const api = {
     const ud = getPathFromMainSync("userData");
     if (!ud) return "";
     return joinUserDataSubdir(ud, CHARACTER_PORTRAIT_DEFAULT_SUBDIR);
+  },
+  getDefaultAiDataCacheDir: () => {
+    const ud = getPathFromMainSync("userData");
+    if (!ud) return "";
+    return defaultAiDataCacheRoot(ud);
+  },
+  getDefaultBuiltinModelCacheDir: () => {
+    const ud = getPathFromMainSync("userData");
+    if (!ud) return "";
+    return defaultBuiltinModelCacheRoot(ud);
+  },
+
+  secrets: {
+    isEncryptionAvailable: () =>
+      ipcRenderer.invoke("secrets:isEncryptionAvailable") as Promise<{
+        ok: true;
+        available: boolean;
+        backend: "safeStorage" | "appBound" | "unavailable";
+      }>,
+    getVoiceReadDashScopeApiKey: () =>
+      ipcRenderer.invoke("secrets:getVoiceReadDashScopeApiKey") as Promise<{
+        ok: true;
+        apiKey: string;
+      }>,
+    setVoiceReadDashScopeApiKey: (apiKey: string) =>
+      ipcRenderer.invoke(
+        "secrets:setVoiceReadDashScopeApiKey",
+        apiKey,
+      ) as Promise<{ ok: true }>,
   },
   pathToFileUrl: (filePath: string) =>
     ipcRenderer.invoke("path:toFileUrl", filePath) as Promise<string | null>,
@@ -458,7 +492,11 @@ const api = {
       ) as Promise<{ ok: true } | { ok: false; error?: string }>,
     chatAbort: (requestId: number) =>
       ipcRenderer.invoke("ai:chat:abort", requestId) as Promise<{ ok: true }>,
-    modelsList: (draft: { baseUrl: string; apiKey: string }) =>
+    modelsList: (draft: {
+      baseUrl?: string;
+      apiKey?: string;
+      provider?: "remote" | "builtin";
+    }) =>
       ipcRenderer.invoke("ai:models:list", draft) as Promise<
         { ok: true; models: string[] } | { ok: false; error: string }
       >,
@@ -473,13 +511,73 @@ const api = {
         { ok: true } | { ok: false; error: string }
       >,
     embeddingProbeDimension: (draft: {
-      baseUrl: string;
-      apiKey: string;
-      model: string;
+      baseUrl?: string;
+      apiKey?: string;
+      remoteModel?: string;
+      builtinModel?: string;
+      /** @deprecated 旧版单一 model 字段 */
+      model?: string;
+      provider?: "remote" | "builtin";
     }) =>
       ipcRenderer.invoke("ai:embedding:probeDimension", draft) as Promise<
         { ok: true; dimension: number } | { ok: false; error: string }
       >,
+    migrateDataCacheRoot: (payload: { from: string; to: string }) =>
+      ipcRenderer.invoke("ai:migrateDataCacheRoot", payload) as Promise<
+        { ok: true } | { ok: false; error: string }
+      >,
+    migrateBuiltinModelCacheRoot: (payload: { from: string; to: string }) =>
+      ipcRenderer.invoke("ai:migrateBuiltinModelCacheRoot", payload) as Promise<
+        { ok: true } | { ok: false; error: string }
+      >,
+    openAiDataCacheDir: (dir?: string) =>
+      ipcRenderer.invoke("ai:paths:openDataCacheDir", dir ?? "") as Promise<void>,
+    openBuiltinModelCacheDir: (dir: string, config: AIConfig) =>
+      ipcRenderer.invoke(
+        "ai:paths:openModelCacheDir",
+        dir,
+        JSON.parse(JSON.stringify(config)) as AIConfig,
+      ) as Promise<void>,
+    embeddingBuiltinList: () =>
+      ipcRenderer.invoke("ai:embedding:builtin:list") as Promise<{
+        ok: true;
+        models: import("@shared/builtinEmbeddingModels").BuiltinEmbeddingModel[];
+      }>,
+    embeddingBuiltinStatus: () =>
+      ipcRenderer.invoke("ai:embedding:builtin:status") as Promise<{
+        ok: true;
+        loadedModelId: string | null;
+        loaded: boolean;
+      }>,
+    embeddingBuiltinIsCached: (payload: BuiltinEmbeddingIpcPayload) =>
+      ipcRenderer.invoke(
+        "ai:embedding:builtin:isCached",
+        JSON.parse(JSON.stringify(payload)) as BuiltinEmbeddingIpcPayload,
+      ) as Promise<
+        { ok: true; cached: boolean } | { ok: false; error: string }
+      >,
+    embeddingBuiltinLoad: (payload: BuiltinEmbeddingIpcPayload) =>
+      ipcRenderer.invoke(
+        "ai:embedding:builtin:load",
+        JSON.parse(JSON.stringify(payload)) as BuiltinEmbeddingIpcPayload,
+      ) as Promise<
+        { ok: true } | { ok: false; error: string; code?: string }
+      >,
+    embeddingBuiltinClearCache: (payload: BuiltinEmbeddingIpcPayload) =>
+      ipcRenderer.invoke(
+        "ai:embedding:builtin:clearCache",
+        JSON.parse(JSON.stringify(payload)) as BuiltinEmbeddingIpcPayload,
+      ) as Promise<{ ok: true } | { ok: false; error: string }>,
+    onEmbeddingLoadProgress: (
+      cb: (payload: { modelId: string; progress: number }) => void,
+    ) => {
+      const fn = (
+        _: unknown,
+        payload: { modelId: string; progress: number },
+      ) => cb(payload);
+      ipcRenderer.on("ai:embedding:loadProgress", fn);
+      return () => ipcRenderer.off("ai:embedding:loadProgress", fn);
+    },
     threadList: (bookHash: string) =>
       ipcRenderer.invoke("ai:thread:list", bookHash) as Promise<
         Array<{

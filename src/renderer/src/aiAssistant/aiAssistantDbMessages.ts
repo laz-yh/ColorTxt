@@ -97,6 +97,10 @@ function parsePayloadTokenUsage(payload: string | null | undefined): {
         promptTokens: u.promptTokens,
         completionTokens: u.completionTokens,
         totalTokens: u.totalTokens,
+        ...(typeof u.promptCacheHitTokens === "number" &&
+        u.promptCacheHitTokens > 0
+          ? { promptCacheHitTokens: u.promptCacheHitTokens }
+          : {}),
       },
       available: o.tokenUsageAvailable === true,
     };
@@ -119,6 +123,9 @@ function pushTokenUsageBannerAfterAssistant(
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
     totalTokens: usage.totalTokens,
+    ...(usage.promptCacheHitTokens != null && usage.promptCacheHitTokens > 0
+      ? { promptCacheHitTokens: usage.promptCacheHitTokens }
+      : {}),
     available,
   });
 }

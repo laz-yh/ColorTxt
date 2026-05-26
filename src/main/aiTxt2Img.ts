@@ -184,7 +184,7 @@ async function fetchComfyUIImageBuffer(
     return {
       ok: false,
       error:
-        "ComfyUI 需在设置中粘贴「保存（API 格式）」工作流 JSON，并在文本字段中使用 __PROMPT__、__NEGATIVE__ 等占位符。",
+        "ComfyUI 需在设置中粘贴「导出（API）」工作流 JSON，并在文本字段中使用 __PROMPT__、__NEGATIVE__ 等占位符。",
     };
   }
 

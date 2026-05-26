@@ -9,6 +9,16 @@ import {
   watch,
 } from "vue";
 import type { PortraitExtractResult } from "@shared/aiTypes";
+import {
+  EMPTY_TOKEN_PRICE_PER_MILLION,
+  normalizeTokenPricePerMillion,
+  type AITokenPricePerMillion,
+} from "@shared/aiTypes";
+import {
+  addTokenUsage,
+  type AITokenUsageTotals,
+  ZERO_TOKEN_USAGE,
+} from "@shared/aiTokenUsage";
 import type {
   CharacterBookStylePersisted,
   CharacterGender,
@@ -27,6 +37,8 @@ import { APP_DISPLAY_NAME } from "../constants/appUi";
 import { vAiStickScroll } from "../directives/aiStickScroll";
 import { icons } from "../icons";
 import AiAssistantDetailsFold from "./AiAssistantDetailsFold.vue";
+import AiIndexProgressBanner from "./AiIndexProgressBanner.vue";
+import AiTokenUsageBanner from "./AiTokenUsageBanner.vue";
 import AppModal from "./AppModal.vue";
 import CharacterRosterCard from "./CharacterRosterCard.vue";
 import IconButton from "./IconButton.vue";
@@ -75,6 +87,10 @@ const emit = defineEmits<{
 
 const embeddingEnabled = ref(false);
 const txt2imgEnabled = ref(false);
+const chatTokenPricePerMillion = ref<AITokenPricePerMillion>({
+  ...EMPTY_TOKEN_PRICE_PER_MILLION,
+});
+const showTokenUsage = ref(true);
 const indexReady = ref(false);
 const bookHash = ref("");
 
@@ -111,6 +127,9 @@ const slideError = ref("");
 const retrieveNoticeBanner = ref("");
 /** 当前抽屉内是否已点过「检索」（用于首次检索后显示思考折叠区） */
 const retrieveEverThisDrawer = ref(false);
+const retrieveTokenUsage = ref<AITokenUsageTotals>(ZERO_TOKEN_USAGE);
+const retrieveTokenUsageAvailable = ref(false);
+const retrieveTokenUsageShown = ref(false);
 const flipped = reactive<Record<string, boolean>>({});
 
 /** 角色侧栏建索引进度：与阅读助手同一套阶段文案，使用独立 embed requestId */
@@ -253,6 +272,27 @@ function onRetrieveThinkingFoldContentPointerDown(ev: PointerEvent) {
   if (t instanceof HTMLElement) t.focus({ preventScroll: true });
 }
 
+function clearRetrieveTokenUsage(): void {
+  retrieveTokenUsage.value = ZERO_TOKEN_USAGE;
+  retrieveTokenUsageAvailable.value = false;
+  retrieveTokenUsageShown.value = false;
+}
+
+function absorbRetrieveTokenUsage(part: {
+  tokenUsage?: AITokenUsageTotals;
+  tokenUsageAvailable?: boolean;
+}): void {
+  if (part.tokenUsage) {
+    retrieveTokenUsage.value = addTokenUsage(
+      retrieveTokenUsage.value,
+      part.tokenUsage,
+    );
+  }
+  if (part.tokenUsageAvailable === true) {
+    retrieveTokenUsageAvailable.value = true;
+  }
+}
+
 const genTargetEntry = computed(() => {
   const id = genTargetId.value;
   if (!id) return undefined;
@@ -374,9 +414,15 @@ async function refreshRuntimeFlags() {
     const c = await window.colorTxt.ai.configGet();
     embeddingEnabled.value = c.embeddingEnabled;
     txt2imgEnabled.value = c.txt2img.enabled;
+    chatTokenPricePerMillion.value = normalizeTokenPricePerMillion(
+      c.chat.tokenPricePerMillion,
+    );
+    showTokenUsage.value = c.showTokenUsage !== false;
   } catch {
     embeddingEnabled.value = false;
     txt2imgEnabled.value = false;
+    chatTokenPricePerMillion.value = { ...EMPTY_TOKEN_PRICE_PER_MILLION };
+    showTokenUsage.value = true;
   }
 }
 
@@ -605,6 +651,7 @@ function openAddSlide() {
   draftPromptZh.value = "";
   draftNegativeZh.value = "";
   draftRetrieveThinking.value = "";
+  clearRetrieveTokenUsage();
   draftStylePrefix.value = props.characterBookStyle?.stylePrefixZh ?? "";
   draftStyleNote.value = props.characterBookStyle?.styleNoteZh ?? "";
   slideOpen.value = true;
@@ -631,6 +678,7 @@ function openEditSlide(entry: CharacterRosterEntry) {
   draftPromptZh.value = entry.promptZh;
   draftNegativeZh.value = entry.negativeZh;
   draftRetrieveThinking.value = entry.retrieveThinkingText;
+  clearRetrieveTokenUsage();
   draftStylePrefix.value = props.characterBookStyle?.stylePrefixZh ?? "";
   draftStyleNote.value = props.characterBookStyle?.styleNoteZh ?? "";
   portraitEditSessionKey.value = entry.id;
@@ -760,6 +808,7 @@ function resetCharacterEditDrawerOnBookChange() {
   draftPromptZh.value = "";
   draftNegativeZh.value = "";
   draftRetrieveThinking.value = "";
+  clearRetrieveTokenUsage();
   draftStylePrefix.value = "";
   draftStyleNote.value = "";
   slideOpen.value = false;
@@ -859,6 +908,7 @@ async function onRetrieve() {
   if (!bookHash.value) return;
 
   draftRetrieveThinking.value = "";
+  clearRetrieveTokenUsage();
   const retrieveSessionId = allocatePortraitRetrieveSessionId();
   portraitRetrieveActiveSid.value = retrieveSessionId;
   retrieveEverThisDrawer.value = true;
@@ -907,6 +957,8 @@ async function onRetrieve() {
     draftBio.value = ok.bio_zh.trim();
     draftRelations.value = ok.relations_zh.trim();
     draftRetrieveThinking.value = buildRetrieveThinking(ok);
+    absorbRetrieveTokenUsage(ok);
+    retrieveTokenUsageShown.value = true;
 
     const title = sessionBookTitle.value.trim();
     const inf = await window.colorTxt.ai.portraitInferBookStyle({
@@ -917,6 +969,7 @@ async function onRetrieve() {
       retrieveSessionId,
     });
     if (!("error" in inf)) {
+      absorbRetrieveTokenUsage(inf);
       const nextStyle: CharacterBookStylePersisted = {
         stylePrefixZh: inf.style_sd_prefix_zh.trim(),
         styleNoteZh: inf.note_zh.trim(),
@@ -1319,30 +1372,6 @@ onBeforeUnmount(() => {
                   :disabled="extracting"
                   @keydown.enter.prevent="canRetrieve && onRetrieve()"
                 />
-                <div
-                  v-if="retrieveIndexPhase !== 'idle'"
-                  class="retrieveIndexBanner"
-                  :class="{
-                    'retrieveIndexBanner--error':
-                      retrieveIndexPhase === 'error',
-                  }"
-                  role="status"
-                  :aria-live="
-                    retrieveIndexPhase === 'error' ? 'assertive' : 'polite'
-                  "
-                >
-                  <template v-if="retrieveIndexPhase === 'chunking'"
-                    >正在分块…</template
-                  >
-                  <template v-else-if="retrieveIndexPhase === 'embedding'">
-                    正在向量化 {{ retrieveIndexEmbedCurrent }} /
-                    {{ retrieveIndexEmbedTotal }} …
-                  </template>
-                  <template v-else-if="retrieveIndexPhase === 'indexing'"
-                    >正在写入索引…</template
-                  >
-                  <template v-else>索引失败：{{ retrieveIndexError }}</template>
-                </div>
               </div>
               <div class="drawerRetrieveRow">
                 <button
@@ -1409,6 +1438,23 @@ onBeforeUnmount(() => {
               draftRetrieveThinking
             }}</pre>
           </AiAssistantDetailsFold>
+
+          <AiIndexProgressBanner
+            v-if="retrieveIndexPhase !== 'idle'"
+            class="charRetrieveIndexProgress"
+            :phase="retrieveIndexPhase"
+            :embed-current="retrieveIndexEmbedCurrent"
+            :embed-total="retrieveIndexEmbedTotal"
+            :error-text="retrieveIndexError"
+          />
+
+          <AiTokenUsageBanner
+            v-if="showTokenUsage && retrieveTokenUsageShown"
+            class="charRetrieveTokenUsage"
+            :usage="retrieveTokenUsage"
+            :available="retrieveTokenUsageAvailable"
+            :token-price-per-million="chatTokenPricePerMillion"
+          />
 
           <div
             v-if="retrieveNoticeBanner.trim()"
@@ -1916,19 +1962,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.retrieveIndexBanner {
-  font-size: 12px;
-  padding: 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--fg);
-  line-height: 1.45;
-}
-
-.retrieveIndexBanner--error {
-  background: color-mix(in srgb, #f44 15%, transparent);
-}
-
 /* #icon 插在 AiAssistantDetailsFold 内，由本组件编译，须本地补样式（与阅读助手一致） */
 .charRetrieveThinkIconPulse {
   flex-shrink: 0;
@@ -2197,7 +2230,9 @@ onBeforeUnmount(() => {
 }
 
 .drawerBody .aiFold,
-.drawerBody .aiNoticeBanner {
+.drawerBody .aiNoticeBanner,
+.drawerBody .charRetrieveTokenUsage,
+.drawerBody .charRetrieveIndexProgress {
   margin: 0;
 }
 </style>

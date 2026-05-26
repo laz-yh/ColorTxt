@@ -116,6 +116,7 @@ git push
 - `define` 注入 `__APP_DISPLAY_NAME__` 与 `__GITHUB_REPO_URL__`：显示名优先取 `package.json` 的 `build.productName`，否则 `name`，再兜底 `ColorTxt`；仓库 URL 取 `homepage` 并去掉尾部 `/`。
 - 渲染进程配合 `vite-plugin-monaco-editor`：`publicPath` 为 `monacoeditorwork`；`customDistPath` 仅基于 `outDir` 拼接 worker 输出目录，规避 Windows 下将 `root` 与 `outDir` 的绝对路径拼进 `path.join` 时的异常。
 - `transformIndexHtml`：把 `index.html` 里的 `%APP_DISPLAY_NAME%` 替换为上述显示名。
+- 主进程另打包 **`embedding/embeddingWorker`** 入口（`@huggingface/transformers` 在 Worker 线程跑内置嵌入，见 **「内置向量模型与缓存目录」**）。
 
 #### `src/` 总览
 
@@ -135,12 +136,16 @@ src/
 │   ├── updaterMessages.ts    # 更新错误中文映射
 │   ├── dialogInvoke.ts       # 打开/保存对话框参数解析
 │   ├── messageBoxInvoke.ts   # `showMessageBox` 参数解析
-│   ├── aiConfig.ts           # `userData/ai/config.json` 读写与默认合并
-│   ├── aiVectorDb.ts         # SQLite + sqlite-vec 向量库
-│   ├── aiEmbedding.ts        # 嵌入批处理与维度探测
+│   ├── aiPaths.ts            # AI 数据/模型缓存根路径解析（`aiDataCacheDir` 等）
+│   ├── aiDataFs.ts           # 数据缓存与模型缓存目录迁移、旧版布局升级
+│   ├── aiConfig.ts           # `config.json` 读写（路径由 `aiPaths` 决定）
+│   ├── aiVectorDb.ts         # SQLite + sqlite-vec 向量库（路径随数据缓存根）
+│   ├── aiEmbedding.ts        # 远程 API 与内置嵌入分支、维度探测
 │   ├── aiChat.ts             # OpenAI 兼容流式对话
 │   ├── aiAgentChat.ts        # Agent 工具循环与 `ai:agent:event`（含 token 预估/汇总）
+│   ├── aiChatThinking.ts     # 深度思考：按服务商注入请求参数、解析流式推理 delta
 │   ├── aiChapterPlainTextBridge.ts # ragContext：向渲染进程索取章节原文
+│   ├── embedding/            # 内置嵌入 Worker 与本地后端（`localEmbeddingBackend.ts` 等）
 │   ├── aiRagChapterDigest.ts # 超长章分段压缩为全章提要
 │   ├── aiAgentTools.ts       # Agent 工具实现
 │   ├── aiCharacterPortrait.ts # 角色抽取、画风与文生图编排
@@ -183,7 +188,8 @@ src/
 │       │   ├── useFileListMenus.ts        # 右键与分类浮层
 │       │   ├── useTxtStreamPipeline.ts    # 大文件流式解析与映射
 │       │   ├── useAiChapterPlainTextBridge.ts # 响应 `ai:chapter-plain-request` 回传章文
-│       │   └── useAiFoldContentSelectAll.ts # 助手折叠区全选
+│       │   ├── useAiFoldContentSelectAll.ts # 助手折叠区全选
+│       │   └── useSecretStorageHint.ts      # 设置页 API 密钥落盘说明文案
 │       ├── constants/
 │       │   ├── appUi.ts          # UI 常量、存储 key、侧栏与字号边界
 │       │   ├── readerPalette.ts  # 阅读器表面色默认值与合并
@@ -230,7 +236,9 @@ src/
 │       │   └── mobi/
 │       │       ├── foliateMobi.js    # Foliate MOBI 引擎
 │       │       └── foliateMobi.d.ts  # 类型声明
-│       ├── ai/                   # 建索引脚本（如 buildBookVectorIndex）
+│       ├── ai/                   # 建索引与内置嵌入就绪校验
+│       │   ├── buildBookVectorIndex.ts # 按章节切块并写入向量库
+│       │   └── embeddingReady.ts       # 建索引前检查内置模型是否已下载
 │       ├── aiAssistant/          # AI 助手数据与导出
 │       │   ├── aiAssistantTypes.ts      # UI 消息等类型
 │       │   ├── aiAssistantSegments.ts   # 消息分段
@@ -271,13 +279,18 @@ src/
 │       │   ├── aiMarkdownMarkedSetup.ts  # marked + KaTeX 配置
 │       │   ├── aiMarkdownMarkedPrep.ts   # Markdown 预处理
 │       │   ├── aiMarkdownChapterRef.ts    # 章节引用 token 链接化
-│       │   └── aiToolFoldBody.ts         # 工具折叠区 DOM 辅助
+│       │   ├── aiToolFoldBody.ts         # 工具折叠区 DOM 辅助
+│       │   └── defaultCacheDirs.ts       # 默认 AI 数据/模型/立绘缓存目录（与 preload 对齐）
 └── shared/
     ├── packageDerived.ts           # 从 package 派生的共享元数据
     ├── ebookExtensions.ts          # 电子书扩展名常量
     ├── ebookConvertPaths.ts        # 默认转换输出子目录名
-    ├── aiTypes.ts                  # AI 共享类型与默认配置（含 Agent 事件）
-    ├── aiTokenUsage.ts             # usage 解析、对话 token 预估与展示文案
+    ├── aiTypes.ts                  # AI 共享类型与默认配置（含 `embedding.provider`、`aiDataCacheDir`）
+    ├── aiDataPaths.ts              # 默认 `userData/ai/data`、`userData/ai/model-cache` 路径拼接
+    ├── builtinEmbeddingModels.ts   # 内置嵌入模型目录（BGE / E5）、HF 镜像默认值
+    ├── builtinEmbeddingIpc.ts      # 内置嵌入 IPC 载荷（模型 id + 配置快照）
+    ├── apiEndpointPresets.ts       # 对话服务商预设与官方 OpenAI 兼容 Base URL
+    ├── aiTokenUsage.ts             # usage 解析、缓存命中、花费估算与展示文案
     ├── aiTxt2ImgIpc.ts             # 文生图 IPC 载荷类型
     ├── aiSkills.ts                 # 技能元数据与合并工具
     ├── aiAgentSkillToolNames.ts    # Agent 技能名常量
@@ -304,15 +317,19 @@ src/
 - **`detectTextEncoding.ts`**：文本文件编码探测，供 `ipcHandlers` 的 `file:stream` 与 `file:readWholeTextFile` 共用；详见下文 **`detectTextEncoding.ts`** 专节。
 - **`dialogInvoke.ts`**：`dialog:showOpenDialog` / `showSaveDialog` 参数解析（与 `@shared/colorTxtOpenSaveDialog` 对齐）。
 - **`messageBoxInvoke.ts`**：`dialog:showMessageBox` 参数解析（与 `@shared/colorTxtShowMessageBox` 对齐）。
-- **`aiConfig.ts`**：`userData/ai/config.json` 读写与默认值合并（对话 / 嵌入 / 文生图 / Agent 等）。
-- **`aiVectorDb.ts`**：SQLite + sqlite-vec：分块、向量、`threads` / `messages` 表及迁移。
-- **`aiEmbedding.ts`**：嵌入请求批处理、维度探测（`probeEmbeddingDimension`）。
+- **`aiPaths.ts`**：**`resolveAiDataCacheRoot`** / **`aiConfigFilePath`** / **`vectorDbFilePath`**（随 **`AIConfig.aiDataCacheDir`**）；**`resolveBuiltinModelCacheRoot`**、**`transformersCacheDirForModelRoot`**（内置模型 HF 缓存）。
+- **`aiDataFs.ts`**：**`upgradeLegacyAiDataLayoutIfNeeded`**（旧版 `userData/ai/config.json` + `vector.sqlite*` → **`userData/ai/data/`**）；**`migrateAiDataCacheRoot`** / **`migrateBuiltinModelCacheRoot`**；**`data-cache-root.json`** 引导文件。
+- **`aiConfig.ts`**：在数据缓存根下读写 **`config.json`** 与默认值合并；合并 **`aiDataCacheDir`**、**`embedding.provider`** / **`builtinModel`** 等；API 密钥经 **`secretStorage`** 与磁盘配置分离。
+- **`aiVectorDb.ts`**：SQLite + sqlite-vec：分块、向量、`threads` / `messages` 表及迁移；库文件路径由 **`aiPaths.vectorDbFilePath`** 决定。
+- **`aiEmbedding.ts`**：`provider === "builtin"` 时走 **`embedding/localEmbeddingBackend`**（Transformers.js Worker）；否则 OpenAI 兼容 **`/embeddings`**；**`probeEmbeddingDimension`** 支持远程与内置。
+- **`embedding/localEmbeddingBackend.ts`**、**`embedding/embeddingWorker.ts`**：内置模型下载、加载、批嵌入与进度；缓存目录 **`{builtinModelCacheDir}/transformers-cache`**。
 - **`aiChat.ts`**：OpenAI 兼容流式对话（非 Agent 直聊路径）。
-- **`aiAgentChat.ts`**：带工具调用的 Agent 对话循环；向渲染进程推送 `ai:agent:event`（含 `token_usage_estimate` / `token_usage_final`、`tool_progress` 等）；`ragContext` 优先经 **`aiChapterPlainTextBridge`** 向阅读器取章文，超长章由 **`aiRagChapterDigest`** 分段压缩；多轮与压缩调用的 usage 汇总后写入助手消息 `payload`。
+- **`aiAgentChat.ts`**：带工具调用的 Agent 对话循环；向渲染进程推送 `ai:agent:event`（含 `reasoning_delta`、`token_usage_estimate` / `token_usage_final`、`tool_progress` 等）；`ragContext` 优先经 **`aiChapterPlainTextBridge`** 向阅读器取章文，超长章由 **`aiRagChapterDigest`** 分段压缩；多轮与压缩调用的 usage 汇总后写入助手消息 `payload`；开启「深度思考」时经 **`aiChatThinking.resolveAgentDeepThinkingParams`** 注入各厂商思考开关。
+- **`aiChatThinking.ts`**：按对话 **`baseUrl`** 识别服务商并设置深度思考请求体（如 DeepSeek / 智谱 `thinking`、通义 / Moonshot `enable_thinking`、本机 `think`、OpenRouter `reasoning.effort`、Gemini 兼容 `reasoning_effort`）；**`extractReasoningFromStreamDelta`** 统一解析 `reasoning_content` / `reasoning` / `thinking` / `thought`；工具轮历史是否回传 **`reasoning_content`** 由 **`shouldAttachReasoningContentOnToolCalls`** 判定。
 - **`aiChapterPlainTextBridge.ts`**：主进程 `fetchChapterPlainTextFromRenderer`：经 `ai:chapter-plain-request` / 一次性 `replyChannel` 向渲染层索取与阅读器一致的章节纯文本（超时 20s）。
 - **`aiRagChapterDigest.ts`**：`RAG_CHAPTER_NO_COMPRESS_CHARS`（1 万）内不压缩；超长章按每 1 万字段压缩，合并后 `mergedMarkdown` 上限约 1 万；`chapterDigestProgressUi` 供工具折叠区展示「读取章节原文（M/N）」进度。
 - **`aiAgentTools.ts`**：Agent 可调工具实现（检索章节、向量检索等，与 `@shared/aiAgentSkillToolNames` 等配合）。
-- **`aiCharacterPortrait.ts`**：角色检索抽取、全书风格推断、中英 SD 提示词、文生图落盘编排。
+- **`aiCharacterPortrait.ts`**：角色检索抽取、全书风格推断、中英 SD 提示词、文生图落盘编排；检索与画风推断等 LLM 调用的 usage 汇总为 **`tokenUsage`** / **`tokenUsageAvailable`** 供侧栏展示。
 - **`aiTxt2Img.ts`**：与 A1111 / Comfy 等兼容 API 交互（采样器列表、实际出图等）。
 - **`aiBookHash.ts`**：主进程侧书籍内容哈希（与渲染进程 `utils/aiBookHash.ts` 算法一致）。
 - **`characterPortraitFs.ts`**：立绘缓存根目录迁移、图片复制到目标绝对路径。
@@ -331,7 +348,7 @@ src/
 - **阅读器入参**：向 `ReaderMain` 传入阅读偏好与当前主题的 **`highlightColorsLight` / `highlightColorsDark`**（合并默认后）、**`monacoCustomHighlight`**、**`txtrDelimitedMatchCrossLine`**（与内容上色配合的成对符号跨行匹配）、以及当前文件的 **`highlightWordsByIndex`**。
 - **快捷键与配色**：维护 `shortcutBindings` 并传给 `AppHeader`；**`openColorScheme`** 打开配色弹窗。
 - **侧栏文件列表**：**分类筛选**、**排序模式**、**分类目录**（`fileCategory` / `fileSort` / `fileCategoryCatalog`）与 `FileListPanel`、`useAppPersistence` 联动。
-- **AI 与立绘**：**AI 技能**（`aiSkillsEnabled` / `aiSkillOverrides` / `aiCustomSkills`）、**助手选项**（`aiAssistantDeepThinking` / `aiAssistantSpoilerSafe`）、**角色立绘缓存目录**（`characterPortraitCacheDir`）等与设置/迁移联动；**`useAiChapterPlainTextBridge`**（`App.vue` 注册）响应主进程 `ragContext` 的章节原文索取。
+- **AI 与立绘**：**AI 技能**（`aiSkillsEnabled` / `aiSkillOverrides` / `aiCustomSkills`）、侧栏 **「深度思考」** / **「防剧透」**（`aiAssistantDeepThinking` / `aiAssistantSpoilerSafe`，经 `ReaderSidebar` 绑定 `AiAssistantPanel` 与角色检索抽屉）、**角色立绘缓存目录**（`characterPortraitCacheDir`）等与设置/迁移联动；**`useAiChapterPlainTextBridge`**（`App.vue` 注册）响应主进程 `ragContext` 的章节原文索取。
 - **设置弹窗**：由 **`SettingsPanel.vue`** 组织 **`SettingsTabBar`** 与子面板 **`SettingsGeneralPanel`** / **`SettingsReadingPanel`** / **`SettingsEditPanel`** / **`SettingsAIPanel`** / **`SettingsVectorModelPanel`** / **`SettingsTxt2ImgPanel`**（页签文案「角色卡」，文生图与角色卡出图配置）/ **`SettingsSkillsPanel`**；技能编辑用 **`SettingsSkillEditModal.vue`**（见下文组件表）。
 - **全屏与浮层**：全屏时 **`fullscreenFileListPopoversOpen` / `fullscreenAiAssistantPopoversOpen`** 交给 `useAppReaderChrome`，避免 Teleport 浮层打开时误收起全屏侧栏。
 - **根级挂载**：`AppOverlays`、`AppDialogHost`、`AppToastHost` 等。
@@ -427,13 +444,14 @@ src/
 ###### `ai/`
 
 - **`buildBookVectorIndex.ts`**：按章节切块，经 preload 调用嵌入与向量索引相关 IPC 建库（与主进程 `registerAiIpc` / `aiVectorDb` 等配合）。
+- **`embeddingReady.ts`**：**`getBuiltinEmbeddingBlockMessage`**：内置来源未下载时阻止建索引并提示去设置页下载。
 
 ###### `aiAssistant/`
 
 - **`aiAssistantTypes.ts`**：UI 消息 / 工具条 / 思考块、`tokenEstimate` / `tokenUsage` 信息条等类型。
 - **`aiAssistantSegments.ts`**：助手消息分段与工具引用交错。
 - **`aiAssistantPlainText.ts`**：从 UI 模型提取可复制纯文本。
-- **`aiAssistantDbMessages.ts`**：SQLite 消息行与 UI 结构互转；助手 `payload` 可含 `reasoning`、`tokenUsage`、`tokenUsageAvailable`；历史加载时在助手气泡后插入 token 实际消耗条。
+- **`aiAssistantDbMessages.ts`**：SQLite 消息行与 UI 结构互转；助手 `payload` 可含 `reasoning`、`tokenUsage`、`tokenUsageAvailable`；历史加载时在助手气泡后插入 **`tokenUsage` 角色消息**（由 **`AiTokenUsageBanner`** 渲染，受全局 **`showTokenUsage`** 控制）。
 - **`aiAssistantHistoryFormat.ts`**：历史快照格式相关。
 - **`aiAssistantExport.ts`**：对话导出（文件保存走主进程 `ai:export:save`）。
 
@@ -484,14 +502,18 @@ src/
 - **`packageDerived.ts`**：从 package 信息派生的共享元数据（主/渲染共用）。
 - **`ebookExtensions.ts`**：电子书扩展名常量与壳层打开路径判定。
 - **`ebookConvertPaths.ts`**：默认转换输出子目录名 `ConvertedTxt`（`userData/ConvertedTxt`，与 preload 拼接一致）。
-- **`aiTypes.ts`**：AI 共享类型与默认配置。
+- **`aiTypes.ts`**：AI 共享类型与 **`defaultAIConfig`**（含 **`showTokenUsage`**、**`chat.tokenPricePerMillion`**、默认对话 Base URL 等）。
   - `AIConfig`、对话/嵌入端点；**文生图**（`AITxt2ImgConfig`，A1111 / ComfyUI）；Agent 载荷；角色画风/抽取结果等。
   - `defaultAIConfig` 与配置迁移常量。
 - **`aiTxt2ImgIpc.ts`**：渲染进程调用 `ai:txt2img` 时的请求草稿与返回结果类型。
 - **`aiSkills.ts`**：内置技能元数据、用户覆盖结构、自定义技能 `AiCustomSkill` 及合并/规范化工具。
 - **`aiAgentSkillToolNames.ts`**：Agent 可调技能名常量（与主进程 `aiAgentTools` 等对齐）。
 - **`aiChapterRefPrompt.ts`**：助手回复中章节引用类 token 的提示词约定（与 `aiMarkdownChapterRef.ts` 配合）。
-- **`aiTokenUsage.ts`**：`extractUsageFromChatJson`、`addTokenUsage`；`estimateAgentTurnTokens`（对话前粗估，偏「多轮 + 工具 + ragContext」上界）；`formatTokenUsageEstimateLine` / `formatTokenUsageActualLine`。
+- **`apiEndpointPresets.ts`**：对话 **`CHAT_API_PROVIDER_PRESETS`**（服务商名 + 官方 Base URL 两行下拉；含 OpenRouter、Gemini OpenAI 兼容、**「自定义 OpenAI 兼容服务」** 等）；**`findChatProviderPresetByBaseUrl`** 与接口地址联动（手改地址可反推服务商，清空后保持「自定义」）。文生图 **`TXT2IMG_BACKEND_PRESETS`**（接口类型名 + 默认 Base URL 两行下拉；与 **`AITxt2ImgConfig.backend`** 一致）；选中类型写入默认地址，**不**按地址反推类型。
+- **`builtinEmbeddingModels.ts`**：内置模型清单（默认 **`bge-small-zh-v1.5`** 512 维、**`multilingual-e5-small`** 384 维）；**`DEFAULT_HF_REMOTE_HOST`**（默认 **`https://hf-mirror.com`**，可清空改用官方 Hugging Face）。
+- **`builtinEmbeddingIpc.ts`**：向主进程传递当前 **`builtinModel`** 与配置快照（下载/加载/清缓存 IPC）。
+- **`aiDataPaths.ts`**：与主进程 **`aiPaths`** 一致的默认子目录名（`ai/data`、`ai/model-cache`），供渲染层 placeholder。
+- **`aiTokenUsage.ts`**：`extractUsageFromChatJson`、`addTokenUsage`；**`readPromptCacheHitTokens`**（`prompt_cache_hit_tokens`、`prompt_tokens_details.cached_tokens`、`cache_read_input_tokens` 等）；**`computeTokenUsageCost`** / **`formatTokenUsageCost`**（去尾零）；`estimateAgentTurnTokens`；`formatTokenUsageEstimateLine` / **`formatTokenUsageActualLine`**（可追加「总花费约」）。
 - **`characterTypes.ts`**：侧栏「角色」：`CharacterRosterEntry`、`CharacterBookStylePersisted`、`CharacterGender`（按书存 `file.meta`）。
 - **`characterPortraitPaths.ts`**：立绘缓存根默认子目录名 `CharacterPortrait`、按书名净化目录段、立绘/草稿/临时 PNG 文件名与绝对路径拼接。
 - **`chapterMatchBuiltinPatterns.ts`**：章节匹配三条内置正则（与 `renderer/chapter.ts` 同源）。
@@ -618,14 +640,17 @@ src/
 | `ColorSchemePanel.vue`                               | 配色弹窗容器：`ColorSchemeTabBar` + 上述两面板。<br>确定时分别 `applyReaderPalettes` 与 **`applyHighlightColors`**（亮/暗各一套数组）写回 `App.vue` 并经 `useAppPersistence` 落盘；打开时从 props 同步草稿                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `HexColorPickerField.vue`                            | 单行十六进制颜色 + HSV 取色浮层（智能上下翻转、视口贴边）；`draftHex` / `draftEnd` 事件供父组件在弹层打开期间做临时预览                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `MoreMenu.vue`                                       | 更多菜单：最近文件、查找、快捷键、设置、**配色**（动作 `openColorScheme`，默认 **F6**）、检查更新、关于、退出等。<br>菜单项右侧快捷键文案来自 **`shortcutBindings`**，经 `shortcutUtils.acceleratorToDisplayText` 与快捷键面板及 `shortcutService` 实际生效绑定同步                                                                                                                                                                                                                                                                                                                                                                 |
-| `SettingsPanel.vue`                                  | 设置弹窗壳层：**`SettingsTabBar`** + 条件渲染子面板。<br>footer **「重置当前页」** 按当前 tab 将草稿恢复为应用内默认值（常规/阅读/各 AI 子块/技能等逻辑见 `onResetCurrentTab`）。<br>**「确定」** 时校验向量维度变更提示、调用 `window.colorTxt.ai.configSet` 持久化 AI 配置，并 **`emit('apply', SettingsApplyPayload)`** 写回 `App.vue`。<br>**「清除缓存」** 在 **`SettingsGeneralPanel`** 内触发，经 **`window.colorTxt.showMessageBox`** 确认后设置 `skipUnloadPersistenceSessionKey`、`localStorage.clear()` 再写回 `colorTxt.ui.settings` 并刷新（见下文「清除缓存」）                                                               |
+| `SettingsPanel.vue`                                  | 设置弹窗壳层：**`SettingsTabBar`** + 条件渲染子面板。<br>footer **「重置当前页」** 按当前 tab 将草稿恢复为应用内默认值（AI 页含 **`aiDataCacheDir`** 默认路径；向量页含内置/远程默认等，见 `resetAiDraft` / `resetVectorModelDraft`）。<br>**「确定」** 时：向量维度变更提示；**`aiDataCacheDir`** / **`builtinModelCacheDir`** 变更时确认并调用 **`ai:migrateDataCacheRoot`** / **`ai:migrateBuiltinModelCacheRoot`** 再 **`configSet`**。<br>**「清除缓存」** 见下文「清除缓存」                                                               |
 | `SettingsTabBar.vue`                                 | 设置顶栏页签切换；导出 **`SettingsTabId`**（`general` / `reading` / `ai` / `vectorModel` / `txt2img` / `skills`）。<br>`showAiExtensionTabs` 为 false 时隐藏向量模型 / 角色卡 / 技能三个扩展页签                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `SettingsGeneralPanel.vue`                           | 「常规」：启动恢复上次文件、同步当前文件、历史条数、电子书转换缓存目录、章节最少字数、**清除缓存**按钮（向父组件 `clearCache`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `SettingsReadingPanel.vue`                           | 「阅读」：字号/行高滑块、压缩空行保留一行、引号/括号跨行匹配、Monaco 平滑滚动、全屏正文区宽度。<br>（`monacoCustomHighlight` 来自 props，用于禁用跨行开关提示）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `SettingsEditPanel.vue`                              | 「编辑」：**显示行号**（`readerEditShowLineNumbers`）、**启用小地图**（`readerEditMinimap`）、**自动刷新章节列表**（`editAutoRefreshChapterList`；少于 `editAutoRefreshChapterListMaxLines` 行时编辑变更防抖刷新章节，否则侧栏显示「刷新章节」）                                                                                                                                                                                                                                                                                                                                                                                      |
-| `SettingsAIPanel.vue`                                | 「AI 阅读助手」：总开关、对话 Base URL / Key / 模型、温度等；**`AppPullFlashButton`** 拉取聊天模型列表；快捷提问列表等                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `SettingsVectorModelPanel.vue`                       | 「向量模型」：嵌入开关与端点、切块与检索参数；**`AppPullFlashButton`** 拉取嵌入模型列表                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `SettingsTxt2ImgPanel.vue`                           | 「角色卡」：文生图（A1111 / ComfyUI 等）端点与采样参数；**`AppPullFlashButton`** 拉取采样器 / SD 模型列表。<br>**角色立绘缓存根目录**（`PathPickerInput`，默认 `userData/CharacterPortrait`）                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `SettingsAIPanel.vue`                                | 「AI 阅读助手」：总开关；**服务商** + **接口地址**；API Key；模型 / 温度等；**「显示 Token 消耗信息」** 与 **每百万 Token 价格**；**「数据缓存目录」**（**`aiDataCacheDir`**，`PathPickerInput`，默认 **`userData/ai/data`**，存配置 + 向量库/对话）；**`AppPullFlashButton`** 拉取聊天模型；快捷提问列表等                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `ApiEndpointInput.vue`                               | 设置页接口地址输入（可选建议列表；对话页建议列表常为空，以服务商下拉为主）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `AiTokenUsageBanner.vue`                             | 阅读助手 / 角色检索共用的 Token 实际消耗条（`formatTokenUsageActualLine`、可选花费）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `AiIndexProgressBanner.vue`                          | 建索引 / 向量化进度文案（阅读助手建索引与角色 **AI 检索** 前补索引共用）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `SettingsVectorModelPanel.vue`                       | 「向量模型」：**模型来源**（内置本地 / 远程 API）。<br>**内置**：缓存目录、HF 镜像、内置模型下拉、下载/清除。<br>**远程**：**服务商** + **接口地址**（与对话模型一致，**`CHAT_API_PROVIDER_PRESETS`**）+ Key + **嵌入模型**（**`ApiEndpointInput`** + 拉取建议，可手输）；切块与 **`ragTopK`** 等                                                                                                                                                                                                                                                                                                                                                                                          |
+| `SettingsTxt2ImgPanel.vue`                           | 「角色卡」：**接口类型**（`AppCustomSelect` 两行：类型名 + 默认 Base URL，预设见 **`TXT2IMG_BACKEND_PRESETS`**）+ **接口地址**（选中类型自动填入默认地址；手改地址**不**改变已选类型）；A1111 采样 / 高清修复、Comfy 工作流 JSON 等；**`AppPullFlashButton`** 拉取采样器 / SD 模型列表。<br>**角色立绘缓存根目录**（`PathPickerInput`，默认 `userData/CharacterPortrait`）                                                                                                                                                                                                                                                                                                                                                                                          |
 | `SettingsSkillsPanel.vue`                            | 「技能」：内置技能开关与覆盖、自定义技能列表；由父级 footer「添加技能」打开 **`SettingsSkillEditModal`**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `SettingsSkillEditModal.vue`                         | 自定义技能新建/编辑弹窗                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `AppPullFlashButton.vue`                             | 短时按压态按钮：设置面板内从兼容服务端刷新模型/采样器列表等，完成态闪光反馈                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -644,13 +669,13 @@ src/
 | `PathPickerInput.vue`                                | 设置等场景下的目录绝对路径输入与主进程文件夹选择器（电子书转换输出目录、**角色立绘缓存根目录**等）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `AppDialogHost.vue`                                  | 挂载于 `App.vue`：渲染 `services/appDialog.ts` 队列（`appAlert` / `appConfirm` / `appPrompt`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `AppToastHost.vue`                                   | 挂载于 `App.vue`：渲染 `services/appToast.ts` 的顶部 Toast 列表                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `AiAssistantPanel.vue`                               | 侧栏 AI 阅读助手主面板：会话、输入、`onAgentEvent`、token 预估/实际条插入；**`findLiveAgentAssistant`**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `AiAssistantChatMessages.vue`                        | 助手对话消息列表：气泡、工具折叠、思考块（流式未封存显示「正在思考…」）、**Token 信息条**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `AiAssistantPanel.vue`                               | 侧栏 AI 阅读助手主面板：会话、输入、`onAgentEvent`、token 预估/实际条插入（受 **`showTokenUsage`** 控制）；**`findLiveAgentAssistant`**；**`AiTokenUsageBanner`**                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `AiAssistantChatMessages.vue`                        | 助手对话消息列表：气泡、工具折叠、思考块（流式未封存显示「正在思考…」）；关闭 Token 开关时不插入消耗条                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `AiAssistantDetailsFold.vue`                         | 助手详情区折叠容器（与 `directives/aiStickScroll`、**`useAiFoldContentSelectAll`** 配合）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `AiToolFoldBody.vue`                                 | 工具折叠正文；章文压缩进度 **`当前进度：M/N`** 样式（`utils/aiToolFoldBody.ts`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `AiMarkdown.vue`                                     | 助手回复 Markdown 渲染入口（内部用 `aiMarkdownMarkedSetup` / `aiMarkdownMarkedPrep`、章节引用 `aiMarkdownChapterRef`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `CharacterSidebarPanel.vue`                          | 侧栏「角色」：本书角色卡/立绘列表与交互入口。<br>与 `@shared/characterTypes`、`characterPortraitPaths`、主进程 `characterPortrait:*` IPC 配合                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `CharacterRosterCard.vue`                            | 单个角色条目卡片 UI                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `CharacterSidebarPanel.vue`                          | 侧栏「角色」：本书角色卡/立绘列表与 **AI 检索** 抽屉（深度思考 / 防剧透与阅读助手一致）。<br>检索折叠区下展示 **`AiIndexProgressBanner`**（补索引进度）、**`AiTokenUsageBanner`**（检索 LLM 汇总 usage）；与 `@shared/characterTypes`、`characterPortraitPaths`、主进程 `characterPortrait:*` IPC 配合                                                                                                                                                                                                                                                                                                                          |
+| `CharacterRosterCard.vue`                            | 单个角色条目卡片 UI；背面长文滚动在顶/底边界 **`preventDefault`** 避免带动外层卡列表                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `ReaderHighlightFloat.vue`                           | 自定义高亮词旁的浮动操作条（依赖 `readerHighlightGeometry.ts` 与 `ReaderMain` 编辑器坐标）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `ReaderImageLightbox.vue`                            | 阅读区内插图的灯箱放大（`ReaderMain` 绑定 `imageLightboxSrc`）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
@@ -967,12 +992,86 @@ src/
 ### 功能与入口
 
 - **入口**：侧栏活动栏 **「AI 助手」**、**「角色」**；设置中 **「AI 阅读助手」「向量模型」「角色卡」「技能」** 四个扩展页签在 **AI 总开关** 关闭时隐藏（见 `SettingsTabBar` / `draftAi.aiEnabled`）。
-- **对话与 RAG**：正文与阅读器一致；**「向量模型」** 页配置嵌入端点与切块/检索参数。
-    - 对当前书 **「建索引」** 时，渲染进程 **`buildBookVectorIndex.ts`** 按章节分块，经 preload 调主进程嵌入并写入 **`userData/ai/vector.sqlite`**（`better-sqlite3` + `sqlite-vec`）。
+- **对话与 RAG**：正文与阅读器一致；**「向量模型」** 页选择 **内置本地模型**（新装默认）或 **远程嵌入 API**，并配置切块 / **`ragTopK`** 等。
+    - 对当前书 **「建索引」** 时，渲染进程 **`buildBookVectorIndex.ts`** 按章节分块，经 preload 调主进程嵌入并写入当前 **AI 数据缓存根** 下的 **`vector.sqlite`**（`better-sqlite3` + `sqlite-vec`，路径见下节）。
+    - **内置**来源须先在设置页 **下载** 对应模型（**`embeddingReady`** 会在未下载时拦截建索引）；**远程**来源需配置接口与模型名。
     - 修改嵌入 **向量维度** 并保存时，设置面板会 **`showMessageBox`** 提示将清空已建索引。
-- **文生图 / 角色卡**：**「角色卡」** 页配置 A1111 / ComfyUI 等兼容接口（见 `@shared/aiTypes` 的 `AITxt2ImgConfig`）；与主进程 **`aiTxt2Img.ts`**、`registerAiIpc` 暴露的 `ai:txt2img` 等 IPC 配合。立绘文件落在 **`characterPortraitCacheDir`**（默认 **`userData/CharacterPortrait`**，按书名分子目录，见 `@shared/characterPortraitPaths`），主进程 **`characterPortraitFs.ts`** 负责迁移与复制。
+- **文生图 / 角色卡**：**「角色卡」** 页配置文生图后端与采样参数（见 `@shared/aiTypes` 的 **`AITxt2ImgConfig`**，默认 **`backend: "a1111"`**、`apiBaseUrl: http://127.0.0.1:7860`）；与主进程 **`aiTxt2Img.ts`**、`registerAiIpc` 暴露的 `ai:txt2img` 等 IPC 配合。接口类型与默认地址见下节 **「文生图接口类型」**。立绘文件落在 **`characterPortraitCacheDir`**（默认 **`userData/CharacterPortrait`**，按书名分子目录，见 `@shared/characterPortraitPaths`），主进程 **`characterPortraitFs.ts`** 负责迁移与复制。
 - **技能与 Agent**：内置技能元数据与用户覆盖见 `@shared/aiSkills`；Agent 工具名与主进程 **`aiAgentTools.ts`** 对齐（`@shared/aiAgentSkillToolNames`）。流式对话与工具事件经 **`aiAgentChat.ts`** 推送到渲染层（`window.colorTxt.ai.onAgentEvent`）。
-- **会话与配置**：每本书（内容哈希）多会话，消息存 SQLite。运行时 **`userData/ai/config.json`**（**不含**聊天正文）。聊天 / 嵌入 / 文生图请求由主进程代理，经 IPC 流式回传（可中止）。
+- **会话与配置**：每本书（内容哈希）多会话，消息存 **同一向量库文件** 内 SQLite 表。运行时 **`config.json`** 位于 **AI 数据缓存根**（**不含**聊天正文；含 **`showTokenUsage`**、**`chat.tokenPricePerMillion`**、**`aiDataCacheDir`**、**`embedding.*`** 等，API Key 不落盘明文）。默认对话 Base URL 为 **`http://127.0.0.1:1234/v1`**（本地 LM Studio）。聊天 / 嵌入 / 文生图请求由主进程代理，经 IPC 流式回传（可中止）。
+
+### 对话模型服务商
+
+阅读助手与角色 **AI 检索** 使用的对话能力均走 **OpenAI 兼容** `POST {baseUrl}/chat/completions`（Agent 另含 `tools` / `tool_calls`）。在 **设置 → AI 阅读助手 → 服务商** 下拉中选择预设会自动填入 **接口地址**；也可选 **「自定义 OpenAI 兼容服务」** 手填任意兼容网关地址。
+
+预设清单与代码 **`@shared/apiEndpointPresets`**（`CHAT_API_PROVIDER_PRESETS`）一致；深度思考参数由 **`aiChatThinking.ts`** 按 `baseUrl` 识别注入（见下节「深度思考」）。
+
+| 服务商 | 设置页预设 | 官方通用 Base URL（OpenAI 兼容） | 深度思考 | API 密钥 |
+| ------ | ---------- | -------------------------------- | -------- | -------- |
+| 本地 LM Studio | 本地 LM Studio | `http://127.0.0.1:1234/v1` | 已适配（`think: true`） | 通常不需要 |
+| 本地 Ollama | 本地 Ollama | `http://127.0.0.1:11434/v1` | 已适配（`think: true`） | 通常不需要 |
+| DeepSeek | DeepSeek | `https://api.deepseek.com/v1` | 已适配（`thinking` 开关） | 需要 |
+| 阿里云通义 | 阿里云通义（DashScope） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 已适配（`enable_thinking`） | 需要 |
+| 智谱 GLM | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | 已适配（`thinking` 开关） | 需要 |
+| Moonshot（Kimi） | Moonshot（Kimi） | `https://api.moonshot.cn/v1` | 已适配（`enable_thinking`） | 需要 |
+| 硅基流动 | 硅基流动 | `https://api.siliconflow.cn/v1` | 已适配（开启时 `enable_thinking`） | 需要 |
+| OpenAI | OpenAI | `https://api.openai.com/v1` | 未单独适配（仅温度） | 需要 |
+| OpenRouter | OpenRouter | `https://openrouter.ai/api/v1` | 已适配（`reasoning.effort`） | 需要 |
+| Google Gemini | Google Gemini（OpenAI 兼容） | `https://generativelanguage.googleapis.com/v1beta/openai` | 已适配（`reasoning_effort`） | 需要（Google AI Key） |
+| 其它兼容服务 | 自定义 OpenAI 兼容服务 | （手填，无固定地址） | 未识别时仅温度=1 | 视网关而定 |
+
+说明：
+
+- **深度思考「已适配」**：侧栏开启「深度思考」时，应用会发送该厂商文档对应的思考开关；流式思考文案优先解析 `reasoning_content` / `reasoning` / `thinking` / `thought` 等 delta 字段（因上游而异）。
+- **未单独适配**：仍可使用对话与 Agent 工具，但不保证思考开关与思考流展示正常；自定义地址若与上表某行 **Base URL 一致**，保存后会自动匹配为对应预设项。
+- **向量嵌入**另有一套来源（**设置 → 向量模型 → 内置本地 / 远程 API**），见下节「内置向量模型与缓存目录」；**不**使用上表对话服务商下拉。
+- **文生图**（A1111 / ComfyUI）与 **语音朗读**（如 DashScope）为独立配置，亦不在上表；文生图预设见下节。
+
+### 文生图接口类型
+
+角色立绘出图走 **设置 → 角色卡** 中的文生图配置（`txt2img.*`），与对话服务商无关。在 **接口类型** 下拉中选择预设会同时写入 **`backend`** 与默认 **接口地址**（`apiBaseUrl`）；下拉项为两行展示（类型名 + 默认 Base URL），与 **AI 阅读助手 → 服务商** 交互类似。**仅手改接口地址时不会根据 URL 反推或切换接口类型**（与对话侧「地址与服务商联动」不同）。
+
+预设清单与代码 **`@shared/apiEndpointPresets`**（`TXT2IMG_BACKEND_PRESETS`）一致：
+
+| 接口类型 | `backend` | 默认 Base URL |
+| -------- | --------- | ------------- |
+| AUTOMATIC1111 WebUI（txt2img） | `a1111` | `http://127.0.0.1:7860` |
+| ComfyUI（HTTP 队列） | `comfyui` | `http://127.0.0.1:8188` |
+
+说明：
+
+- **A1111**：主进程调用 WebUI **`/sdapi/v1/*`**（如 txt2img、采样器与 SD 模型列表）；设置页可拉取采样器 / 模型 / 高清修复放大算法。
+- **ComfyUI**：经 **`/prompt`** 提交工作流并轮询 **`/history`**；需在设置中粘贴 **Comfy 工作流 JSON**（导出 API 格式）。
+- 切换接口类型会**覆盖**当前 `apiBaseUrl` 为该行默认值；若需非默认端口，切换后再手改地址即可，`backend` 仍保持所选类型。
+
+### 内置向量模型与缓存目录
+
+#### AI 数据缓存目录（`aiDataCacheDir`）
+
+- **设置位置**：**设置 → AI 阅读助手 → 数据缓存目录**（**`AIConfig.aiDataCacheDir`**，空串表示默认 **`{userData}/ai/data`**）。
+- **目录内容**：**`config.json`**（AI 各子项配置，不含 API Key 明文）、**`vector.sqlite`**（及 WAL/SHM，含分块向量、按书的 Agent 会话与消息）、引导文件 **`userData/ai/data-cache-root.json`** 记录当前生效根路径。
+- **旧版升级**：首次启动时若仍存在 **`userData/ai/config.json`** 或旧 **`vector.sqlite`**，主进程 **`upgradeLegacyAiDataLayoutIfNeeded`** 自动迁入 **`ai/data`** 并写 bootstrap。
+- **变更目录**：设置里修改数据缓存目录并 **确定** 时，**`SettingsPanel`** 提示确认后调用 **`window.colorTxt.ai.migrateDataCacheRoot`**（关闭向量库连接后合并迁移 `config.json` 与 `vector.sqlite*`）。
+
+#### 内置嵌入（`embedding.provider === "builtin"`）
+
+- **设置位置**：**设置 → 向量模型 → 模型来源 → 内置本地模型**（`AppCustomSelect` 两行：标题 + 说明）。
+- **模型**：`@shared/builtinEmbeddingModels` — **BGE Small ZH v1.5**（512 维，推荐）、**Multilingual E5 Small**（384 维）；切换内置模型会改变 **`embedding.dimension`**，保存时同样可能触发清空索引提示。
+- **HF 镜像**：**`embedding.hfRemoteHost`**，默认 **`https://hf-mirror.com`**；留空则使用官方 **`https://huggingface.co`**。模型文件经 **`@huggingface/transformers`** 下载到 **`{模型缓存目录}/transformers-cache`**。
+- **模型缓存目录**：**`embedding.builtinModelCacheDir`**，空串默认 **`{userData}/ai/model-cache`**；变更并确定时 **`migrateBuiltinModelCacheRoot`** 迁移已下载文件。
+- **UI**：**下载** / **清除** 按钮（**`ai:embedding:builtin:*`** IPC）；下载进度百分比；**测试连接** / **自动检测维度** 走内置加载后探测。
+- **与 RAG**：内置与远程共用 **`ragSearch`** / **`ragTopK`**（**`BUILTIN_EMBEDDING_SUPPORTS_RAG_TOP_K`**）；建索引、角色检索补索引前均会校验 **`embeddingBuiltinIsCached`**。
+
+#### 远程嵌入（`embedding.provider === "remote"`）
+
+- OpenAI 兼容：远程仅配置 **`embedding.baseUrl`**（与对话相同），主进程用 **`openAiCompatModelsUrl`** / **`openAiCompatEmbeddingsUrl`** 派生 **`GET …/models`**、**`POST …/embeddings`**。**设置 → 向量模型 → 远程 API** 使用 **`CHAT_API_PROVIDER_PRESETS`** + **接口地址**；嵌入 **模型** 为 **`ApiEndpointInput`** + 拉取建议，可手输 **`remoteModel`**。
+
+### 深度思考
+
+- **入口**：侧栏 **AI 阅读助手** 与 **角色 → AI 检索** 工具栏胶囊 **「深度思考」**（`aiAssistantDeepThinking`，持久化在 **`colorTxt.ui.settings`**）。
+- **行为**：开启后 Agent 请求温度固定为 **1**，并由主进程 **`aiChatThinking.ts`** 按 **`chat.baseUrl`** 注入各厂商思考参数；流式 **`reasoning_delta`** 在助手 UI 的思考折叠区展示，写入助手消息 **`payload.reasoning`**。各厂商开关与「深度思考」列见上表 **「对话模型服务商」**。
+- **工具轮历史**：DeepSeek、通义、智谱、Moonshot、硅基、OpenRouter、Gemini 兼容等会在 assistant 消息中回传 **`reasoning_content`**（`shouldAttachReasoningContentOnToolCalls`）。
+- **防剧透**：与厂商无关；由 **`spoilerSafe`** 限制 RAG/检索章节上限与系统提示（见 Agent 载荷），阅读助手与角色检索共用同一设置项。
 
 ### Agent 工具 `ragContext`（章节原文）
 
@@ -988,10 +1087,14 @@ src/
 
 渲染侧 **`useAiChapterPlainTextBridge`**（`App.vue`）监听 **`ai:chapter-plain-request`**，用 **`getChapterPlainTextByIndex`** 回复；preload 暴露 **`onChapterPlainRequest`** / **`replyChapterPlainText`**。
 
-### Token 用量（预估与实际）
+### Token 用量
 
+- **总开关**：**设置 → AI 阅读助手 →「显示 Token 消耗信息」**（`AIConfig.showTokenUsage`，默认开启）。关闭后侧栏不展示 Token 条，设置内 **「每百万 Token 价格」** 区块一并隐藏。
 - **发送后、助手折叠区之前**：主进程发出 **`token_usage_estimate`**（`estimateAgentTurnTokens`：system + 历史 JSON 字符数 + 固定工具轮缓冲 + 第二轮 prompt 比例项；向量检索开启时另加 **`ragContext` 结果缓冲**；输出按 `maxTokens` 的约 12% 粗估）。仅为参考，**简单寒暄/身份类问题常明显偏高**（实际往往单轮、无工具）。
-- **对话结束后**：先发 **`token_usage_final`**（汇总 Agent 各轮 `stream_options.include_usage` 与章节压缩中的 `chatCompletionOnce` usage），再发 **`done`**。渲染层在助手气泡后插入实际消耗条（`--info-*` 样式）；有实际值后移除同 `requestId` 的预估条。
+- **对话结束后**：先发 **`token_usage_final`**（汇总 Agent 各轮 `stream_options.include_usage` 与章节压缩中的 `chatCompletionOnce` usage），再发 **`done`**。渲染层用 **`AiTokenUsageBanner`** 在助手气泡后插入实际消耗条；有实际值后移除同 `requestId` 的预估条。
+- **输入缓存命中**：`extractUsageFromChatJson` 解析 **`prompt_cache_hit_tokens`**、**`prompt_tokens_details.cached_tokens`**（OpenAI / OpenRouter 等）、**`cache_read_input_tokens`** 等；展示为「输入 N（缓存命中 M）」；**无需为 OpenRouter / Gemini 单独写适配**，取决于上游 `usage` 是否返回字段。
+- **花费估算**：在设置中填写 **`chat.tokenPricePerMillion`**（输入缓存命中 / 未命中、输出，单位：元/百万 Token；**0 表示未设置**）。须同时配置 **输出价** 与 **至少一项输入价** 才在消耗条末尾显示 **「总花费约：¥…」**；仅设一项输入价时全部输入按该价计。金额由 **`formatTokenUsageCost`** 格式化（去掉小数尾随 0）。
+- **角色检索**：**AI 检索** 流程中主进程 **`aiCharacterPortrait`** 汇总 LLM usage，侧栏在 **「正在检索…」** 折叠区下方显示同款 **`AiTokenUsageBanner`**（同样受 **`showTokenUsage`** 控制）。
 - **持久化**：最终助手消息的 SQLite **`payload`** JSON 可含 **`tokenUsage`**、**`tokenUsageAvailable`**（与 **`reasoning`** 并列）；历史重载时由 **`aiAssistantDbMessages`** 还原 token 条。
 - **事件路由注意**：`token_usage_final` 会把 token 条插在助手气泡**之后**，故处理 **`done` / `error`** 时须用 **`findLiveAgentAssistant()`**（按 `agentLive` 或末条 `assistant` 定位），不能假定 `messages` 最后一项仍是助手，否则无法结束「正在思考…」与等待状态。
 
@@ -999,8 +1102,10 @@ src/
 
 | 路径 / 目录 | 说明 |
 | ----------- | ---- |
-| `ai/config.json` | AI 对话 / 嵌入 / 文生图等 API 与生成参数（不含聊天消息正文） |
-| `ai/vector.sqlite` | 分块文本、向量索引、按 `book_hash` 区分的会话与消息 |
+| `ai/data/`（默认数据缓存根） | **`config.json`**、**`vector.sqlite`**（+ WAL/SHM）；实际根目录取 **`aiDataCacheDir`** 或 **`data-cache-root.json`** |
+| `ai/data-cache-root.json` | 记录当前生效的 AI 数据缓存绝对路径（`aiDataFs`） |
+| `ai/model-cache/`（默认内置模型缓存根） | 内置 Transformers 权重；其下 **`transformers-cache/`**；实际根目录取 **`embedding.builtinModelCacheDir`** |
+| `ai/config.json`、`ai/vector.sqlite`（旧版） | 仅迁移前遗留；启动时尽量迁入 **`ai/data/`** |
 | `CharacterPortrait/`（默认子目录） | 角色立绘与相关 PNG 缓存根（路径受 `characterPortraitCacheDir` 控制；内部按书名再分子目录） |
 
 ### `localStorage` 与 `file.meta` 中的 AI 相关键
@@ -1015,26 +1120,29 @@ src/
 | 文件 | 主要功能 |
 | ---- | -------- |
 | `ReaderSidebar.vue` | 侧栏容器：活动栏含 **AI 助手**、**角色** 等（`constants/readerSidebarTab.ts`）。<br>挂载 **`AiAssistantPanel`**、**`CharacterSidebarPanel`** 等；向文件列表下发分类/排序状态并上抛事件 |
-| `SettingsPanel.vue` | 设置壳层：确定时校验 **向量维度** 变更提示、调用 `window.colorTxt.ai.configSet` 持久化 AI 配置并 `emit('apply')` 写回 `App.vue`。<br>「清除缓存」等交互见数据存储章 |
+| `SettingsPanel.vue` | 设置壳层：确定时校验向量维度、**数据/模型缓存目录迁移**、`configSet` 与 `emit('apply')`；「清除缓存」见数据存储章 |
 | `SettingsTabBar.vue` | 页签含 `ai` / `vectorModel` / `txt2img` / `skills`。<br>`showAiExtensionTabs` 为 false 时隐藏向量模型 / 角色卡 / 技能扩展页签 |
-| `SettingsAIPanel.vue` | 「AI 阅读助手」：总开关、对话 Base URL / Key / 模型、温度等；**`AppPullFlashButton`** 拉取聊天模型列表 |
-| `SettingsVectorModelPanel.vue` | 「向量模型」：嵌入开关与端点、切块与检索参数；**`AppPullFlashButton`** 拉取嵌入模型列表 |
-| `SettingsTxt2ImgPanel.vue` | 「角色卡」：文生图端点与采样参数；**`AppPullFlashButton`** 拉取采样器 / SD 模型列表。<br>**角色立绘缓存根目录** |
+| `SettingsAIPanel.vue` | 「AI 阅读助手」：总开关；服务商 + 接口地址；API Key；模型 / 温度等；Token 开关与单价；**`aiDataCacheDir`**（数据缓存目录） |
+| `ApiEndpointInput.vue` | 接口地址手填输入框 |
+| `AiTokenUsageBanner.vue` | Token 消耗与花费展示条（阅读助手、角色检索共用） |
+| `AiIndexProgressBanner.vue` | 向量建索引进度条（阅读助手建索引、角色检索前补索引） |
+| `SettingsVectorModelPanel.vue` | 「向量模型」：内置/远程；远程：**服务商** + 双 URL + 嵌入模型（建议+手输）；切块与 **`ragTopK`** |
+| `SettingsTxt2ImgPanel.vue` | 「角色卡」：**接口类型**（两行下拉，选中写入默认地址）+ **接口地址**（手改不反推类型）；A1111 采样 / 高清修复、Comfy 工作流；**`AppPullFlashButton`** 拉取采样器 / SD 模型列表。<br>**角色立绘缓存根目录** |
 | `SettingsSkillsPanel.vue` | 「技能」：内置技能开关与覆盖、自定义技能列表；footer「添加技能」打开 **`SettingsSkillEditModal`** |
 | `SettingsSkillEditModal.vue` | 自定义技能新建/编辑弹窗 |
 | `AppPullFlashButton.vue` | 设置面板内刷新模型/采样器列表等，完成态闪光反馈 |
 | `PathPickerInput.vue` | 目录选择（含 **角色立绘缓存根目录** 等） |
-| `AiAssistantPanel.vue` | 侧栏 AI 阅读助手主面板：会话、输入、`onAgentEvent`（流式增量、工具、`token_usage_*`、`done`/`error`）；**`findLiveAgentAssistant`** 定位 live 助手行 |
-| `AiAssistantChatMessages.vue` | 消息列表：用户/助手气泡、思考块、工具折叠、**预估/实际 Token** 信息条（`aiInfoBanner`） |
+| `AiAssistantPanel.vue` | 侧栏 AI 阅读助手主面板：会话、输入、`onAgentEvent`（流式增量、工具、`token_usage_*`、`done`/`error`）；**`findLiveAgentAssistant`**；受 **`showTokenUsage`** 控制 Token 条 |
+| `AiAssistantChatMessages.vue` | 消息列表：用户/助手气泡、思考块、工具折叠；**`AiTokenUsageBanner`**（预估/实际） |
 | `AiAssistantDetailsFold.vue` | 助手详情折叠（与 `directives/aiStickScroll`、`useAiFoldContentSelectAll` 配合） |
 | `AiToolFoldBody.vue` | 工具折叠正文；超长章压缩进度中 **`当前进度：M/N`** 高亮（`utils/aiToolFoldBody.ts`） |
 | `AiMarkdown.vue` | 助手回复 Markdown（`aiMarkdownMarkedSetup` / `Prep`、`aiMarkdownChapterRef`） |
-| `CharacterSidebarPanel.vue` | 侧栏「角色」：角色卡/立绘列表与主进程 `characterPortrait:*` IPC 等配合 |
-| `CharacterRosterCard.vue` | 单个角色条目卡片 UI |
+| `CharacterSidebarPanel.vue` | 侧栏「角色」：角色卡/立绘、**AI 检索**（深度思考/防剧透）；检索区下 **`AiIndexProgressBanner`**、**`AiTokenUsageBanner`** |
+| `CharacterRosterCard.vue` | 角色卡 UI；背面滚动边界不带动外层列表 |
 
 ### 源码与 IPC 速查
 
-主进程 **`registerAiIpc.ts`** 集中注册 `ai:*` IPC；**`aiConfig.ts`**、**`aiVectorDb.ts`**、**`aiEmbedding.ts`**、**`aiChat.ts`**、**`aiAgentChat.ts`**、**`aiChapterPlainTextBridge.ts`**、**`aiRagChapterDigest.ts`**、**`aiAgentTools.ts`**、**`aiCharacterPortrait.ts`**、**`aiTxt2Img.ts`**、**`aiBookHash.ts`**、**`characterPortraitFs.ts`**、**`resolveSqliteVecPath.ts`** 等分工见 **「开发」** → **「`src/` 目录树各文件补充说明」** 中 `src/main/`（其余模块）及渲染侧 `ai/`、`aiAssistant/`、`shared/`（含 **`aiTokenUsage.ts`**）下各 `ai*` 条目。预加载暴露的 `window.colorTxt.ai.*`、`onChapterPlainRequest` 等见 **「`src/preload/index.ts`（预加载）」**。
+主进程 **`registerAiIpc.ts`** 集中注册 `ai:*` IPC（含 **`ai:embedding:builtin:*`** 列表/状态/下载/清缓存、**`ai:migrateDataCacheRoot`** / **`ai:migrateBuiltinModelCacheRoot`**）；**`aiPaths.ts`**、**`aiDataFs.ts`**、**`aiConfig.ts`**、**`aiVectorDb.ts`**、**`aiEmbedding.ts`**、**`embedding/*`**、**`aiChat.ts`**、**`aiAgentChat.ts`**、**`aiChatThinking.ts`** 等见 **「开发」** 目录树与 **「内置向量模型与缓存目录」**；渲染侧 **`ai/buildBookVectorIndex.ts`**、**`ai/embeddingReady.ts`**、**`shared/builtinEmbeddingModels.ts`**。预加载 **`window.colorTxt.ai.*`**（含 **`embeddingBuiltinLoad`**、**`migrateDataCacheRoot`** 等）见 **「`src/preload/index.ts`（预加载）」**。
 
 ## 数据存储说明
 
@@ -1094,7 +1202,7 @@ src/
 
 ### 「重置当前页」与历史上的全量恢复默认
 
-- **当前 UI**：设置弹窗 footer **「重置当前页」** 仅将**当前 tab** 内的草稿恢复为代码中的默认值（如常规页恢复启动选项/电子书目录/章节字数等；阅读页恢复字号行高/平滑滚动等；**AI 相关各页**的默认项与持久化方式见 **「AI 阅读助手与相关能力」**），**不会自动落盘**——仍需点 **「确定」** 才会 `emit('apply')` 并持久化（AI 部分另走 `window.colorTxt.ai.configSet`）。
+- **当前 UI**：设置弹窗 footer **「重置当前页」** 仅将**当前 tab** 内的草稿恢复为代码中的默认值（如常规页恢复启动选项/电子书目录/章节字数等；阅读页恢复字号行高/平滑滚动等；**AI 阅读助手** 页另重置 **`tokenPricePerMillion`**、**`showTokenUsage`**、**`aiDataCacheDir`** 默认路径等，见 `SettingsPanel.resetAiDraft`；**向量模型** 页见 `resetVectorModelDraft`，恢复内置/远程默认与 **`builtinModelCacheDir`**），**不会自动落盘**——仍需点 **「确定」** 才会 `emit('apply')` 并持久化（AI 部分另走 `window.colorTxt.ai.configSet`）。
 - **`skipSettingsPersistenceSessionKey`**：`useAppPersistence` 仍保留该 `sessionStorage` 门闩：若将来或脚本在**删除** `colorTxt.ui.settings` 后立刻刷新，应在刷新前写入该键为 `"1"`，否则 `beforeunload` 里的 **`persistSettings()`** 会把内存中的旧 UI 设置写回，抵消删除操作。`initPersistenceBootstrap()` 启动时会清除该键与 `skipUnloadPersistenceSessionKey`。
 
 ### 主进程用户数据目录

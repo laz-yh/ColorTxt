@@ -54,17 +54,6 @@ export type UiAssistantMsg = {
 };
 
 /** 仅界面展示：建索引 / 向量化进度，不入库；插在列表末尾随滚动 */
-/** 本轮对话 token 预估（仅 live，不落库） */
-export type UiTokenEstimateMsg = {
-  id: string;
-  role: "tokenEstimate";
-  requestId: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  ragEnabled: boolean;
-};
-
 /** 本轮对话 token 实际消耗（live 或自 DB payload 还原） */
 export type UiTokenUsageMsg = {
   id: string;
@@ -73,6 +62,7 @@ export type UiTokenUsageMsg = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  promptCacheHitTokens?: number;
   available: boolean;
 };
 
@@ -94,7 +84,6 @@ export type UiIndexBannerMsg =
 export type UiMsg =
   | UiUserMsg
   | UiAssistantMsg
-  | UiTokenEstimateMsg
   | UiTokenUsageMsg
   | UiIndexBannerMsg;
 

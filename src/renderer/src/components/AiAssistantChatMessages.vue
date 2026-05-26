@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import AiAssistantDetailsFold from "./AiAssistantDetailsFold.vue";
+import AiIndexProgressBanner from "./AiIndexProgressBanner.vue";
 import AiMarkdown from "./AiMarkdown.vue";
+import AiTokenUsageBanner from "./AiTokenUsageBanner.vue";
 import AiToolFoldBody from "./AiToolFoldBody.vue";
 import { vAiStickScroll } from "../directives/aiStickScroll";
 import {
@@ -8,17 +10,15 @@ import {
   toolDisplayLabel,
 } from "../aiAssistant/aiAssistantSegments";
 import type { UiMsg } from "../aiAssistant/aiAssistantTypes";
+import type { AITokenPricePerMillion } from "@shared/aiTypes";
 import { assistantAnswerMdSource } from "../aiAssistant/aiAssistantPlainText";
-import {
-  formatTokenUsageActualLine,
-  formatTokenUsageEstimateLine,
-} from "@shared/aiTokenUsage";
 import { icons } from "../icons";
 
 defineProps<{
   messages: UiMsg[];
   /** OpenAI 工具名 → 技能展示名（含内置与自定义） */
   skillToolLabels?: Record<string, string>;
+  tokenPricePerMillion?: AITokenPricePerMillion | null;
 }>();
 
 const emit = defineEmits<{
@@ -40,55 +40,32 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
   <div class="aiChatMessagesStack">
     <template v-for="m in messages" :key="m.id">
       <div
-        v-if="m.role === 'tokenEstimate' || m.role === 'tokenUsage'"
+        v-if="m.role === 'tokenUsage'"
         class="aiMsg aiMsg--bot"
       >
         <div class="aiMsgInner">
-          <div class="aiInfoBanner" role="status" aria-live="polite">
-            <template v-if="m.role === 'tokenEstimate'">
-              {{
-                formatTokenUsageEstimateLine(
-                  {
-                    promptTokens: m.promptTokens,
-                    completionTokens: m.completionTokens,
-                    totalTokens: m.totalTokens,
-                  },
-                  m.ragEnabled,
-                )
-              }}
-            </template>
-            <template v-else>
-              {{
-                formatTokenUsageActualLine(
-                  {
-                    promptTokens: m.promptTokens,
-                    completionTokens: m.completionTokens,
-                    totalTokens: m.totalTokens,
-                  },
-                  m.available,
-                )
-              }}
-            </template>
-          </div>
+          <AiTokenUsageBanner
+            :usage="{
+              promptTokens: m.promptTokens,
+              completionTokens: m.completionTokens,
+              totalTokens: m.totalTokens,
+              ...(m.promptCacheHitTokens != null && m.promptCacheHitTokens > 0
+                ? { promptCacheHitTokens: m.promptCacheHitTokens }
+                : {}),
+            }"
+            :available="m.available"
+            :token-price-per-million="tokenPricePerMillion"
+          />
         </div>
       </div>
       <div v-else-if="m.role === 'indexBanner'" class="aiMsg aiMsg--bot">
         <div class="aiMsgInner">
-          <div
-            v-if="m.phase !== 'error'"
-            class="aiIndexBanner"
-            role="status"
-            aria-live="polite"
-          >
-            <template v-if="m.phase === 'chunking'">正在分块…</template>
-            <template v-else-if="m.phase === 'embedding'">
-              正在向量化 {{ m.embedCurrent }} / {{ m.embedTotal }} …
-            </template>
-            <template v-else>正在写入索引…</template>
-          </div>
-          <div v-else class="aiIndexErr" role="alert">
-            索引失败：{{ m.errorText }}
-          </div>
+          <AiIndexProgressBanner
+            :phase="m.phase"
+            :embed-current="m.phase === 'embedding' ? m.embedCurrent : 0"
+            :embed-total="m.phase === 'embedding' ? m.embedTotal : 0"
+            :error-text="m.phase === 'error' ? m.errorText : ''"
+          />
         </div>
       </div>
       <div
@@ -207,35 +184,6 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
   width: 16px;
   height: 16px;
   display: block;
-}
-
-.aiIndexBanner,
-.aiIndexErr {
-  font-size: 12px;
-  padding: 8px;
-  border-radius: 6px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-}
-
-.aiIndexBanner {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--fg);
-}
-
-.aiInfoBanner {
-  font-size: 12px;
-  padding: 8px;
-  border-radius: 6px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  background: var(--info-bg);
-  border: 1px solid var(--info-border);
-  color: var(--info);
-}
-
-.aiIndexErr {
-  background: color-mix(in srgb, #f44 15%, transparent);
 }
 
 .aiMsg {

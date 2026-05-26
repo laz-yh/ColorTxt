@@ -41,7 +41,6 @@ import { runCharacterPortraitExtract } from "./aiCharacterPortrait";
 import {
   ZERO_TOKEN_USAGE,
   addTokenUsage,
-  estimateAgentTurnTokens,
   extractUsageFromChatJson,
   type AITokenUsageTotals,
 } from "@shared/aiTokenUsage";
@@ -52,42 +51,18 @@ import {
   compressChapterToDigest,
   mergeChapterChunkRows,
 } from "./aiRagChapterDigest";
-
-/** 向渲染进程索取章节原文时的上限（与 currentChapterPlainText HARD_CAP 一致） */
-const RAG_CHAPTER_PLAIN_FETCH_MAX = 512_000;
+import {
+  extractReasoningFromStreamDelta,
+  resolveAgentDeepThinkingParams,
+  shouldAttachReasoningContentOnToolCalls,
+} from "./aiChatThinking";
 
 function normalizeBase(u: string): string {
   return u.replace(/\/+$/, "");
 }
 
-/**
- * 本地 OpenAI 兼容服务（Ollama / LM Studio 等）：请求体可附带 `think: true` 以返回推理流。
- * 仅对明显本机地址启用，避免云端网关因未知字段报错。
- */
-function localOpenAiCompatLikely(baseUrl: string): boolean {
-  const u = baseUrl.trim().toLowerCase();
-  return (
-    u.includes("localhost") ||
-    u.includes("127.0.0.1") ||
-    u.includes("0.0.0.0") ||
-    u.includes(":11434") ||
-    u.includes("/ollama")
-  );
-}
-
-/** `deepThinking` 时用更高温度；本地栈额外请求思考输出 */
-function resolveAgentDeepThinkingParams(opts: {
-  deepThinking: boolean;
-  configuredTemperature: number;
-  baseUrl: string;
-}): { temperature: number; extraBody: Record<string, unknown> } {
-  const temperature = opts.deepThinking ? 1 : opts.configuredTemperature;
-  const extraBody: Record<string, unknown> = {};
-  if (opts.deepThinking && localOpenAiCompatLikely(opts.baseUrl)) {
-    extraBody.think = true;
-  }
-  return { temperature, extraBody };
-}
+/** 向渲染进程索取章节原文时的上限（与 currentChapterPlainText HARD_CAP 一致） */
+const RAG_CHAPTER_PLAIN_FETCH_MAX = 512_000;
 
 const MAX_SNIPPET_PER_HIT = 900;
 const MAX_TOOL_JSON_CHARS = 14_000;
@@ -309,27 +284,73 @@ function buildAgentSystemPrompt(
 
 type ApiMsg =
   | { role: "user"; content: string }
-  | { role: "assistant"; content: string | null; tool_calls?: AIChatToolCall[] }
+  | {
+      role: "assistant";
+      content: string | null;
+      tool_calls?: AIChatToolCall[];
+      /** DeepSeek thinking 模式 + tool_calls 时须原样回传 */
+      reasoning_content?: string;
+    }
   | { role: "tool"; tool_call_id: string; content: string; name?: string };
 
-function dbRowsToApiMessages(rows: ReturnType<typeof listMessages>): ApiMsg[] {
+function parseReasoningFromPayload(payload: string | null | undefined): string {
+  if (!payload?.trim()) return "";
+  try {
+    const o = JSON.parse(payload) as { reasoning?: string };
+    return typeof o.reasoning === "string" ? o.reasoning : "";
+  } catch {
+    return "";
+  }
+}
+
+function buildAssistantApiMsg(
+  opts: {
+    content: string;
+    reasoning: string;
+    toolCalls?: AIChatToolCall[];
+  },
+  chatBaseUrl: string,
+): Extract<ApiMsg, { role: "assistant" }> {
+  const m: Extract<ApiMsg, { role: "assistant" }> = {
+    role: "assistant",
+    content: opts.content.trim() === "" ? null : opts.content,
+  };
+  if (opts.toolCalls?.length) {
+    m.tool_calls = opts.toolCalls;
+    if (shouldAttachReasoningContentOnToolCalls(chatBaseUrl)) {
+      m.reasoning_content = opts.reasoning;
+    }
+  }
+  return m;
+}
+
+function dbRowsToApiMessages(
+  rows: ReturnType<typeof listMessages>,
+  chatBaseUrl: string,
+): ApiMsg[] {
   const out: ApiMsg[] = [];
   for (const r of rows) {
     if (r.role === "user") {
       out.push({ role: "user", content: r.content });
     } else if (r.role === "assistant") {
-      const m: ApiMsg = {
-        role: "assistant",
-        content: r.content.trim() === "" ? null : r.content,
-      };
+      let toolCalls: AIChatToolCall[] | undefined;
       if (r.toolCallsJson?.trim()) {
         try {
-          m.tool_calls = JSON.parse(r.toolCallsJson) as AIChatToolCall[];
+          toolCalls = JSON.parse(r.toolCallsJson) as AIChatToolCall[];
         } catch {
           /* ignore */
         }
       }
-      out.push(m);
+      out.push(
+        buildAssistantApiMsg(
+          {
+            content: r.content,
+            reasoning: parseReasoningFromPayload(r.payload),
+            toolCalls,
+          },
+          chatBaseUrl,
+        ),
+      );
     } else if (r.role === "tool" && r.toolCallId) {
       out.push({
         role: "tool",
@@ -463,12 +484,7 @@ function extractDelta(json: unknown): {
       : undefined;
   const content =
     typeof delta?.content === "string" ? delta.content : undefined;
-  const reasoning =
-    typeof delta?.reasoning_content === "string"
-      ? delta.reasoning_content
-      : typeof delta?.reasoning === "string"
-        ? delta.reasoning
-        : undefined;
+  const reasoning = extractReasoningFromStreamDelta(delta);
   return {
     content,
     reasoning,
@@ -638,9 +654,15 @@ async function runRagSearch(
   query: string,
   topK: number,
   spoilerMaxChapterIndex: number | null,
+  aiConfig: AIConfig,
 ): Promise<{ preview: string; full: string }> {
   const k = Math.min(12, Math.max(1, topK));
-  const vectors = await embedTexts(embedding, [query.trim() || "."]);
+  const vectors = await embedTexts(
+    embedding,
+    [query.trim() || "."],
+    undefined,
+    aiConfig,
+  );
   const q = vectors[0];
   if (!q) throw new Error("嵌入失败");
   /** 防剧透过滤会丢掉部分命中，先多取候选再筛选 */
@@ -879,6 +901,7 @@ async function dispatchTool(
         query,
         topK,
         ctx.spoilerMaxChapterIndex,
+        ctx.aiConfig,
       );
       ctx.emit({
         type: "tool_result",
@@ -1093,7 +1116,10 @@ export async function runAgentChat(opts: {
     const rows = listMessages(payload.threadId).filter(
       (r) => r.role !== "system",
     );
-    let history: ApiMsg[] = trimApiTail(dbRowsToApiMessages(rows), sliding);
+    let history: ApiMsg[] = trimApiTail(
+      dbRowsToApiMessages(rows, chat.baseUrl),
+      sliding,
+    );
     history = augmentLatestUserWithReadingAnchor(
       history,
       payload.bookMeta,
@@ -1123,28 +1149,13 @@ export async function runAgentChat(opts: {
         promptTokens: usageAcc.promptTokens,
         completionTokens: usageAcc.completionTokens,
         totalTokens: usageAcc.totalTokens,
+        ...(usageAcc.promptCacheHitTokens != null &&
+        usageAcc.promptCacheHitTokens > 0
+          ? { promptCacheHitTokens: usageAcc.promptCacheHitTokens }
+          : {}),
         available: usageAvailable,
       });
     };
-
-    let historyJsonCharCount = 0;
-    for (const m of history) {
-      historyJsonCharCount += JSON.stringify(m).length;
-    }
-    const estimate = estimateAgentTurnTokens({
-      systemContent,
-      historyJsonCharCount,
-      maxCompletionTokens: chat.maxTokens,
-      ragEnabled,
-    });
-    emit({
-      type: "token_usage_estimate",
-      requestId,
-      promptTokens: estimate.promptTokens,
-      completionTokens: estimate.completionTokens,
-      totalTokens: estimate.totalTokens,
-      ragEnabled,
-    });
 
     /** 上一轮**实际执行**过的工具指纹；重复指纹则跳过嵌入/检索以打破死循环 */
     let lastExecutedToolFingerprint: string | null = null;
@@ -1258,11 +1269,16 @@ export async function runAgentChat(opts: {
               : null,
         });
 
-        history.push({
-          role: "assistant",
-          content: content.trim() === "" ? null : content,
-          tool_calls: toolCalls,
-        });
+        history.push(
+          buildAssistantApiMsg(
+            {
+              content: content ?? "",
+              reasoning,
+              toolCalls,
+            },
+            chat.baseUrl,
+          ),
+        );
 
         const dupNotice = JSON.stringify({
           notice:
@@ -1380,6 +1396,10 @@ export async function runAgentChat(opts: {
       promptTokens: usageAcc.promptTokens,
       completionTokens: usageAcc.completionTokens,
       totalTokens: usageAcc.totalTokens,
+      ...(usageAcc.promptCacheHitTokens != null &&
+      usageAcc.promptCacheHitTokens > 0
+        ? { promptCacheHitTokens: usageAcc.promptCacheHitTokens }
+        : {}),
       available: usageAvailable,
     });
     if (msg.toLowerCase().includes("abort")) {

@@ -13,13 +13,19 @@ import type ReaderMain from "./ReaderMain.vue";
 import type { Chapter } from "../chapter";
 import { pickActiveChapterIdx } from "../reader/chapterIndex";
 import type { AIAgentRendererEvent } from "@shared/aiTypes";
-import { normalizeAiQuickQuestions } from "@shared/aiTypes";
+import {
+  EMPTY_TOKEN_PRICE_PER_MILLION,
+  normalizeAiQuickQuestions,
+  normalizeTokenPricePerMillion,
+  type AITokenPricePerMillion,
+} from "@shared/aiTypes";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import { collectEnabledAgentSkills } from "@shared/aiSkills";
 import {
   isAiVectorIndexAbortError,
   runAiBookVectorIndexBuild,
 } from "../ai/buildBookVectorIndex";
+import { getBuiltinEmbeddingBlockMessage } from "../ai/embeddingReady";
 import { hashBookBrowser } from "../utils/aiBookHash";
 import {
   getReaderSurroundingPlainText,
@@ -28,10 +34,7 @@ import {
 import { dirnameFs, joinFs } from "../ebook/pathUtils";
 import AiAssistantChatMessages from "./AiAssistantChatMessages.vue";
 import { rowsToUiMessages } from "../aiAssistant/aiAssistantDbMessages";
-import type {
-  UiTokenEstimateMsg,
-  UiTokenUsageMsg,
-} from "../aiAssistant/aiAssistantTypes";
+import type { UiTokenUsageMsg } from "../aiAssistant/aiAssistantTypes";
 import {
   buildChatExportDefaultName,
   buildAssistantChatExportJson,
@@ -116,6 +119,8 @@ const deepThinking = defineModel<boolean>("deepThinking", { default: false });
 const spoilerSafe = defineModel<boolean>("spoilerSafe", { default: false });
 const historyOpen = ref(false);
 const chatModelOptions = ref<string[]>([]);
+/** 上次拉取模型列表时的对话接口指纹（baseUrl + apiKey） */
+const chatModelsListFingerprint = ref("");
 const chatModelsLoading = ref(false);
 /** 侧栏模型下拉「拉取模型」：加载 / 成功闪绿 / 失败 danger */
 const composerPullModelsPhase = ref<"idle" | "loading" | "success" | "fail">(
@@ -125,6 +130,10 @@ let composerPullModelsSuccessTimer: ReturnType<typeof setTimeout> | null = null;
 /** 与设置里保存的 `chat.model` 对齐，用于判断是否传 `chatModelOverride` */
 const savedConfigModel = ref("");
 const activeChatModel = ref("");
+const chatTokenPricePerMillion = ref<AITokenPricePerMillion>({
+  ...EMPTY_TOKEN_PRICE_PER_MILLION,
+});
+const showTokenUsage = ref(true);
 const showJumpBottom = ref(false);
 /** 平滑滚到底部进行中：勿根据 scroll 更新「回到底部」显隐，避免 dist 反复越过阈值闪烁 */
 const jumpBottomRevealSuppressed = ref(false);
@@ -243,7 +252,9 @@ function isAiVectorIndexPhaseBusy(): boolean {
 
 /** 列表展示：末尾追加临时「索引/向量化」消息，随滚动区滚动并在贴底时可见 */
 const messagesForChatView = computed((): UiMsg[] => {
-  const base = messages.value;
+  const base = showTokenUsage.value
+    ? messages.value
+    : messages.value.filter((m) => m.role !== "tokenUsage");
   const ph = indexPhase.value;
   if (ph === "idle") return base;
   if (ph === "error") {
@@ -487,11 +498,32 @@ async function syncChatModelFromConfig() {
     savedConfigModel.value = cfg.chat.model.trim();
     activeChatModel.value = cfg.chat.model.trim();
     aiQuickQuestions.value = [...cfg.quickQuestions];
+    chatTokenPricePerMillion.value = normalizeTokenPricePerMillion(
+      cfg.chat.tokenPricePerMillion,
+    );
+    showTokenUsage.value = cfg.showTokenUsage !== false;
+    return cfg;
   } catch {
     savedConfigModel.value = "";
     activeChatModel.value = "";
     aiQuickQuestions.value = normalizeAiQuickQuestions(undefined);
+    chatTokenPricePerMillion.value = { ...EMPTY_TOKEN_PRICE_PER_MILLION };
+    showTokenUsage.value = true;
+    return null;
   }
+}
+
+function chatEndpointFingerprint(cfg: {
+  chat: { baseUrl: string; apiKey: string };
+}): string {
+  return `${cfg.chat.baseUrl.trim()}\0${cfg.chat.apiKey}`;
+}
+
+function isChatModelsListStale(cfg: {
+  chat: { baseUrl: string; apiKey: string };
+}): boolean {
+  if (!chatModelsListFingerprint.value) return true;
+  return chatModelsListFingerprint.value !== chatEndpointFingerprint(cfg);
 }
 
 async function refreshChatModels(opts?: { composerSuccessFlash?: boolean }) {
@@ -506,13 +538,25 @@ async function refreshChatModels(opts?: { composerSuccessFlash?: boolean }) {
   let ok = false;
   try {
     const cfg = await window.colorTxt.ai.configGet();
+    const fp = chatEndpointFingerprint(cfg);
     const r = await window.colorTxt.ai.modelsList({
       baseUrl: cfg.chat.baseUrl,
       apiKey: cfg.chat.apiKey,
     });
     ok = r.ok;
-    if (r.ok) chatModelOptions.value = r.models;
-    else chatModelOptions.value = [];
+    if (r.ok) {
+      chatModelOptions.value = r.models;
+      chatModelsListFingerprint.value = fp;
+      if (r.models.length > 0) {
+        const cur = activeChatModel.value.trim();
+        if (!cur || !r.models.includes(cur)) {
+          activeChatModel.value = r.models[0]!;
+        }
+      }
+    } else {
+      chatModelOptions.value = [];
+      chatModelsListFingerprint.value = "";
+    }
   } finally {
     chatModelsLoading.value = false;
     if (
@@ -547,8 +591,16 @@ async function refreshChatModels(opts?: { composerSuccessFlash?: boolean }) {
 function onChatModelPanelOpenChange(isOpen: boolean) {
   chatModelPanelOpen.value = isOpen;
   if (!isOpen || chatModelsLoading.value) return;
-  if (chatModelOptions.value.length > 0) return;
-  void refreshChatModels();
+  void (async () => {
+    const cfg = await window.colorTxt.ai.configGet();
+    if (
+      chatModelOptions.value.length > 0 &&
+      !isChatModelsListStale(cfg)
+    ) {
+      return;
+    }
+    void refreshChatModels();
+  })();
 }
 
 function onChatModelSelectAction(id: string) {
@@ -663,11 +715,15 @@ watch(
   assistantTabEffectiveVisible,
   (vis) => {
     if (!vis) return;
-    void syncChatModelFromConfig();
-    void nextTick(() => {
+    void (async () => {
+      const cfg = await syncChatModelFromConfig();
+      if (cfg && isChatModelsListStale(cfg)) {
+        void refreshChatModels();
+      }
+      await nextTick();
       flushPendingScrollToBottomAfterVisible();
       focusComposer();
-    });
+    })();
   },
   { immediate: true },
 );
@@ -676,7 +732,10 @@ watch(
   () => props.aiConfigSyncNonce ?? 0,
   (n) => {
     if (n <= 0) return;
-    void syncChatModelFromConfig();
+    void (async () => {
+      const cfg = await syncChatModelFromConfig();
+      if (cfg) void refreshChatModels();
+    })();
   },
 );
 
@@ -767,49 +826,17 @@ watch(
   },
 );
 
-function insertTokenEstimate(ev: {
-  requestId: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  ragEnabled: boolean;
-}) {
-  if (
-    messages.value.some(
-      (m) => m.role === "tokenEstimate" && m.requestId === ev.requestId,
-    )
-  ) {
-    return;
-  }
-  const aiIdx = messages.value.findIndex(
-    (m) => m.role === "assistant" && m.agentLive,
-  );
-  if (aiIdx < 0) return;
-  const row: UiTokenEstimateMsg = {
-    id: `tok_est_${ev.requestId}`,
-    role: "tokenEstimate",
-    requestId: ev.requestId,
-    promptTokens: ev.promptTokens,
-    completionTokens: ev.completionTokens,
-    totalTokens: ev.totalTokens,
-    ragEnabled: ev.ragEnabled,
-  };
-  messages.value.splice(aiIdx, 0, row);
-}
-
 function finalizeTokenUsage(ev: {
   requestId: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  promptCacheHitTokens?: number;
   available: boolean;
 }) {
+  if (!showTokenUsage.value) return;
   messages.value = messages.value.filter(
-    (m) =>
-      !(
-        (m.role === "tokenEstimate" || m.role === "tokenUsage") &&
-        m.requestId === ev.requestId
-      ),
+    (m) => !(m.role === "tokenUsage" && m.requestId === ev.requestId),
   );
   let aiIdx = -1;
   for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -826,6 +853,9 @@ function finalizeTokenUsage(ev: {
     promptTokens: ev.promptTokens,
     completionTokens: ev.completionTokens,
     totalTokens: ev.totalTokens,
+    ...(ev.promptCacheHitTokens != null && ev.promptCacheHitTokens > 0
+      ? { promptCacheHitTokens: ev.promptCacheHitTokens }
+      : {}),
     available: ev.available,
   };
   messages.value.splice(aiIdx + 1, 0, row);
@@ -852,11 +882,6 @@ onMounted(() => {
   offAgent = window.colorTxt.ai.onAgentEvent((ev: AIAgentRendererEvent) => {
     if (ev.requestId !== activeRequestId.value) return;
 
-    if (ev.type === "token_usage_estimate") {
-      insertTokenEstimate(ev);
-      void nextTick(() => maybeScrollListToBottom());
-      return;
-    }
     if (ev.type === "token_usage_final") {
       finalizeTokenUsage(ev);
       void nextTick(() => maybeScrollListToBottom());
@@ -996,8 +1021,13 @@ async function requestRebuildVectorIndex(): Promise<void> {
   const cfg = await window.colorTxt.ai.configGet();
   if (!cfg.embeddingEnabled) {
     await appAlert(
-      "请先在「设置」→「向量模型」中启用向量模型并配置嵌入接口，再构建索引。",
+      "请先在「设置」→「向量模型」中启用向量模型，再构建索引。",
     );
+    return;
+  }
+  const blockMsg = await getBuiltinEmbeddingBlockMessage(cfg);
+  if (blockMsg) {
+    await appAlert(blockMsg);
     return;
   }
   if (isAiVectorIndexPhaseBusy()) {
@@ -1835,6 +1865,9 @@ defineExpose({
           <AiAssistantChatMessages
             :messages="messagesForChatView"
             :skill-tool-labels="skillToolDisplayLabels"
+            :token-price-per-million="
+              showTokenUsage ? chatTokenPricePerMillion : null
+            "
             @chapter-click="onChClick"
           />
         </div>

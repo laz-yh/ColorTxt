@@ -581,6 +581,28 @@ export function useAppPersistence(deps: {
     persistRecentFiles();
   }
 
+  async function hydrateVoiceReadSecretFromVault(): Promise<boolean> {
+    try {
+      const r = await window.colorTxt.secrets.getVoiceReadDashScopeApiKey();
+      const vaultKey = r.apiKey.trim();
+      const legacyKey = deps.voiceReadSettings.value.dashscopeApiKey.trim();
+      if (vaultKey) {
+        deps.voiceReadSettings.value = mergeVoiceReadSettings({
+          ...deps.voiceReadSettings.value,
+          dashscopeApiKey: vaultKey,
+        });
+        return legacyKey !== "" && legacyKey !== vaultKey;
+      }
+      if (legacyKey) {
+        await window.colorTxt.secrets.setVoiceReadDashScopeApiKey(legacyKey);
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  }
+
   function loadPersistedSettings(): {
     ebookConvertOutputDirKeyPresent: boolean;
     characterPortraitCacheDirKeyPresent: boolean;
@@ -812,6 +834,10 @@ export function useAppPersistence(deps: {
     } catch {
       // ignore
     }
+    const voiceReadMerged = mergeVoiceReadSettings(deps.voiceReadSettings.value);
+    void window.colorTxt.secrets.setVoiceReadDashScopeApiKey(
+      voiceReadMerged.dashscopeApiKey,
+    );
     persistSettingsData(window.localStorage, persistKey, {
       theme: deps.currentTheme.value === "vs" ? "vs" : "vs-dark",
       sidebarWidth: deps.sidebarWidth.value,
@@ -869,7 +895,10 @@ export function useAppPersistence(deps: {
           : undefined,
       aiAssistantDeepThinking: deps.aiAssistantDeepThinking.value,
       aiAssistantSpoilerSafe: deps.aiAssistantSpoilerSafe.value,
-      voiceRead: deps.voiceReadSettings.value,
+      voiceRead: {
+        ...voiceReadMerged,
+        dashscopeApiKey: "",
+      },
     });
   }
 
@@ -925,6 +954,7 @@ export function useAppPersistence(deps: {
       ebookConvertOutputDirKeyPresent,
       characterPortraitCacheDirKeyPresent,
     } = loadPersistedSettings();
+    const migratedVoiceSecret = await hydrateVoiceReadSecretFromVault();
     settingsLoaded.value = true;
     let needDefaultSettingsPersist = false;
     if (!ebookConvertOutputDirKeyPresent) {
@@ -948,7 +978,7 @@ export function useAppPersistence(deps: {
       }
       needDefaultSettingsPersist = true;
     }
-    if (needDefaultSettingsPersist) {
+    if (needDefaultSettingsPersist || migratedVoiceSecret) {
       persistSettings();
     }
     loadRecentFiles();

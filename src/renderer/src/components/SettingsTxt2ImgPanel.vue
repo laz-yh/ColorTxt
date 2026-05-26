@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { AIConfig } from "@shared/aiTypes";
+import {
+  TXT2IMG_BACKEND_PRESETS,
+  findTxt2ImgBackendPreset,
+} from "@shared/apiEndpointPresets";
 import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import AppPullFlashButton, {
   type AppPullFlashDone,
@@ -26,23 +30,18 @@ const HIRES_UPSCALER_DEFAULT_ID = "__txt2img_hires_upscaler_default__";
 const HIRES_UPSCALER_FALLBACK_NAME = "Latent";
 const SD_CHECKPOINT_DEFAULT_ID = "__txt2img_sd_checkpoint_default__";
 
-const txt2imgBackendScrollItems: CustomSelectItem[] = [
-  {
+const txt2imgBackendSelectItems = computed((): CustomSelectItem[] =>
+  TXT2IMG_BACKEND_PRESETS.map((p) => ({
     kind: "item",
-    id: "a1111",
-    label: "AUTOMATIC1111 WebUI（txt2img）",
-  },
-  {
-    kind: "item",
-    id: "comfyui",
-    label: "ComfyUI（HTTP 队列）",
-  },
-];
+    id: p.id,
+    label: p.label,
+    description: p.baseUrl,
+  })),
+);
 
 const txt2imgBackendDisplayLabel = computed(() => {
-  return modelValue.value.txt2img.backend === "comfyui"
-    ? "ComfyUI（HTTP 队列）"
-    : "AUTOMATIC1111 WebUI（txt2img）";
+  const id = modelValue.value.txt2img.backend;
+  return findTxt2ImgBackendPreset(id)?.label ?? "";
 });
 
 /** 留空时实际使用的绝对路径，用作输入框 placeholder */
@@ -393,8 +392,13 @@ watch(
   },
 );
 
-function setTxt2ImgBackend(id: string) {
-  modelValue.value.txt2img.backend = id === "comfyui" ? "comfyui" : "a1111";
+function onTxt2ImgBackendSelect(id: string) {
+  const hit = findTxt2ImgBackendPreset(id);
+  if (!hit) return;
+  modelValue.value.txt2img.backend = hit.id;
+  if (hit.baseUrl.trim()) {
+    modelValue.value.txt2img.apiBaseUrl = hit.baseUrl;
+  }
 }
 </script>
 
@@ -414,62 +418,40 @@ function setTxt2ImgBackend(id: string) {
     </section>
 
     <template v-if="modelValue.txt2img.enabled">
-      <section class="aiSection aiSection--compact">
-        <div class="settingsRow">
-          <div class="settingsRowMain settingsRowMain--baseline">
-            <span class="settingsLabel short">角色立绘缓存目录</span>
-            <div class="txt2imgPortraitCacheActions">
-              <PathPickerInput
-                v-model="characterPortraitCacheDir"
-                is-directory
-                :placeholder="portraitCacheDirPlaceholder"
-                aria-label="角色立绘缓存根目录"
-                class="txt2imgPortraitCachePicker"
-              />
-            </div>
-          </div>
-        </div>
-        <p class="aiMasterHint">
-          侧栏「角色卡」上传或生成的立绘将保存到：<code
-            >该目录 / 书名文件夹 / 角色名.png</code
-          >。
-        </p>
-        <p class="aiMasterHint">修改目录后，旧目录的内容将自动迁移到新目录。</p>
-      </section>
-
       <section class="aiSection">
         <h3 class="aiSectionTitle">文生图 API 设置</h3>
         <p class="aiMasterHint">
           建议使用本地接口，若云端接口协议一致也可填写公网地址。
         </p>
         <div class="settingsRow">
-          <span class="settingsLabel small">接口类型</span>
-          <AppCustomSelect
-            class="txt2imgBackendSelect"
-            :model-value="modelValue.txt2img.backend"
-            :display-label="txt2imgBackendDisplayLabel"
-            :fixed-top-items="txt2imgBackendSelectEmpty"
-            :scroll-items="txt2imgBackendScrollItems"
-            :fixed-bottom-items="txt2imgBackendSelectEmpty"
-            :scroll-max-height="220"
-            ariaLabel="文生图后端类型"
-            @update:model-value="setTxt2ImgBackend"
-          />
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">接口类型</span>
+            <AppCustomSelect
+              class="txt2imgBackendSelect"
+              :model-value="modelValue.txt2img.backend"
+              :display-label="txt2imgBackendDisplayLabel"
+              placeholder="选择接口类型…"
+              :fixed-top-items="txt2imgBackendSelectEmpty"
+              :scroll-items="txt2imgBackendSelectItems"
+              :fixed-bottom-items="txt2imgBackendSelectEmpty"
+              :scroll-max-height="220"
+              ariaLabel="文生图接口类型"
+              @update:model-value="onTxt2ImgBackendSelect"
+            />
+          </div>
         </div>
         <div class="settingsRow">
-          <span class="settingsLabel">接口地址</span>
-          <input
-            v-model="modelValue.txt2img.apiBaseUrl"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            :placeholder="
-              modelValue.txt2img.backend === 'comfyui'
-                ? 'http://127.0.0.1:8188'
-                : 'http://127.0.0.1:7860'
-            "
-            class="settingsStretchInput"
-          />
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">接口地址</span>
+            <input
+              v-model="modelValue.txt2img.apiBaseUrl"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              class="settingsStretchInput txt2imgRowStretchInput"
+              aria-label="文生图接口地址"
+            />
+          </div>
         </div>
         <div v-if="modelValue.txt2img.backend === 'a1111'" class="settingsRow">
           <div class="settingsRowMain settingsRowMain--samplerRow">
@@ -592,7 +574,7 @@ function setTxt2ImgBackend(id: string) {
         </div>
         <div v-if="modelValue.txt2img.backend === 'a1111'" class="settingsRow">
           <div class="settingsRowMain settingsRowMain--samplerRow">
-            <span class="settingsLabel short">采样器（可选）</span>
+            <span class="settingsLabel short">采样器</span>
             <div class="aiModelToolbar txt2imgSamplerToolbar">
               <AppCustomSelect
                 class="aiModelSelect"
@@ -714,6 +696,7 @@ function setTxt2ImgBackend(id: string) {
                 v-model="modelValue.txt2img.hiresDenoisingStrength"
                 :min="0"
                 :max="1"
+                :step="0.01"
                 class="numCompact"
                 aria-label="高分辨率重绘幅度"
               />
@@ -779,6 +762,28 @@ function setTxt2ImgBackend(id: string) {
             placeholder="可用中文，逗号或顿号分隔；文生图提交前会自动译为英文"
           />
         </div>
+      </section>
+
+      <section class="aiSection aiSection--compact">
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">角色立绘缓存目录</span>
+            <div class="txt2imgPortraitCacheActions">
+              <PathPickerInput
+                v-model="characterPortraitCacheDir"
+                is-directory
+                :placeholder="portraitCacheDirPlaceholder"
+                aria-label="角色立绘缓存根目录"
+                class="txt2imgPortraitCachePicker"
+              />
+            </div>
+          </div>
+        </div>
+        <p class="aiMasterHint">
+          侧栏「角色卡」上传或生成的立绘将保存到：<code
+            >该目录 / 书名文件夹 / 角色名.png</code
+          >；<br />修改目录后，旧目录的内容将自动迁移到新目录。
+        </p>
       </section>
     </template>
   </div>
@@ -889,9 +894,17 @@ function setTxt2ImgBackend(id: string) {
 }
 
 .txt2imgBackendSelect {
-  width: 100%;
+  flex: 1 1 65%;
   min-width: 0;
+  max-width: 100%;
 }
+.txt2imgRowStretchInput {
+  flex: 1 1 65%;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
 
 .txt2imgPortraitCacheActions {
   display: flex;

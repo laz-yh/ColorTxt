@@ -17,6 +17,7 @@
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "better-sqlite3": "^11.7.0",
     "electron-updater": "^6.8.3",
     "font-list": "^2.0.2",
@@ -58,7 +59,8 @@
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
       "**/node_modules/sqlite-vec/**",
-      "**/node_modules/sqlite-vec-*/**"
+      "**/node_modules/sqlite-vec-*/**",
+      "**/node_modules/onnxruntime-node/**"
     ],
     "extraResources": [
       {

@@ -62,15 +62,22 @@ export default defineConfig({
     },
     build: {
       outDir: "dist/main",
-      lib: {
-        entry: resolve(__electronViteConfigDir, "src/main/index.ts"),
-      },
       rollupOptions: {
-        // `font-list` 依赖包内 `./libs/core` 等相对路径，需保留在 node_modules。
-        // `iconv-lite` 常含动态编码加载，保持 external。
-        // `jschardet` 由 Rollup 打入主包；`jszip`/`pako` 仅 renderer 使用，主进程勿 external。
-        // `electron-updater` 保持 CJS 动态 require 与依赖树习惯用法。
-        // `ws` 内含对可选原生模块 `bufferutil`/`utf-8-validate` 的动态加载；打入 bundle 时会被解析成硬导入导致启动失败，故保持 external。
+        input: {
+          index: resolve(__electronViteConfigDir, "src/main/index.ts"),
+          "embedding/embeddingWorker": resolve(
+            __electronViteConfigDir,
+            "src/main/embedding/embeddingWorker.ts",
+          ),
+        },
+        /**
+         * 勿打入 main/worker bundle
+         *  - `font-list` 依赖包内 `./libs/core` 等相对路径，需保留在 node_modules。
+         *  - `iconv-lite` 常含动态编码加载，保持 external。
+         *  - `jschardet` 由 Rollup 打入主包；`jszip`/`pako` 仅 renderer 使用，主进程勿 external。
+         *  - `electron-updater` 保持 CJS 动态 require 与依赖树习惯用法。
+         *  - `ws` 内含对可选原生模块 `bufferutil`/`utf-8-validate` 的动态加载；打入 bundle 时会被解析成硬导入导致启动失败，故保持 external。
+         */
         external: [
           "font-list",
           "iconv-lite",
@@ -78,7 +85,15 @@ export default defineConfig({
           "better-sqlite3",
           "sqlite-vec",
           "ws",
+          "@huggingface/transformers",
+          "@huggingface/jinja",
+          "onnxruntime-node",
+          "onnxruntime-common",
         ],
+        output: {
+          format: "es",
+          entryFileNames: "[name].js",
+        },
       },
     },
   },

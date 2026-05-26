@@ -95,7 +95,7 @@ export const defaultCompressBlankKeepOneBlank = false;
 export const defaultLeadIndentFullWidth = false;
 export const defaultShowChapterCounts = true;
 /** 少于该字数的片段不作为章节（作用于章节列表/导航） */
-export const defaultChapterMinCharCount = 100;
+export const defaultChapterMinCharCount = 1;
 export const minChapterMinCharCount = 0;
 export const maxChapterMinCharCount = 100000;
 export const defaultReaderFontSize = 24;

@@ -1,8 +1,10 @@
-/** OpenAI 兼容 chat/completions 返回的 usage 汇总 */
+import type { AITokenPricePerMillion } from "./aiTypes";
 export type AITokenUsageTotals = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** 输入中由服务商上下文缓存命中的 token（DeepSeek / OpenAI 等） */
+  promptCacheHitTokens?: number;
 };
 
 export const ZERO_TOKEN_USAGE: AITokenUsageTotals = {
@@ -23,59 +25,35 @@ export function addTokenUsage(
     part.totalTokens > 0
       ? acc.totalTokens + part.totalTokens
       : promptTokens + completionTokens;
-  return { promptTokens, completionTokens, totalTokens };
-}
-
-/** 与向量分块 estimateTokens 一致：中文约 1.5 字符 / token */
-export function estimateTextTokens(text: string): number {
-  if (!text) return 0;
-  return Math.max(1, Math.ceil(text.length / 1.5));
-}
-
-/** 按字符数估算 token（勿对数字做 String(chars) 再估，否则会严重偏小） */
-export function estimateCharCountTokens(charCount: number): number {
-  if (charCount <= 0) return 0;
-  return Math.max(1, Math.ceil(charCount / 1.5));
-}
-
-/**
- * 阅读助手单轮对话 token 粗估（含多轮 tool + ragContext 二次送入上下文）。
- * 仅为参考，实际以 API usage 为准。
- */
-export function estimateAgentTurnTokens(opts: {
-  systemContent: string;
-  /** 已写入线程、将送入模型的 API 消息（不含 system） */
-  historyJsonCharCount: number;
-  maxCompletionTokens: number;
-  ragEnabled: boolean;
-}): AITokenUsageTotals {
-  const systemTokens = estimateTextTokens(opts.systemContent);
-  const historyTokens = estimateCharCountTokens(opts.historyJsonCharCount);
-
-  const toolsRoundTokens = 2000;
-  const toolResultTokens = opts.ragEnabled ? 2800 : 0;
-
-  const secondRoundPromptTokens = Math.round(
-    (systemTokens + historyTokens + toolsRoundTokens) * 0.45,
-  );
-
-  const promptTokens =
-    systemTokens +
-    historyTokens +
-    toolsRoundTokens +
-    secondRoundPromptTokens +
-    toolResultTokens;
-
-  const completionTokens = Math.min(
-    opts.maxCompletionTokens,
-    Math.max(256, Math.floor(opts.maxCompletionTokens * 0.12)),
-  );
-
-  return {
+  const promptCacheHitTokens =
+    (acc.promptCacheHitTokens ?? 0) + (part.promptCacheHitTokens ?? 0);
+  const out: AITokenUsageTotals = {
     promptTokens,
     completionTokens,
-    totalTokens: promptTokens + completionTokens,
+    totalTokens,
   };
+  if (promptCacheHitTokens > 0) {
+    out.promptCacheHitTokens = promptCacheHitTokens;
+  }
+  return out;
+}
+
+/** 从 usage 对象解析各厂商的「输入缓存命中」token 数 */
+function readPromptCacheHitTokens(usage: Record<string, unknown>): number {
+  if (typeof usage.prompt_cache_hit_tokens === "number") {
+    return Math.max(0, Math.round(usage.prompt_cache_hit_tokens));
+  }
+  const details = usage.prompt_tokens_details;
+  if (details && typeof details === "object") {
+    const cached = (details as Record<string, unknown>).cached_tokens;
+    if (typeof cached === "number") {
+      return Math.max(0, Math.round(cached));
+    }
+  }
+  if (typeof usage.cache_read_input_tokens === "number") {
+    return Math.max(0, Math.round(usage.cache_read_input_tokens));
+  }
+  return 0;
 }
 
 export function extractUsageFromChatJson(
@@ -95,30 +73,90 @@ export function extractUsageFromChatJson(
   if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0) {
     return null;
   }
-  return { promptTokens, completionTokens, totalTokens };
+  const out: AITokenUsageTotals = {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+  };
+  const hit = readPromptCacheHitTokens(usage);
+  if (hit > 0) out.promptCacheHitTokens = hit;
+  return out;
 }
 
 export function formatTokenCount(n: number): string {
   return Math.max(0, Math.round(n)).toLocaleString("zh-CN");
 }
 
-export function formatTokenUsageEstimateLine(
+function isTokenPriceSet(v: number | null | undefined): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0;
+}
+
+/** 根据用量与单价估算花费；条件不足时返回 null */
+export function computeTokenUsageCost(
   usage: AITokenUsageTotals,
-  ragEnabled: boolean,
-): string {
-  // const tail = ragEnabled
-  //   ? "；含工具调用或超长章节需分段压缩时可能更高"
-  //   : "；含多轮对话与工具时可能更高";
-  const tail = ragEnabled ? "" : "";
-  return `预计消耗 Token：${formatTokenCount(usage.totalTokens)}（输入 ${formatTokenCount(usage.promptTokens)}，输出 ${formatTokenCount(usage.completionTokens)}${tail}）`;
+  price: AITokenPricePerMillion | null | undefined,
+): number | null {
+  if (!price) return null;
+  if (!isTokenPriceSet(price.output)) return null;
+  const hitSet = isTokenPriceSet(price.inputCacheHit);
+  const missSet = isTokenPriceSet(price.inputCacheMiss);
+  if (!hitSet && !missSet) return null;
+
+  const promptTokens = Math.max(0, usage.promptTokens);
+  const completionTokens = Math.max(0, usage.completionTokens);
+  const hitRaw = usage.promptCacheHitTokens ?? 0;
+  const hitTokens = Math.min(Math.max(0, hitRaw), promptTokens);
+
+  let inputCost = 0;
+  if (hitSet && missSet) {
+    const missTokens = Math.max(0, promptTokens - hitTokens);
+    inputCost =
+      (hitTokens * price.inputCacheHit! +
+        missTokens * price.inputCacheMiss!) /
+      1_000_000;
+  } else {
+    const rate = (hitSet ? price.inputCacheHit : price.inputCacheMiss)!;
+    inputCost = (promptTokens * rate) / 1_000_000;
+  }
+  const outputCost = (completionTokens * price.output) / 1_000_000;
+  return inputCost + outputCost;
+}
+
+function trimFixedDecimalZeros(fixed: string): string {
+  const dot = fixed.indexOf(".");
+  if (dot < 0) return fixed;
+  const intPart = fixed.slice(0, dot);
+  const frac = fixed.slice(dot + 1).replace(/0+$/, "");
+  return frac ? `${intPart}.${frac}` : intPart;
+}
+
+export function formatTokenUsageCost(amount: number): string {
+  const n = Math.max(0, amount);
+  let digits: number;
+  if (n >= 100) digits = 2;
+  else if (n >= 0.1) digits = 3;
+  else if (n >= 0.001) digits = 4;
+  else digits = 6;
+  return `¥${trimFixedDecimalZeros(n.toFixed(digits))}`;
 }
 
 export function formatTokenUsageActualLine(
   usage: AITokenUsageTotals,
   available: boolean,
+  pricePerMillion?: AITokenPricePerMillion | null,
 ): string {
   if (!available) {
     return "未能从模型服务获取本次 token 用量（请确认接口支持 usage / stream_options.include_usage）";
   }
-  return `本次对话消耗 Token：${formatTokenCount(usage.totalTokens)}（输入 ${formatTokenCount(usage.promptTokens)}，输出 ${formatTokenCount(usage.completionTokens)}）`;
+  let inputPart = `输入 ${formatTokenCount(usage.promptTokens)}`;
+  const hit = usage.promptCacheHitTokens ?? 0;
+  if (hit > 0) {
+    inputPart += `（缓存命中 ${formatTokenCount(hit)}）`;
+  }
+  let line = `本次对话消耗 Token：${formatTokenCount(usage.totalTokens)}（${inputPart}，输出 ${formatTokenCount(usage.completionTokens)}）`;
+  const cost = computeTokenUsageCost(usage, pricePerMillion);
+  if (cost != null) {
+    line += `，总花费约：${formatTokenUsageCost(cost)}`;
+  }
+  return line;
 }

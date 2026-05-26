@@ -1,15 +1,33 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { AIConfig } from "@shared/aiTypes";
+import {
+  CHAT_API_PROVIDER_CUSTOM_ID,
+  CHAT_API_PROVIDER_PRESETS,
+  findChatProviderPresetByBaseUrl,
+  isChatApiProviderCustomId,
+  resolveChatProviderPresetIdFromBaseUrl,
+} from "@shared/apiEndpointPresets";
 import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
+import ApiEndpointInput from "./ApiEndpointInput.vue";
 import AppPullFlashButton, { type AppPullFlashDone } from "./AppPullFlashButton.vue";
 import NumericInput from "./NumericInput.vue";
 import RangeSlider from "./RangeSlider.vue";
+import PathPickerInput from "./PathPickerInput.vue";
 import SwitchToggle from "./SwitchToggle.vue";
 import { icons } from "../icons";
 import { appAlert } from "../services/appDialog";
+import { resolveDefaultAiDataCacheDirSync } from "../utils/defaultCacheDirs";
+import { useSecretStorageHint } from "../composables/useSecretStorageHint";
 
 const modelValue = defineModel<AIConfig>({ required: true });
+const { secretStorageHint } = useSecretStorageHint();
+
+/** 留空时实际使用的绝对路径，用作输入框 placeholder */
+const aiDataCacheDirPlaceholder = computed(() => {
+  const p = resolveDefaultAiDataCacheDirSync().trim();
+  return p || "";
+});
 
 const selectListsEmpty: CustomSelectItem[] = [];
 
@@ -27,6 +45,66 @@ const chatEndpointFingerprint = computed(() => {
   const c = modelValue.value.chat;
   return `${c.baseUrl.trim()}\0${c.apiKey}\0${c.model.trim()}`;
 });
+
+/** 用户显式选中「自定义」且尚未填写地址时，仍保持下拉显示 */
+const chatProviderExplicitId = ref("");
+
+const chatProviderSelectItems = computed((): CustomSelectItem[] =>
+  CHAT_API_PROVIDER_PRESETS.map((p) => ({
+    kind: "item",
+    id: p.id,
+    label: p.label,
+    description: p.listDescription?.trim() || p.baseUrl,
+  })),
+);
+
+const chatProviderPresetId = computed(() => {
+  if (chatProviderExplicitId.value) return chatProviderExplicitId.value;
+  return resolveChatProviderPresetIdFromBaseUrl(modelValue.value.chat.baseUrl);
+});
+
+const chatProviderDisplayLabel = computed(() => {
+  const id = chatProviderPresetId.value;
+  if (!id) return "";
+  return CHAT_API_PROVIDER_PRESETS.find((p) => p.id === id)?.label ?? "";
+});
+
+function onChatProviderPresetSelect(id: string) {
+  chatProviderExplicitId.value = id;
+  if (isChatApiProviderCustomId(id)) {
+    modelValue.value.chat.baseUrl = "";
+    return;
+  }
+  const hit = CHAT_API_PROVIDER_PRESETS.find((p) => p.id === id && !p.custom);
+  if (hit?.baseUrl.trim()) modelValue.value.chat.baseUrl = hit.baseUrl;
+}
+
+watch(
+  () => modelValue.value.chat.baseUrl,
+  (url) => {
+    const hit = findChatProviderPresetByBaseUrl(url);
+    if (hit) {
+      chatProviderExplicitId.value = hit.id;
+      return;
+    }
+    if (url.trim()) {
+      chatProviderExplicitId.value = CHAT_API_PROVIDER_CUSTOM_ID;
+      return;
+    }
+    // 地址被清空：若此前选过固定服务商，视为改为自定义（避免全选删除后下拉变回占位符）
+    if (
+      chatProviderExplicitId.value &&
+      !isChatApiProviderCustomId(chatProviderExplicitId.value)
+    ) {
+      chatProviderExplicitId.value = CHAT_API_PROVIDER_CUSTOM_ID;
+      return;
+    }
+    if (chatProviderExplicitId.value !== CHAT_API_PROVIDER_CUSTOM_ID) {
+      chatProviderExplicitId.value = "";
+    }
+  },
+  { immediate: true },
+);
 
 watch(chatEndpointFingerprint, (fp) => {
   if (chatTestPhase.value === "pending") return;
@@ -74,8 +152,11 @@ async function refreshChatModels(opts?: { pullDone?: AppPullFlashDone }) {
     ok = r.ok;
     if (r.ok) {
       chatModelOptions.value = r.models;
-      if (!modelValue.value.chat.model.trim() && r.models.length > 0) {
-        modelValue.value.chat.model = r.models[0];
+      if (r.models.length > 0) {
+        const cur = modelValue.value.chat.model.trim();
+        if (!cur || !r.models.includes(cur)) {
+          modelValue.value.chat.model = r.models[0]!;
+        }
       }
     } else chatModelOptions.value = [];
   } finally {
@@ -179,77 +260,104 @@ async function testChat() {
       <section class="aiSection">
         <h3 class="aiSectionTitle">对话模型</h3>
         <div class="settingsRow">
-          <span class="settingsLabel">接口地址</span>
-          <input
-            v-model="modelValue.chat.baseUrl"
-            type="text"
-            autocomplete="off"
-            placeholder="http://127.0.0.1:1234/v1"
-            class="settingsStretchInput"
-          />
-        </div>
-        <div class="settingsRow">
-          <span class="settingsLabel">API 密钥</span>
-          <div class="settingsPasswordRow">
-            <input
-              v-model="modelValue.chat.apiKey"
-              class="settingsStretchInput settingsPasswordRow__input"
-              :type="showChatKey ? 'text' : 'password'"
-              autocomplete="off"
-              spellcheck="false"
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">服务商</span>
+            <AppCustomSelect
+              class="aiChatProviderSelect"
+              :model-value="chatProviderPresetId"
+              :display-label="chatProviderDisplayLabel"
+              placeholder="选择服务商…"
+              :fixed-top-items="selectListsEmpty"
+              :scroll-items="chatProviderSelectItems"
+              :fixed-bottom-items="selectListsEmpty"
+              :scroll-max-height="320"
+              ariaLabel="对话模型服务商"
+              @update:model-value="onChatProviderPresetSelect"
             />
-            <button
-              type="button"
-              class="btn iconOnly"
-              :title="showChatKey ? '隐藏' : '显示'"
-              @click="showChatKey = !showChatKey"
-            >
-              <span
-                class="iconSvg"
-                v-html="showChatKey ? icons.view : icons.viewOff"
-              />
-            </button>
           </div>
         </div>
         <div class="settingsRow">
-          <span class="settingsLabel">模型</span>
-          <div class="aiModelToolbar">
-            <AppCustomSelect
-              class="aiModelSelect"
-              :model-value="modelValue.chat.model"
-              :display-label="chatModelDisplayLabel"
-              placeholder="选择模型…"
-              :fixed-top-items="selectListsEmpty"
-              :scroll-items="chatModelScrollItems"
-              :fixed-bottom-items="selectListsEmpty"
-              :scroll-max-height="260"
-              ariaLabel="对话模型"
-              @panel-open-change="onChatModelPanelOpenChange"
-              @update:model-value="modelValue.chat.model = $event"
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">接口地址</span>
+            <ApiEndpointInput
+              v-model="modelValue.chat.baseUrl"
+              :suggestions="[]"
+              input-class="aiRowStretchInput"
+              aria-label="对话模型接口地址"
             />
-            <AppPullFlashButton
-              ref="chatPullBtnRef"
-              label="拉取模型"
-              :busy="chatModelsLoading"
-              @pull="(done) => void refreshChatModels({ pullDone: done })"
-            />
-            <button
-              type="button"
-              class="btn"
-              :class="{
-                success: chatTestPhase === 'ok',
-                danger: chatTestPhase === 'fail',
-              }"
-              :disabled="chatTestPhase === 'pending'"
-              @click="testChat"
-            >
-              <span
-                class="iconSvg"
-                :class="{ 'iconSvg--spinning': chatTestPhase === 'pending' }"
-                v-html="chatTestIconHtml"
-              />
-              测试连接
-            </button>
+          </div>
+        </div>
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">API 密钥</span>
+            <div class="aiRowField">
+              <div class="settingsPasswordRow aiPasswordRow">
+                <input
+                  v-model="modelValue.chat.apiKey"
+                  class="settingsStretchInput settingsPasswordRow__input"
+                  :type="showChatKey ? 'text' : 'password'"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button
+                  type="button"
+                  class="btn iconOnly"
+                  :title="showChatKey ? '隐藏' : '显示'"
+                  @click="showChatKey = !showChatKey"
+                >
+                  <span
+                    class="iconSvg"
+                    v-html="showChatKey ? icons.view : icons.viewOff"
+                  />
+                </button>
+              </div>
+            </div>
+          </div>
+          <p class="settingsHint">{{ secretStorageHint }}</p>
+        </div>
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">模型</span>
+            <div class="aiChatModelRow">
+              <div class="aiModelToolbar aiChatModelToolbar">
+                <AppCustomSelect
+                  class="aiModelSelect aiChatModelSelect"
+                  :model-value="modelValue.chat.model"
+                  :display-label="chatModelDisplayLabel"
+                  placeholder="选择模型…"
+                  :fixed-top-items="selectListsEmpty"
+                  :scroll-items="chatModelScrollItems"
+                  :fixed-bottom-items="selectListsEmpty"
+                  :scroll-max-height="260"
+                  ariaLabel="对话模型"
+                  @panel-open-change="onChatModelPanelOpenChange"
+                  @update:model-value="modelValue.chat.model = $event"
+                />
+                <AppPullFlashButton
+                  ref="chatPullBtnRef"
+                  label="拉取模型"
+                  :busy="chatModelsLoading"
+                  @pull="(done) => void refreshChatModels({ pullDone: done })"
+                />
+                <button
+                  type="button"
+                  class="btn"
+                  :class="{
+                    success: chatTestPhase === 'ok',
+                    danger: chatTestPhase === 'fail',
+                  }"
+                  :disabled="chatTestPhase === 'pending'"
+                  @click="testChat"
+                >
+                  <span
+                    class="iconSvg"
+                    :class="{ 'iconSvg--spinning': chatTestPhase === 'pending' }"
+                    v-html="chatTestIconHtml"
+                  />
+                  测试连接
+                </button>
+              </div>
+            </div>
           </div>
         </div>
         <div class="settingsRow">
@@ -295,6 +403,80 @@ async function testChat() {
             />
           </div>
         </div>
+      </section>
+
+      <section class="aiSection aiSection--compact">
+        <div class="aiMasterToggleRow">
+          <span class="settingsLabel aiMasterToggleLabel"
+            >显示 Token 消耗量</span
+          >
+          <SwitchToggle
+            v-model="modelValue.showTokenUsage"
+            aria-label="显示 Token 消耗量"
+          />
+        </div>
+        <template v-if="modelValue.showTokenUsage">
+          <h3 class="aiSectionTitle aiTokenPriceTitle">每百万 Token 价格</h3>
+          <p class="settingsHint aiTokenPriceHint">
+            如果设置了输入和输出价格，在显示 Token 消耗量时会自动计算并显示总花费；<br />只设置一个输入价格时，全部输入 Token 会按该价格计算。
+          </p>
+          <div class="settingsRow">
+            <div class="settingsRowMain settingsRowMain--baseline">
+              <span class="settingsLabel">输入（缓存命中）</span>
+              <NumericInput
+                v-model="modelValue.chat.tokenPricePerMillion.inputCacheHit"
+                :min="0"
+                :step="0.01"
+                class="aiTokenPriceInput"
+                aria-label="输入缓存命中每百万 Token 价格"
+              />
+            </div>
+          </div>
+          <div class="settingsRow">
+            <div class="settingsRowMain settingsRowMain--baseline">
+              <span class="settingsLabel">输入（缓存未命中）</span>
+              <NumericInput
+                v-model="modelValue.chat.tokenPricePerMillion.inputCacheMiss"
+                :min="0"
+                :step="0.01"
+                class="aiTokenPriceInput"
+                aria-label="输入缓存未命中每百万 Token 价格"
+              />
+            </div>
+          </div>
+          <div class="settingsRow">
+            <div class="settingsRowMain settingsRowMain--baseline">
+              <span class="settingsLabel">输出</span>
+              <NumericInput
+                v-model="modelValue.chat.tokenPricePerMillion.output"
+                :min="0"
+                :step="0.01"
+                class="aiTokenPriceInput"
+                aria-label="输出每百万 Token 价格"
+              />
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <section class="aiSection aiSection--compact">
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">数据缓存目录</span>
+            <div class="aiDataCacheActions">
+              <PathPickerInput
+                v-model="modelValue.aiDataCacheDir"
+                is-directory
+                :placeholder="aiDataCacheDirPlaceholder"
+                aria-label="AI 数据缓存目录"
+                class="aiDataCachePicker"
+              />
+            </div>
+          </div>
+        </div>
+        <p class="aiMasterHint">
+          存放 AI 配置与向量库/对话记录。
+        </p>
       </section>
 
       <section class="aiSection quickQSection">
@@ -424,11 +606,66 @@ async function testChat() {
   flex: 1 1 60%;
 }
 
-.quickQSection {
-  gap: 5px;
+.settingsLabel.short {
+  flex: 1 1 30%;
+  min-width: 30%;
 }
-.quickQSection .aiSectionTitle {
-  margin-bottom: 15px;
+
+.aiDataCacheActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1 1 65%;
+  min-width: 0;
+}
+
+
+.aiChatProviderSelect {
+  flex: 1 1 65%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aiRowStretchInput {
+  flex: 1 1 65%;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.aiRowField {
+  flex: 1 1 65%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aiPasswordRow {
+  width: 100%;
+}
+
+.aiChatModelRow {
+  flex: 1 1 65%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aiChatModelToolbar {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.aiChatModelSelect {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.aiDataCachePicker {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .settingsStretchInput,
@@ -448,6 +685,42 @@ async function testChat() {
 .settingsPasswordRow__input {
   flex: 1;
   min-width: 0;
+}
+
+.aiMasterHint code {
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--panel-elevated, rgba(127, 127, 127, 0.12));
+}
+
+.aiTokenPriceTitle {
+  margin-top: 4px;
+}
+
+.aiTokenPriceHint {
+  margin: 0;
+}
+
+.aiTokenPriceInput {
+  flex: 1 1 65%;
+  min-width: 0;
+  max-width: 160px;
+}
+
+.settingsHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.quickQSection {
+  gap: 5px;
+}
+
+.quickQSection .aiSectionTitle {
+  margin-bottom: 15px;
 }
 
 .iconOnly {

@@ -1,5 +1,16 @@
 /** AI 功能共享类型（主进程 / preload / renderer 对齐） */
 
+import {
+  DEFAULT_BUILTIN_EMBEDDING_MODEL_ID,
+  DEFAULT_HF_REMOTE_HOST,
+  isBuiltinEmbeddingModel,
+} from "./builtinEmbeddingModels";
+import {
+  DEFAULT_EMBEDDING_REMOTE_BASE_URL,
+  normalizeChatPresetBaseUrl,
+} from "./apiEndpointPresets";
+import type { AITokenUsageTotals } from "./aiTokenUsage";
+
 export interface AIChatEndpoint {
   baseUrl: string;
   apiKey: string;
@@ -8,13 +19,65 @@ export interface AIChatEndpoint {
   maxTokens: number;
   slidingWindowSize: number;
   systemPromptExtra: string;
+  /** 每百万 Token 单价（0 表示未设置，不参与花费估算） */
+  tokenPricePerMillion: AITokenPricePerMillion;
 }
 
+/** 对话模型每百万 Token 价格 */
+export interface AITokenPricePerMillion {
+  inputCacheHit: number;
+  inputCacheMiss: number;
+  output: number;
+}
+
+export const EMPTY_TOKEN_PRICE_PER_MILLION: AITokenPricePerMillion = {
+  inputCacheHit: 0,
+  inputCacheMiss: 0,
+  output: 0,
+};
+
+export function normalizeTokenPricePerMillion(
+  raw: unknown,
+): AITokenPricePerMillion {
+  if (!raw || typeof raw !== "object") {
+    return { ...EMPTY_TOKEN_PRICE_PER_MILLION };
+  }
+  const o = raw as Record<string, unknown>;
+  const read = (k: string): number => {
+    const v = o[k];
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return 0;
+    return v;
+  };
+  return {
+    inputCacheHit: read("inputCacheHit"),
+    inputCacheMiss: read("inputCacheMiss"),
+    output: read("output"),
+  };
+}
+
+export type EmbeddingProvider = "remote" | "builtin";
+
 export interface AIEmbeddingEndpoint {
+  provider: EmbeddingProvider;
+  /** OpenAI 兼容 Base URL；拉模型与嵌入分别派生为 `{baseUrl}/models`、`{baseUrl}/embeddings` */
   baseUrl: string;
   apiKey: string;
-  model: string;
+  /** 远程 API 嵌入模型名 */
+  remoteModel: string;
+  /** 内置本地模型目录 id（如 bge-small-zh-v1.5） */
+  builtinModel: string;
   dimension: number;
+  /** builtin：Transformers.js 下载镜像根地址 */
+  hfRemoteHost: string;
+  /** builtin：模型缓存根目录；空 → userData/ai/model-cache */
+  builtinModelCacheDir: string;
+}
+
+/** 当前嵌入来源实际使用的模型标识 */
+export function activeEmbeddingModel(embedding: AIEmbeddingEndpoint): string {
+  return embedding.provider === "builtin"
+    ? embedding.builtinModel.trim()
+    : embedding.remoteModel.trim();
 }
 
 /** 文生图 HTTP 后端种类 */
@@ -201,12 +264,18 @@ export interface PortraitExtractResult {
   bio_zh: string;
   /** 主要人物关系 */
   relations_zh: string;
+  /** 本轮检索对话模型实际 token 消耗（含重试） */
+  tokenUsage?: AITokenUsageTotals;
+  /** 是否从模型响应解析到 usage */
+  tokenUsageAvailable?: boolean;
 }
 
 /** 侧栏「角色」推断全书画风（中文 SD 前缀草案 + 中文说明；提交 SD 前与角色 prompt 一并译英） */
 export interface BookStyleInferResult {
   style_sd_prefix_zh: string;
   note_zh: string;
+  tokenUsage?: AITokenUsageTotals;
+  tokenUsageAvailable?: boolean;
 }
 
 export interface AIConfig {
@@ -215,6 +284,8 @@ export interface AIConfig {
    * 不影响磁盘已保存的向量索引与各子项配置。
    */
   aiEnabled: boolean;
+  /** AI 数据缓存根目录；空 → userData/ai/data（含 config.json + vector.sqlite） */
+  aiDataCacheDir: string;
   chat: AIChatEndpoint;
   /** 关闭时不构建向量索引，Agent 不提供 ragSearch/ragContext */
   embeddingEnabled: boolean;
@@ -225,6 +296,8 @@ export interface AIConfig {
   ragTopK: number;
   /** 对话为空时「快速提问」条目（顺序展示）；条目为除去空白后的非空字符串 */
   quickQuestions: string[];
+  /** 侧栏展示 Token 消耗信息；关闭后隐藏价格相关设置 */
+  showTokenUsage: boolean;
   txt2img: AITxt2ImgConfig;
 }
 
@@ -365,19 +438,13 @@ export type AIAgentRendererEvent =
       full: string;
     }
   | {
-      type: "token_usage_estimate";
-      requestId: number;
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
-      ragEnabled: boolean;
-    }
-  | {
       type: "token_usage_final";
       requestId: number;
       promptTokens: number;
       completionTokens: number;
       totalTokens: number;
+      /** 输入中缓存命中的 token（DeepSeek / OpenAI 等，多轮累加） */
+      promptCacheHitTokens?: number;
       /** 是否至少一次从 API 拿到 usage */
       available: boolean;
     }
@@ -514,8 +581,72 @@ export interface AIChatStreamPayload {
   chatModelOverride?: string;
 }
 
+const DEFAULT_EMBEDDING_ENDPOINT: AIEmbeddingEndpoint = {
+  provider: "builtin",
+  baseUrl: DEFAULT_EMBEDDING_REMOTE_BASE_URL,
+  apiKey: "",
+  remoteModel: "",
+  builtinModel: DEFAULT_BUILTIN_EMBEDDING_MODEL_ID,
+  dimension: 512,
+  hfRemoteHost: DEFAULT_HF_REMOTE_HOST,
+  builtinModelCacheDir: "",
+};
+
+export function normalizeEmbeddingEndpoint(
+  raw: unknown,
+): AIEmbeddingEndpoint {
+  const d = structuredClone(DEFAULT_EMBEDDING_ENDPOINT);
+  if (!raw || typeof raw !== "object") return d;
+  const o = raw as Record<string, unknown>;
+  if (o.provider === "remote" || o.provider === "builtin") {
+    d.provider = o.provider;
+  } else {
+    // 旧版 config 无 provider 字段时均为远程 API
+    d.provider = "remote";
+  }
+  if (typeof o.baseUrl === "string") d.baseUrl = o.baseUrl;
+  if (typeof o.apiKey === "string") d.apiKey = o.apiKey;
+  if (typeof o.remoteModel === "string") d.remoteModel = o.remoteModel;
+  if (typeof o.builtinModel === "string") d.builtinModel = o.builtinModel;
+  if (typeof o.dimension === "number" && Number.isFinite(o.dimension)) {
+    d.dimension = o.dimension;
+  }
+  if (typeof o.hfRemoteHost === "string") d.hfRemoteHost = o.hfRemoteHost;
+  if (typeof o.builtinModelCacheDir === "string") {
+    d.builtinModelCacheDir = o.builtinModelCacheDir;
+  }
+  if (
+    typeof (o as { localModelPath?: string }).localModelPath === "string" &&
+    !d.builtinModelCacheDir.trim()
+  ) {
+    d.builtinModelCacheDir = (
+      o as { localModelPath: string }
+    ).localModelPath.trim();
+  }
+
+  // 旧版单一 model 字段 → 按类型拆入 remoteModel / builtinModel
+  const legacyModel = typeof o.model === "string" ? o.model.trim() : "";
+  if (legacyModel) {
+    if (isBuiltinEmbeddingModel(legacyModel)) {
+      if (!d.builtinModel.trim()) d.builtinModel = legacyModel;
+    } else if (!d.remoteModel.trim()) {
+      d.remoteModel = legacyModel;
+    }
+  }
+  if (d.provider === "builtin" && !d.builtinModel.trim()) {
+    d.builtinModel = DEFAULT_BUILTIN_EMBEDDING_MODEL_ID;
+  }
+
+  if (d.provider === "remote" && d.baseUrl.trim()) {
+    d.baseUrl = normalizeChatPresetBaseUrl(d.baseUrl);
+  }
+
+  return d;
+}
+
 export const defaultAIConfig: AIConfig = {
   aiEnabled: true,
+  aiDataCacheDir: "",
   embeddingEnabled: false,
   chat: {
     baseUrl: "http://127.0.0.1:1234/v1",
@@ -525,17 +656,14 @@ export const defaultAIConfig: AIConfig = {
     maxTokens: 4096,
     slidingWindowSize: 8,
     systemPromptExtra: "",
+    tokenPricePerMillion: { ...EMPTY_TOKEN_PRICE_PER_MILLION },
   },
-  embedding: {
-    baseUrl: "http://127.0.0.1:1234/v1",
-    apiKey: "",
-    model: "",
-    dimension: 1536,
-  },
+  embedding: structuredClone(DEFAULT_EMBEDDING_ENDPOINT),
   chunkTargetTokens: 300,
   chunkMinTokens: 50,
   chunkOverlapRatio: 0.2,
   ragTopK: 5,
   quickQuestions: [...DEFAULT_AI_QUICK_QUESTIONS],
+  showTokenUsage: true,
   txt2img: structuredClone(defaultTxt2ImgConfig),
 };
