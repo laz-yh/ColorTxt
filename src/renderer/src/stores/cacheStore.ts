@@ -15,6 +15,10 @@ import {
 export type { TxtFileItem };
 import { parseHighlightColorsArray } from "../constants/highlightColors";
 import {
+  normalizeHighlightWordsByIndex,
+  type HighlightWordsByIndex,
+} from "./fileMetaStore";
+import {
   parseReaderPaletteOverrides,
   type ReaderSurfacePalette,
 } from "../constants/readerPalette";
@@ -78,6 +82,8 @@ export type PersistedSettingsData = {
   highlightColorsLight?: string[];
   /** 自定义高亮色（暗色主题） */
   highlightColorsDark?: string[];
+  /** 已收藏（全书通用）高亮词，按高亮色索引分桶 */
+  highlightWordsByIndexGlobal?: HighlightWordsByIndex;
   /**
    * 电子书转换输出目录：空字符串表示与源书同目录。
    * 非空时为绝对路径。若设置 JSON 中无此键，应用默认使用 `userData/ConvertedTxt`。
@@ -280,6 +286,10 @@ export function loadPersistedSettingsData(
     const h = parseHighlightColorsArray(obj.highlightColorsDark);
     if (h) data.highlightColorsDark = h;
   }
+  const globalHl = normalizeHighlightWordsByIndex(
+    obj.highlightWordsByIndexGlobal,
+  );
+  if (globalHl) data.highlightWordsByIndexGlobal = globalHl;
   if (typeof obj.ebookConvertOutputDir === "string") {
     data.ebookConvertOutputDir = obj.ebookConvertOutputDir;
   }

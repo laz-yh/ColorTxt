@@ -64,6 +64,8 @@ import genderMaleIcon from "./assets/male.svg?raw";
 import genderFemaleIcon from "./assets/female.svg?raw";
 import genderUnknownIcon from "./assets/unknown.svg?raw";
 import warningIcon from "./assets/warning.svg?raw";
+import favoriteIcon from "./assets/favorite.svg?raw";
+import favoriteFillIcon from "./assets/favorite_fill.svg?raw";
 
 export const icons = {
   dark: darkIcon,
@@ -135,4 +137,8 @@ export const icons = {
   genderUnknown: genderUnknownIcon,
   /** 阅读助手「用户取消」、角色卡检索提示等 */
   warning: warningIcon,
+  /** 高亮词：收藏（未收藏项 hover 显示） */
+  favorite: favoriteIcon,
+  /** 高亮词：已收藏（常驻） */
+  favoriteFill: favoriteFillIcon,
 } as const;

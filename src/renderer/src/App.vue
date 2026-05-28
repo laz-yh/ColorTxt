@@ -62,7 +62,15 @@ import {
   removeHighlightTermFromFile,
   upsertFileMetaRecord,
   type FileMetaRecord,
+  type HighlightWordsByIndex,
 } from "./stores/fileMetaStore";
+import {
+  assignHighlightTermToColorMap,
+  buildHighlightListTerms,
+  mergeHighlightWordsByIndex,
+  removeHighlightTermFromMap,
+  termExistsInHighlightMap,
+} from "./utils/highlightWords";
 import {
   applyReaderSurfaceToDocument,
   defaultCompressBlankKeepOneBlank,
@@ -460,6 +468,10 @@ const readerPaletteOverridesDark = ref<Partial<ReaderSurfacePalette>>({});
 
 const highlightColorsLight = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_LIGHT]);
 const highlightColorsDark = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_DARK]);
+/** 已收藏（全书通用）高亮词 */
+const highlightWordsByIndexGlobal = ref<HighlightWordsByIndex | undefined>(
+  undefined,
+);
 
 const readerSurfaceLight = computed(() =>
   mergeReaderSurfacePalette(
@@ -519,27 +531,25 @@ function onCharacterFileMetaPatch(payload: {
   persistFileMeta();
 }
 
-const currentFileHighlightTerms = computed<
-  Array<{ text: string; color: string; colorIndex: number }>
->(() => {
-  const groups = currentFileHighlightWords.value;
-  if (!groups) return [];
+const mergedHighlightWordsForReader = computed(() =>
+  mergeHighlightWordsByIndex(
+    highlightWordsByIndexGlobal.value,
+    currentFileHighlightWords.value,
+  ),
+);
+
+const currentFileHighlightTerms = computed(() => {
   const colors = highlightColorsForReader.value;
   const bodyText =
     currentTheme.value === "vs"
       ? readerSurfaceLight.value.bodyText
       : readerSurfaceDark.value.bodyText;
-  const out: Array<{ text: string; color: string; colorIndex: number }> = [];
-  for (const [idxKey, terms] of Object.entries(groups)) {
-    const idx = Number.parseInt(idxKey, 10);
-    if (!Number.isFinite(idx) || idx < 0) continue;
-    const color = idx < colors.length ? colors[idx] : bodyText;
-    for (const text of terms) {
-      if (!text) continue;
-      out.push({ text, color, colorIndex: idx });
-    }
-  }
-  return out;
+  return buildHighlightListTerms(
+    highlightWordsByIndexGlobal.value,
+    currentFileHighlightWords.value,
+    colors,
+    bodyText,
+  );
 });
 
 const readerPaneWrapRef = useTemplateRef<HTMLElement>("readerPaneWrapRef");
@@ -782,6 +792,7 @@ const persistence = useAppPersistence({
   readerPaletteOverridesDark,
   highlightColorsLight,
   highlightColorsDark,
+  highlightWordsByIndexGlobal,
   ebookConvertOutputDir,
   characterPortraitCacheDir,
   characterCardTextureEffect,
@@ -1617,7 +1628,18 @@ function onAddHighlightTerm(payload: { text: string; colorIndex: number }) {
   persistFileMeta();
 }
 
-function onRemoveHighlightTerm(payload: { text: string }) {
+function onRemoveHighlightTerm(payload: {
+  text: string;
+  scope?: "global" | "book";
+}) {
+  if (payload.scope === "global") {
+    highlightWordsByIndexGlobal.value = removeHighlightTermFromMap(
+      highlightWordsByIndexGlobal.value,
+      payload.text,
+    );
+    persistSettings();
+    return;
+  }
   const path = currentFile.value;
   if (!path) return;
   fileMetaRecords.value = removeHighlightTermFromFile(
@@ -1626,6 +1648,49 @@ function onRemoveHighlightTerm(payload: { text: string }) {
     payload.text,
   );
   persistFileMeta();
+}
+
+function onFavoriteHighlightTerm(payload: { text: string; colorIndex: number }) {
+  const path = currentFile.value;
+  if (!path) return;
+  fileMetaRecords.value = removeHighlightTermFromFile(
+    fileMetaRecords.value,
+    path,
+    payload.text,
+  );
+  highlightWordsByIndexGlobal.value = assignHighlightTermToColorMap(
+    highlightWordsByIndexGlobal.value,
+    payload.colorIndex,
+    payload.text,
+  );
+  persistFileMeta();
+  persistSettings();
+}
+
+function onUnfavoriteHighlightTerm(payload: {
+  text: string;
+  colorIndex: number;
+}) {
+  const term = payload.text.trim();
+  highlightWordsByIndexGlobal.value = removeHighlightTermFromMap(
+    highlightWordsByIndexGlobal.value,
+    term,
+  );
+  const path = currentFile.value;
+  const bookHas = termExistsInHighlightMap(
+    currentFileHighlightWords.value,
+    term,
+  );
+  if (!bookHas && path) {
+    fileMetaRecords.value = assignHighlightTermToColorForFile(
+      fileMetaRecords.value,
+      path,
+      payload.colorIndex,
+      term,
+    );
+    persistFileMeta();
+  }
+  persistSettings();
 }
 
 async function clearCurrentFileHighlightTerms() {
@@ -1637,7 +1702,7 @@ async function clearCurrentFileHighlightTerms() {
     buttons: ["取消", "清空"],
     defaultId: 1,
     cancelId: 0,
-    message: "是否要清空当前文件的所有高亮词？",
+    message: "是否要清空当前文件的所有本书高亮词？",
     detail: "此操作不可逆！",
     noLink: true,
   });
@@ -2309,7 +2374,9 @@ useAppShellThemeWatch({
           @update:search-whole-word="searchWholeWord = $event"
           @update:search-use-regex="searchUseRegex = $event"
           @jump-to-search-result="onJumpToSearchResult"
-          @remove-highlight-term="onRemoveHighlightTerm({ text: $event })"
+          @remove-highlight-term="onRemoveHighlightTerm"
+          @favorite-highlight-term="onFavoriteHighlightTerm"
+          @unfavorite-highlight-term="onUnfavoriteHighlightTerm"
           @clear-highlights="clearCurrentFileHighlightTerms"
           @character-file-meta-patch="onCharacterFileMetaPatch"
           @persist-ui="onPersistUi"
@@ -2382,7 +2449,8 @@ useAppShellThemeWatch({
           :reader-surface-light="readerSurfaceLight"
           :reader-surface-dark="readerSurfaceDark"
           :highlight-colors="highlightColorsForReader"
-          :highlight-words-by-index="currentFileHighlightWords"
+          :highlight-words-by-index="mergedHighlightWordsForReader"
+          :highlight-words-by-index-book-only="currentFileHighlightWords"
           :reader-file-path="currentFile"
           :ebook-anchor-physical-to-display="
             stream.physicalLineToDisplayForReader

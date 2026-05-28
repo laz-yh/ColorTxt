@@ -22,6 +22,7 @@ import ChapterListPanel from "./ChapterListPanel.vue";
 import FileListPanel from "./FileListPanel.vue";
 import BookmarkListPanel from "./BookmarkListPanel.vue";
 import HighlightListPanel from "./HighlightListPanel.vue";
+import type { HighlightListTerm } from "../utils/highlightWords";
 import AiAssistantPanel from "./AiAssistantPanel.vue";
 import CharacterSidebarPanel from "./CharacterSidebarPanel.vue";
 import SearchPanel from "./SearchPanel.vue";
@@ -57,7 +58,7 @@ const props = withDefaults(
     fileMetaRecords?: readonly FileMetaRecord[];
     /** 当前打开文件的实时进度（%），滚动时更新 */
     liveReadingProgressPercent?: number;
-    highlightTerms?: Array<{ text: string; color: string; colorIndex: number }>;
+    highlightTerms?: HighlightListTerm[];
     searchQuery?: string;
     searchResults?: Array<{
       physicalLine: number;
@@ -216,7 +217,9 @@ const emit = defineEmits<{
   openSettings: [];
   refreshChaptersFromReader: [];
   findHighlightTerm: [text: string];
-  removeHighlightTerm: [text: string];
+  removeHighlightTerm: [payload: { text: string; scope: "global" | "book" }];
+  favoriteHighlightTerm: [payload: { text: string; colorIndex: number }];
+  unfavoriteHighlightTerm: [payload: { text: string; colorIndex: number }];
   clearInlineSearchHighlight: [];
   clearHighlights: [];
   "update:searchQuery": [value: string];
@@ -790,6 +793,8 @@ defineExpose({
         :monaco-font-family="monacoFontFamily"
         @find-highlight-term="emit('findHighlightTerm', $event)"
         @remove-highlight-term="emit('removeHighlightTerm', $event)"
+        @favorite-highlight-term="emit('favoriteHighlightTerm', $event)"
+        @unfavorite-highlight-term="emit('unfavoriteHighlightTerm', $event)"
         @clear-inline-search-highlight="emit('clearInlineSearchHighlight')"
         @clear-highlights="emit('clearHighlights')"
       />

@@ -45,11 +45,13 @@ import {
   clearBookmarksForFile,
   findFileMetaRecord,
   loadFileMetaRecords,
+  normalizeHighlightWordsByIndex,
   persistFileMetaRecords,
   removeBookmarkForFile,
   upsertBookmarkForFile,
   upsertFileMetaRecord,
   type FileMetaRecord,
+  type HighlightWordsByIndex,
   type PersistedEditorViewState,
 } from "../stores/fileMetaStore";
 import {
@@ -164,6 +166,7 @@ export function useAppPersistence(deps: {
   readerPaletteOverridesDark: Ref<Partial<ReaderSurfacePalette>>;
   highlightColorsLight: Ref<string[]>;
   highlightColorsDark: Ref<string[]>;
+  highlightWordsByIndexGlobal: Ref<HighlightWordsByIndex | undefined>;
   /** 电子书转换输出目录；空字符串表示与源文件同目录；无持久化键时默认 userData/ConvertedTxt */
   ebookConvertOutputDir: Ref<string>;
   /** 角色立绘缓存根目录（绝对路径）；无键时默认 userData/CharacterPortrait */
@@ -771,6 +774,10 @@ export function useAppPersistence(deps: {
       parsedHD,
     );
 
+    deps.highlightWordsByIndexGlobal.value = normalizeHighlightWordsByIndex(
+      data.highlightWordsByIndexGlobal,
+    );
+
     const normalizedRules = normalizeLoadedChapterRules(data.chapterRules);
     if (normalizedRules) {
       try {
@@ -889,6 +896,7 @@ export function useAppPersistence(deps: {
         deps.highlightColorsDark.value,
         DEFAULT_HIGHLIGHT_COLORS_DARK,
       ),
+      highlightWordsByIndexGlobal: deps.highlightWordsByIndexGlobal.value,
       ebookConvertOutputDir: deps.ebookConvertOutputDir.value,
       characterPortraitCacheDir: deps.characterPortraitCacheDir.value.trim(),
       characterCardTextureEffect: deps.characterCardTextureEffect.value,
