@@ -26,6 +26,7 @@ import {
   mergeAiSkillsEnabled,
 } from "@shared/aiSkills";
 import type { VoiceReadSettings } from "../constants/voiceRead";
+import { normalizeCharacterCardTextureEffect } from "@shared/characterCardTextureEffects";
 
 export type PersistedSettingsData = {
   theme?: "vs" | "vs-dark";
@@ -107,6 +108,8 @@ export type PersistedSettingsData = {
   characterPortraitCacheDir?: string;
   /** 语音朗读（引擎、音色、语速音调、DashScope Key） */
   voiceRead?: Partial<VoiceReadSettings>;
+  /** 角色卡列表纹理/全息效果 */
+  characterCardTextureEffect?: string;
 };
 
 export type PersistedSettingsLoadResult = {
@@ -329,6 +332,10 @@ export function loadPersistedSettingsData(
   if (typeof obj.characterPortraitCacheDir === "string") {
     data.characterPortraitCacheDir = obj.characterPortraitCacheDir.trim();
   }
+
+  data.characterCardTextureEffect = normalizeCharacterCardTextureEffect(
+    obj.characterCardTextureEffect,
+  );
 
   if (obj.voiceRead && typeof obj.voiceRead === "object") {
     const vr = obj.voiceRead as Record<string, unknown>;
