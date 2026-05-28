@@ -1419,7 +1419,7 @@ onBeforeUnmount(() => {
         <div class="sidebarTabFooterEnd">
           <button
             type="button"
-            class="link primary hoverMode sidebarTabFooterAction"
+            class="link hoverMode sidebarTabFooterAction"
             @click="openAddSlide"
           >
             添加角色
@@ -1693,7 +1693,7 @@ onBeforeUnmount(() => {
           <div class="drawerFootEnd">
             <button
               type="button"
-              class="link danger hoverMode drawerFootAction"
+              class="link hoverMode drawerFootAction"
               :disabled="extracting"
               @click="closeSlide"
             >
@@ -1701,7 +1701,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              class="link primary hoverMode drawerFootAction"
+              class="link success drawerFootAction"
               :disabled="extracting || !draftDisplayName.trim()"
               @click="onSaveSlide"
             >
