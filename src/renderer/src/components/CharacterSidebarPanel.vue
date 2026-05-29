@@ -988,6 +988,14 @@ function getRetrieveBlockMessage(): string {
   return "";
 }
 
+/** 全书通用画风：已有内容则不再在 AI 检索时重复推断（用户清空后可再次生成） */
+function hasBookStyleForRetrieve(): boolean {
+  return Boolean(
+    props.characterBookStyle?.stylePrefixZh?.trim() ||
+      draftStylePrefix.value.trim(),
+  );
+}
+
 async function onRetrieve() {
   if (extracting.value || isRetrieveIndexBuilding.value) return;
   slideError.value = "";
@@ -1060,25 +1068,28 @@ async function onRetrieve() {
     absorbRetrieveTokenUsage(ok);
     retrieveTokenUsageShown.value = true;
 
-    const title = sessionBookTitle.value.trim();
-    const inf = await window.colorTxt.ai.portraitInferBookStyle({
-      bookHash: bookHash.value,
-      ...(title ? { fileTitle: title } : {}),
-      spoilerSafe: spoilerSafe.value,
-      activeChapterIdx: props.activeChapterIdx,
-      retrieveSessionId,
-    });
-    if (!("error" in inf)) {
-      absorbRetrieveTokenUsage(inf);
-      const nextStyle: CharacterBookStylePersisted = {
-        stylePrefixZh: inf.style_sd_prefix_zh.trim(),
-        styleNoteZh: inf.note_zh.trim(),
-        updatedAt: Date.now(),
-      };
-      draftStylePrefix.value = nextStyle.stylePrefixZh;
-      draftStyleNote.value = nextStyle.styleNoteZh ?? "";
-      emit("characterFileMetaPatch", { characterBookStyle: nextStyle });
+    if (!hasBookStyleForRetrieve()) {
+      const title = sessionBookTitle.value.trim();
+      const inf = await window.colorTxt.ai.portraitInferBookStyle({
+        bookHash: bookHash.value,
+        ...(title ? { fileTitle: title } : {}),
+        spoilerSafe: spoilerSafe.value,
+        activeChapterIdx: props.activeChapterIdx,
+        retrieveSessionId,
+      });
+      if (!("error" in inf)) {
+        absorbRetrieveTokenUsage(inf);
+        const nextStyle: CharacterBookStylePersisted = {
+          stylePrefixZh: inf.style_sd_prefix_zh.trim(),
+          styleNoteZh: inf.note_zh.trim(),
+          updatedAt: Date.now(),
+        };
+        draftStylePrefix.value = nextStyle.stylePrefixZh;
+        draftStyleNote.value = nextStyle.styleNoteZh ?? "";
+        emit("characterFileMetaPatch", { characterBookStyle: nextStyle });
+      }
     }
+
     retrieveNoticeBanner.value = "";
   } catch (e) {
     if (!isPortraitRetrieveAbortError(e)) {
