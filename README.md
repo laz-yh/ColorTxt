@@ -83,6 +83,7 @@
 |   <p align="center"><strong>分析剧情</strong></p> ![](./images/AI阅读助手_剧情分析.jpg)   | <p align="center"><strong>生成章节匹配规则</strong></p> ![](./images/AI阅读助手_匹配规则.jpg) |
 | :---------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------: |
 | <p align="center"><strong>生成思维导图</strong></p> ![](./images/AI阅读助手_思维导图.jpg) |     <p align="center"><strong>生成词云图</strong></p> ![](./images/AI阅读助手_词云图.jpg)     |
+|          <p align="center"><strong>角色卡</strong></p> ![](./images/角色卡.jpg)           |     <p align="center"><strong>生成角色立绘</strong></p> ![](./images/角色卡_立绘生成.jpg)     |
 
 **对话模型**：用于「AI 阅读助手」对话，以及「角色卡」整理检索结果、推断画风；
 
