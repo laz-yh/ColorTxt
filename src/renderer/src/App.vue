@@ -1230,6 +1230,15 @@ const chapterNav = useAppChapterNavigation({
   showChapterRulePanel,
   sidebarTab,
   persistSettings,
+  compressBlankLines,
+  leadIndentFullWidth,
+  captureViewportRestoreAnchor,
+  captureViewportAnchorPhysicalLine,
+  withChapterListScrollSuppressed,
+  onAfterChapterListRefresh: async () => {
+    await nextTick();
+    await readerSidebarRef.value?.centerActiveChapterInList?.(false);
+  },
 });
 
 afterStreamFullTextInstalled = async () => {
