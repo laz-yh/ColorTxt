@@ -19,6 +19,8 @@ const props = withDefaults(
     canIncreaseLineHeight: boolean;
     canDecreaseLineHeight: boolean;
     monacoFontFamily: string;
+    /** 钉在外层列表的「其他字体」 */
+    pinnedOtherFonts?: string[];
     /** Monaco 高级换行策略（wrappingStrategy: advanced）是否开启 */
     monacoAdvancedWrapping: boolean;
     /** Monaco 自定义语法着色是否开启 */
@@ -73,6 +75,7 @@ const props = withDefaults(
     canUseAiSmartFormat: false,
     aiSmartFormatRunning: false,
     smartFormatReviewActive: false,
+    pinnedOtherFonts: () => [],
   },
 );
 
@@ -82,6 +85,7 @@ const emit = defineEmits<{
   toggleSidebar: [];
   toggleFullscreen: [];
   setMonacoFont: [fontFamily: string];
+  togglePinOtherFont: [fontName: string];
   increaseFontSize: [];
   decreaseFontSize: [];
   increaseLineHeight: [];
@@ -202,8 +206,12 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
         <div class="hdrLockable">
           <FontPicker
             :monaco-font-family="monacoFontFamily"
+            :pinned-other-fonts="pinnedOtherFonts"
             :disabled="vrFormatLock"
             @set-monaco-font="(fontFamily) => emit('setMonacoFont', fontFamily)"
+            @toggle-pin-other-font="
+              (fontName) => emit('togglePinOtherFont', fontName)
+            "
           />
           <IconButton
             :icon-html="icons.fontSizeDown"

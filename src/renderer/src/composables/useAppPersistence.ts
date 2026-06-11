@@ -154,6 +154,7 @@ export function useAppPersistence(deps: {
   readerFontSize: Ref<number>;
   readerLineHeightMultiple: Ref<number>;
   monacoFontFamily: Ref<string>;
+  pinnedOtherFonts: Ref<string[]>;
   chapterRuleState: Ref<{ rules: ChapterMatchRule[] }>;
   recentFiles: Ref<RecentFileItem[]>;
   restoreSessionOnStartup: Ref<boolean>;
@@ -696,6 +697,11 @@ export function useAppPersistence(deps: {
     if (typeof data.fontFamily === "string" && data.fontFamily.trim()) {
       deps.monacoFontFamily.value = data.fontFamily;
     }
+    if (Array.isArray(data.pinnedOtherFonts)) {
+      deps.pinnedOtherFonts.value = data.pinnedOtherFonts
+        .map((f) => f.trim())
+        .filter(Boolean);
+    }
 
     if (typeof data.restoreSessionOnStartup === "boolean") {
       deps.restoreSessionOnStartup.value = data.restoreSessionOnStartup;
@@ -886,6 +892,10 @@ export function useAppPersistence(deps: {
       fontSize: deps.readerFontSize.value,
       lineHeightMultiple: deps.readerLineHeightMultiple.value,
       fontFamily: deps.monacoFontFamily.value,
+      pinnedOtherFonts:
+        deps.pinnedOtherFonts.value.length > 0
+          ? deps.pinnedOtherFonts.value
+          : undefined,
       monacoCustomHighlight: deps.monacoCustomHighlight.value,
       compressBlankLines: deps.compressBlankLines.value,
       compressBlankKeepOneBlank: deps.compressBlankKeepOneBlank.value,

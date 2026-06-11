@@ -17,6 +17,7 @@ export function useAppReaderUiPrefs(deps: {
   readerFontSize: Ref<number>;
   readerLineHeightMultiple: Ref<number>;
   monacoFontFamily: Ref<string>;
+  pinnedOtherFonts: Ref<string[]>;
   monacoCustomHighlight: Ref<boolean>;
   monacoAdvancedWrapping: Ref<boolean>;
   compressBlankLines: Ref<boolean>;
@@ -96,6 +97,19 @@ export function useAppReaderUiPrefs(deps: {
   function setMonacoFontFamily(fontFamily: string) {
     deps.monacoFontFamily.value = fontFamily;
     deps.readerRef.value?.setFontFamily(fontFamily);
+    deps.persistSettings();
+  }
+
+  function togglePinnedOtherFont(fontName: string) {
+    const normalized = fontName.trim();
+    if (!normalized) return;
+    const list = deps.pinnedOtherFonts.value;
+    const idx = list.findIndex((f) => f.trim() === normalized);
+    if (idx >= 0) {
+      deps.pinnedOtherFonts.value = list.filter((_, i) => i !== idx);
+    } else {
+      deps.pinnedOtherFonts.value = [...list, normalized];
+    }
     deps.persistSettings();
   }
 
@@ -191,6 +205,7 @@ export function useAppReaderUiPrefs(deps: {
     increaseLineHeight,
     decreaseLineHeight,
     setMonacoFontFamily,
+    togglePinnedOtherFont,
     toggleMonacoCustomHighlight,
     toggleMonacoAdvancedWrapping,
     toggleCompressBlankLines,

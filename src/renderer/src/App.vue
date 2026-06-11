@@ -433,6 +433,8 @@ const leadIndentFullWidth = ref(defaultLeadIndentFullWidth);
 const readerFontSize = ref(defaultReaderFontSize);
 const readerLineHeightMultiple = ref(defaultReaderLineHeightMultiple);
 const monacoFontFamily = ref(READER_EDITOR_DEFAULT_FONT_FAMILY);
+/** 阅读器字体弹框：钉在外层的「其他字体」 */
+const pinnedOtherFonts = ref<string[]>([]);
 const defaultShortcutBindings = createDefaultShortcutBindings(
   /mac|iphone|ipad|ipod/i.test(navigator.platform || ""),
 );
@@ -807,6 +809,7 @@ const persistence = useAppPersistence({
   readerFontSize,
   readerLineHeightMultiple,
   monacoFontFamily,
+  pinnedOtherFonts,
   chapterRuleState,
   recentFiles,
   restoreSessionOnStartup,
@@ -1622,6 +1625,7 @@ const readerUi = useAppReaderUiPrefs({
   readerFontSize,
   readerLineHeightMultiple,
   monacoFontFamily,
+  pinnedOtherFonts,
   monacoCustomHighlight,
   monacoAdvancedWrapping,
   compressBlankLines,
@@ -1649,6 +1653,7 @@ const {
   increaseLineHeight,
   decreaseLineHeight,
   setMonacoFontFamily,
+  togglePinnedOtherFont,
   toggleMonacoCustomHighlight,
   toggleMonacoAdvancedWrapping,
   toggleCompressBlankLines,
@@ -2368,6 +2373,7 @@ useAppShellThemeWatch({
           readerLineHeightMultiple > minLineHeightMultiple + 1e-6
         "
         :monaco-font-family="monacoFontFamily"
+        :pinned-other-fonts="pinnedOtherFonts"
         :monaco-advanced-wrapping="monacoAdvancedWrapping"
         :monaco-custom-highlight="monacoCustomHighlight"
         :compress-blank-lines="compressBlankLines"
@@ -2383,6 +2389,7 @@ useAppShellThemeWatch({
         @toggle-sidebar="showSidebar = !showSidebar"
         @toggle-fullscreen="enterOrExitFullscreenView"
         @set-monaco-font="setMonacoFontFamily"
+        @toggle-pin-other-font="togglePinnedOtherFont"
         @increase-font-size="increaseFontSize"
         @decrease-font-size="decreaseFontSize"
         @increase-line-height="increaseLineHeight"

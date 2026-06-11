@@ -44,6 +44,8 @@ export type PersistedSettingsData = {
   /** Monaco 行高倍数，实际行高 = round(fontSize * lineHeightMultiple) */
   lineHeightMultiple?: number;
   fontFamily?: string;
+  /** 阅读器字体弹框：钉在外层的「其他字体」名称列表 */
+  pinnedOtherFonts?: string[];
   monacoCustomHighlight?: boolean;
   /** 与「内容上色」同时开启时：成对引号/括号是否允许跨行 */
   txtrDelimitedMatchCrossLine?: boolean;
@@ -215,6 +217,11 @@ export function loadPersistedSettingsData(
   }
   if (typeof obj.fontFamily === "string" && obj.fontFamily.trim()) {
     data.fontFamily = obj.fontFamily;
+  }
+  if (Array.isArray(obj.pinnedOtherFonts)) {
+    data.pinnedOtherFonts = obj.pinnedOtherFonts.filter(
+      (f): f is string => typeof f === "string" && f.trim().length > 0,
+    );
   }
   if (typeof obj.monacoCustomHighlight === "boolean") {
     data.monacoCustomHighlight = obj.monacoCustomHighlight;

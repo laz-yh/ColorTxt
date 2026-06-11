@@ -179,7 +179,8 @@ const fullscreenCanvasRef = ref<HTMLCanvasElement | null>(null);
 
 const expanded = ref(false);
 
-
+/** 词云字体弹框：钉在外层的「其他字体」（会话内有效） */
+const wordcloudPinnedOtherFonts = ref<string[]>([]);
 
 const panX = ref(0);
 
@@ -792,6 +793,18 @@ function onWordcloudFontChange(fontFamily: string) {
 
 }
 
+function toggleWordcloudPinnedOtherFont(fontName: string) {
+  const normalized = fontName.trim();
+  if (!normalized) return;
+  const list = wordcloudPinnedOtherFonts.value;
+  const idx = list.findIndex((f) => f.trim() === normalized);
+  if (idx >= 0) {
+    wordcloudPinnedOtherFonts.value = list.filter((_, i) => i !== idx);
+  } else {
+    wordcloudPinnedOtherFonts.value = [...list, normalized];
+  }
+}
+
 
 
 function closeToolbarMenus() {
@@ -1302,7 +1315,11 @@ onBeforeUnmount(() => {
 
                   :monaco-font-family="wordcloudFontFamily"
 
+                  :pinned-other-fonts="wordcloudPinnedOtherFonts"
+
                   @set-monaco-font="onWordcloudFontChange"
+
+                  @toggle-pin-other-font="toggleWordcloudPinnedOtherFont"
 
                 />
 
