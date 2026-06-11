@@ -2,14 +2,17 @@
  * 转换后处理：stem-only 内链 `[…](#epub-NNNN)` → 精确 fragment，并在目标节注入 `<span id>`.
  */
 
+import { chapterTitleForDisplay } from "../../chapter";
 import {
   EbookMarkdownFragmentRegistry,
+  formatMdInternalLink,
   formatSpanAnchor,
   globalFragmentForLogicalTarget,
   mdInternalLinkForLogicalTarget,
 } from "./ebookMarkdownEmit";
 import {
   applyLineMutations,
+  findEmbeddedTocSpanLineForTitle,
   findTitleLineInSpineSection,
   sectionRangeByStem,
   type EpubSpineSectionRange,
@@ -76,6 +79,72 @@ function replaceMdLinkFragment(
   return line.slice(0, link.start) + replacement + line.slice(link.end);
 }
 
+function replaceMdLinkWithKnownFragment(
+  line: string,
+  link: ParsedMdLink,
+  fragment: string,
+): string {
+  const titleAlt = link.titleAttr
+    ? unescapeMdTitleAttr(link.titleAttr)
+    : undefined;
+  const slash = titleAlt?.indexOf("/") ?? -1;
+  const title = slash >= 0 ? titleAlt!.slice(0, slash) : titleAlt;
+  const alt = slash >= 0 ? titleAlt!.slice(slash + 1) : undefined;
+  const replacement = formatMdInternalLink({
+    label: link.label,
+    fragment,
+    title,
+    alt,
+  });
+  return line.slice(0, link.start) + replacement + line.slice(link.end);
+}
+
+/** 目录页 `*第一章…*` 等链 label → 与 spine 节内 h* 标题对齐后再精确匹配 */
+function normalizeStemLinkLabelForTitleMatch(label: string): string {
+  let t = label.trim();
+  if (t.length >= 2 && t.startsWith("*") && t.endsWith("*")) {
+    t = t.slice(1, -1).trim();
+  } else {
+    t = t.replace(/^\*+/, "").trim();
+  }
+  return chapterTitleForDisplay(t);
+}
+
+function fragmentIdFromSpanOnlyLine(line: string): string | null {
+  const m = /^\s*<span\s+id="([^"]+)"\s*><\/span>\s*$/.exec(line.trim());
+  return m?.[1]?.trim() || null;
+}
+
+function resolveStemLinkAnchorLine(
+  lines: readonly string[],
+  range: EpubSpineSectionRange,
+  searchStart: number,
+  titleForMatch: string,
+): number | null {
+  const slack = 12;
+  const from = Math.max(0, Math.min(searchStart, range.startLine) - slack);
+  const to = Math.min(lines.length - 1, range.endLine + slack);
+  const tocLine = findEmbeddedTocSpanLineForTitle(
+    lines,
+    from,
+    to,
+    titleForMatch,
+    range.startLine,
+  );
+  if (tocLine != null) return tocLine;
+  const titleLine = findTitleLineInSpineSection(
+    lines,
+    from,
+    to,
+    titleForMatch,
+  );
+  if (titleLine == null) return null;
+  if (titleLine < range.startLine - slack || titleLine > range.endLine + slack) {
+    return null;
+  }
+  return titleLine;
+}
+
 export function injectStemOnlyMdLinkAnchors(
   lines: string[],
   sectionRanges: readonly EpubSpineSectionRange[],
@@ -100,6 +169,43 @@ export function injectStemOnlyMdLinkAnchors(
       const range = sectionByStem.get(stem);
       if (!range) continue;
 
+      const searchStart = Math.max(
+        range.startLine,
+        searchStartByStem.get(stem) ?? range.startLine,
+      );
+      const titleForMatch = normalizeStemLinkLabelForTitleMatch(
+        link.label || stem,
+      );
+      const slack = 12;
+      const searchFrom = Math.max(
+        0,
+        Math.min(
+          searchStart,
+          range.startLine,
+        ) - slack,
+      );
+      const searchTo = Math.min(lines.length - 1, range.endLine + slack);
+
+      const tocLine = findEmbeddedTocSpanLineForTitle(
+        lines,
+        searchFrom,
+        searchTo,
+        titleForMatch,
+        range.startLine,
+      );
+      const tocFrag =
+        tocLine != null ? fragmentIdFromSpanOnlyLine(lines[tocLine] ?? "") : null;
+
+      if (tocFrag) {
+        const currentLine = lineRewrites.get(lineIdx) ?? rawLine;
+        lineRewrites.set(
+          lineIdx,
+          replaceMdLinkWithKnownFragment(currentLine, link, tocFrag),
+        );
+        searchStartByStem.set(stem, tocLine! + 1);
+        continue;
+      }
+
       const n = (linkCounterByStem.get(stem) ?? 0) + 1;
       linkCounterByStem.set(stem, n);
       const logicalAnchor = `${stem}#link_${n}`;
@@ -109,42 +215,28 @@ export function injectStemOnlyMdLinkAnchors(
         `link_${n}`,
       );
 
-      const searchStart = Math.max(
-        range.startLine,
-        searchStartByStem.get(stem) ?? range.startLine,
-      );
-      const titleLine = findTitleLineInSpineSection(
+      const anchorLine = resolveStemLinkAnchorLine(
         lines,
+        range,
         searchStart,
-        range.endLine,
-        link.label || stem,
+        titleForMatch,
       );
 
       const spanLine = formatSpanAnchor(globalFrag);
-      if (titleLine != null) {
-        /** 锚点独占一行，勿 `<span>…</span># 标题` 导致 ATX 章节匹配失败 */
+      if (anchorLine != null) {
         anchorMutations.push({
           kind: "insert",
-          at: titleLine,
+          at: anchorLine,
           text: spanLine,
         });
-        searchStartByStem.set(stem, titleLine + 1);
+        searchStartByStem.set(stem, anchorLine + 1);
       } else {
         anchorMutations.push({
           kind: "insert",
           at: range.startLine,
           text: spanLine,
         });
-        if (link.label || stem) {
-          anchorMutations.push({
-            kind: "insert",
-            at: range.startLine + 1,
-            text: link.label || stem,
-          });
-          searchStartByStem.set(stem, range.startLine + 1);
-        } else {
-          searchStartByStem.set(stem, range.startLine + 1);
-        }
+        searchStartByStem.set(stem, range.startLine + 1);
       }
 
       const currentLine = lineRewrites.get(lineIdx) ?? rawLine;

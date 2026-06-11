@@ -22,14 +22,19 @@ import {
   shouldTreatImgAsLinkIcon,
 } from "./ebookLinkIconHeuristics";
 import { extractEpubEmbeddedTocEntries } from "./ebookEpubNav";
-import { injectEpubTocAnchorsIntoLines } from "./ebookTocAnchorInjection";
+import { collectEpubTocAnchorMutations } from "./ebookTocAnchorInjection";
+import { injectStemOnlyMdLinkAnchors } from "./ebookStemOnlyMdLinks";
 import {
   compactFootnoteLinkFragment,
   footnoteRefLogicalTargetFromBody,
   isFootnoteBodyLogicalTarget,
   isFootnoteRefRawElementId,
 } from "./ebookFootnoteLinkFragments";
-import { type EpubSpineSectionRange } from "./ebookSpineLineMatch";
+import {
+  applyLineMutations,
+  shiftSpineSectionRangesForMutations,
+  type EpubSpineSectionRange,
+} from "./ebookSpineLineMatch";
 import { yieldToUi } from "../yieldToUi";
 
 function parseXml(doc: Document, selector: string, attr: string): string | null {
@@ -1326,12 +1331,16 @@ export async function convertLoadedEpubZip(
     zipPathToLinkStem: imageCtx.zipPathToLinkStem,
     findZipFile,
   });
-  injectEpubTocAnchorsIntoLines(
+  const tocMutations = collectEpubTocAnchorMutations(
     lines,
     spineSectionRanges,
     tocEntries,
     fragments,
   );
+  if (tocMutations.length > 0) {
+    applyLineMutations(lines, tocMutations);
+  }
+  shiftSpineSectionRangesForMutations(spineSectionRanges, tocMutations);
   injectStemOnlyMdLinkAnchors(lines, spineSectionRanges, fragments);
 
   const utf8 = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";

@@ -1527,7 +1527,7 @@ const {
 
 async function confirmAndRunAiSmartFormatFull() {
   const ok = await appConfirm(
-    "全文排版可能会消耗较多 Token，如果只想对特定选区进行排版，可在编辑器中选中相应文本 → 右键 →「AI 智能排版：选中文本」。",
+    "如果只想对特定选区进行排版，可在编辑器中选中相应文本 → 右键 →「AI 智能排版：选中文本」。",
     "将进行全文智能排版，是否继续？",
   );
   if (!ok) return;
