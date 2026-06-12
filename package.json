@@ -115,7 +115,7 @@
       "icon": "resources/icon.icns",
       "entitlements": "resources/entitlements.mac.plist",
       "entitlementsInherit": "resources/entitlements.mac.plist",
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "artifactName": "${name}-${version}-${arch}.${ext}",
       "publish": {
         "provider": "github",
         "owner": "ssnangua",
@@ -134,17 +134,17 @@
     },
     "win": {
       "icon": "resources/icon.ico",
-      "artifactName": "${productName}-${version}.${ext}",
+      "artifactName": "${name}-${version}.${ext}",
       "target": [
         "nsis",
         "portable"
       ]
     },
     "portable": {
-      "artifactName": "${productName}-${version}-Portable.${ext}"
+      "artifactName": "${name}-${version}-Portable.${ext}"
     },
     "nsis": {
-      "artifactName": "${productName}-${version}-Setup.${ext}",
+      "artifactName": "${name}-${version}-Setup.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
