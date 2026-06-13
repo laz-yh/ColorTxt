@@ -2,6 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { AIConfig } from "@shared/aiTypes";
 import {
+  DEFAULT_REMOTE_EMBEDDING_BATCH_SIZE,
+  REMOTE_EMBEDDING_BATCH_SIZE_MAX,
+  REMOTE_EMBEDDING_BATCH_SIZE_MIN,
+} from "@shared/aiTypes";
+import {
   BUILTIN_EMBEDDING_MODELS,
   BUILTIN_EMBEDDING_SUPPORTS_RAG_TOP_K,
   DEFAULT_BUILTIN_EMBEDDING_MODEL_ID,
@@ -678,11 +683,33 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
               </div>
             </div>
             <p class="aiMasterHint">
+              向量模型通常带有 <code>embedding</code><code>embed</code><code>bge</code> 等关键词。
+            </p>
+            <p class="aiMasterHint">
+              如果模型列表里没有向量模型，可能是服务商暂时还不支持嵌入模型，或者需要手动输入 <code>模型 ID</code>。
+            </p>
+            <p class="aiMasterHint">
               建议使用 <code>BGE Small ZH v1.5</code
               ><code>Multilingual E5 Small</code> 等支持 <b>中文</b> 的嵌入模型。
             </p>
-            <p class="aiMasterHint">
-              向量模型通常带有 <code>embedding</code><code>embed</code><code>bge</code> 等关键词；<br />如果向量模型没有出现在模型列表里，可能是服务商暂时还不支持嵌入模型，或者需要手动输入 <code>模型 ID</code>。
+          </div>
+          <div class="settingsRow">
+            <div class="settingsRowMain settingsRowMain--baseline">
+              <span class="settingsLabel"
+                >单次嵌入条数（{{
+                  modelValue.embedding.remoteEmbedBatchSize
+                }}）</span
+              >
+              <NumericInput
+                v-model="modelValue.embedding.remoteEmbedBatchSize"
+                :min="REMOTE_EMBEDDING_BATCH_SIZE_MIN"
+                :max="REMOTE_EMBEDDING_BATCH_SIZE_MAX"
+                integer
+                class="numCompact"
+              />
+            </div>
+            <p class="settingsHint">
+              建立向量索引时，每批向远程接口提交的文本块数量；不能超过服务商限制，否则会返回 HTTP 400。
             </p>
           </div>
         </template>

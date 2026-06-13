@@ -8,6 +8,7 @@ import {
   hydrateChatProfilesApiKeys,
   hydrateTxt2ImgProfilesApiKeys,
   LEGACY_DEFAULT_PROFILE_ID,
+  normalizeChatEndpoint,
   parseProfileKeysBlob,
   serializeProfileKeysBlob,
   stripProfileApiKeysForDisk,
@@ -17,7 +18,6 @@ import {
   defaultAIConfig,
   normalizeAiQuickQuestions,
   normalizeEmbeddingEndpoint,
-  normalizeTokenPricePerMillion,
   normalizeTxt2ImgConfig,
   normalizeWordcloudMaxWords,
 } from "@shared/aiTypes";
@@ -49,10 +49,7 @@ export function mergeAiConfigWithDefaults(raw: unknown): AIConfig {
     base.aiDataCacheDir = o.aiDataCacheDir;
   }
   if (o.chat && typeof o.chat === "object") {
-    Object.assign(base.chat, o.chat as object);
-    base.chat.tokenPricePerMillion = normalizeTokenPricePerMillion(
-      (o.chat as Record<string, unknown>).tokenPricePerMillion,
-    );
+    base.chat = normalizeChatEndpoint(o.chat);
   }
   base.embedding = normalizeEmbeddingEndpoint(o.embedding);
   if (typeof o.aiEnabled === "boolean") {

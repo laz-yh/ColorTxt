@@ -1351,6 +1351,7 @@ async function onSend() {
       spoilerSafe: spoilerSafe.value,
       chatModelOverride: override,
       slidingWindowSize: cfg.chat.slidingWindowSize,
+      maxToolRounds: cfg.chat.maxToolRounds,
       enabledSkills: collectEnabledAgentSkills(
         props.aiSkillsEnabled ?? {},
         props.aiSkillOverrides ?? {},

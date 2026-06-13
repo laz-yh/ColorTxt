@@ -20,10 +20,17 @@ export interface AIChatEndpoint {
   temperature: number;
   maxTokens: number;
   slidingWindowSize: number;
+  /** Agent 单次提问内模型↔工具往返轮数上限 */
+  maxToolRounds: number;
   systemPromptExtra: string;
   /** 每百万 Token 单价（0 表示未设置，不参与花费估算） */
   tokenPricePerMillion: AITokenPricePerMillion;
 }
+
+/** Agent 工具调用轮数默认上限 */
+export const DEFAULT_MAX_TOOL_ROUNDS = 8;
+export const MAX_TOOL_ROUNDS_MIN = 1;
+export const MAX_TOOL_ROUNDS_MAX = 64;
 
 /** 对话模型每百万 Token 价格 */
 export interface AITokenPricePerMillion {
@@ -59,6 +66,13 @@ export function normalizeTokenPricePerMillion(
 
 export type EmbeddingProvider = "remote" | "builtin";
 
+/** 内置本地嵌入每批条数（固定，不可配置） */
+export const BUILTIN_EMBEDDING_BATCH_SIZE = 20;
+/** 远程 API 嵌入默认每批条数 */
+export const DEFAULT_REMOTE_EMBEDDING_BATCH_SIZE = 10;
+export const REMOTE_EMBEDDING_BATCH_SIZE_MIN = 1;
+export const REMOTE_EMBEDDING_BATCH_SIZE_MAX = 64;
+
 export interface AIEmbeddingEndpoint {
   provider: EmbeddingProvider;
   /** OpenAI 兼容 Base URL；拉模型与嵌入分别派生为 `{baseUrl}/models`、`{baseUrl}/embeddings` */
@@ -66,6 +80,8 @@ export interface AIEmbeddingEndpoint {
   apiKey: string;
   /** 远程 API 嵌入模型名 */
   remoteModel: string;
+  /** 远程 API 单次请求 `input` 条数上限（仅 provider=remote 生效） */
+  remoteEmbedBatchSize: number;
   /** 内置本地模型目录 id（如 bge-small-zh-v1.5） */
   builtinModel: string;
   dimension: number;
@@ -73,6 +89,22 @@ export interface AIEmbeddingEndpoint {
   hfRemoteHost: string;
   /** builtin：模型缓存根目录；空 → userData/ai/model-cache */
   builtinModelCacheDir: string;
+}
+
+/** 按嵌入来源解析建索引 / embed 时使用的批量条数 */
+export function resolveEmbeddingBatchSize(
+  embedding: AIEmbeddingEndpoint,
+): number {
+  if (embedding.provider === "builtin") {
+    return BUILTIN_EMBEDDING_BATCH_SIZE;
+  }
+  return Math.min(
+    REMOTE_EMBEDDING_BATCH_SIZE_MAX,
+    Math.max(
+      REMOTE_EMBEDDING_BATCH_SIZE_MIN,
+      Math.trunc(embedding.remoteEmbedBatchSize),
+    ),
+  );
 }
 
 /** 当前嵌入来源实际使用的模型标识 */
@@ -484,7 +516,7 @@ export interface AIAgentStartPayload {
   chatModelOverride?: string;
   /** 默认用配置的 slidingWindowSize */
   slidingWindowSize?: number;
-  /** 默认 8 */
+  /** 默认用配置的 maxToolRounds */
   maxToolRounds?: number;
   /** 已启用技能（用于注册 getSkills 与各 skill_* 工具）；缺省视为空数组 */
   enabledSkills?: AIAgentEnabledSkill[];
@@ -753,6 +785,7 @@ const DEFAULT_EMBEDDING_ENDPOINT: AIEmbeddingEndpoint = {
   baseUrl: DEFAULT_EMBEDDING_REMOTE_BASE_URL,
   apiKey: "",
   remoteModel: "",
+  remoteEmbedBatchSize: DEFAULT_REMOTE_EMBEDDING_BATCH_SIZE,
   builtinModel: DEFAULT_BUILTIN_EMBEDDING_MODEL_ID,
   dimension: 512,
   hfRemoteHost: DEFAULT_HF_REMOTE_HOST,
@@ -774,6 +807,18 @@ export function normalizeEmbeddingEndpoint(
   if (typeof o.baseUrl === "string") d.baseUrl = o.baseUrl;
   if (typeof o.apiKey === "string") d.apiKey = o.apiKey;
   if (typeof o.remoteModel === "string") d.remoteModel = o.remoteModel;
+  if (
+    typeof o.remoteEmbedBatchSize === "number" &&
+    Number.isFinite(o.remoteEmbedBatchSize)
+  ) {
+    d.remoteEmbedBatchSize = Math.min(
+      REMOTE_EMBEDDING_BATCH_SIZE_MAX,
+      Math.max(
+        REMOTE_EMBEDDING_BATCH_SIZE_MIN,
+        Math.trunc(o.remoteEmbedBatchSize),
+      ),
+    );
+  }
   if (typeof o.builtinModel === "string") d.builtinModel = o.builtinModel;
   if (typeof o.dimension === "number" && Number.isFinite(o.dimension)) {
     d.dimension = o.dimension;
@@ -822,6 +867,7 @@ export const defaultAIConfig: AIConfig = {
     temperature: 0.7,
     maxTokens: 4096,
     slidingWindowSize: 8,
+    maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
     systemPromptExtra: "",
     tokenPricePerMillion: { ...EMPTY_TOKEN_PRICE_PER_MILLION },
   },

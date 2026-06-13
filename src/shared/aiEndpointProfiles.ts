@@ -7,6 +7,8 @@ import {
   defaultAIConfig,
   defaultTxt2ImgConfig,
   EMPTY_TOKEN_PRICE_PER_MILLION,
+  MAX_TOOL_ROUNDS_MAX,
+  MAX_TOOL_ROUNDS_MIN,
   normalizeTokenPricePerMillion,
   normalizeTxt2ImgConfig,
 } from "./aiTypes";
@@ -55,6 +57,15 @@ export function normalizeChatEndpoint(raw: unknown): AIChatEndpoint {
     Number.isFinite(o.slidingWindowSize)
   ) {
     d.slidingWindowSize = Math.min(64, Math.max(1, Math.trunc(o.slidingWindowSize)));
+  }
+  if (
+    typeof o.maxToolRounds === "number" &&
+    Number.isFinite(o.maxToolRounds)
+  ) {
+    d.maxToolRounds = Math.min(
+      MAX_TOOL_ROUNDS_MAX,
+      Math.max(MAX_TOOL_ROUNDS_MIN, Math.trunc(o.maxToolRounds)),
+    );
   }
   if (typeof o.systemPromptExtra === "string") {
     const t = o.systemPromptExtra;

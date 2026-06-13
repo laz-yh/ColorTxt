@@ -8,6 +8,7 @@ import type {
   AIConfig,
   BookStyleInferResult,
   PortraitExtractResult,
+  normalizeEmbeddingEndpoint,
 } from "@shared/aiTypes";
 import type { AiTxt2ImgInvokeResult } from "@shared/aiTxt2ImgIpc";
 import {
@@ -972,7 +973,7 @@ export function registerAiIpcHandlers(): void {
         return { ok: false, error: "缺少参数" };
       }
       try {
-        const remoteEndpoint: AIConfig["embedding"] = {
+        const remoteEndpoint = normalizeEmbeddingEndpoint({
           provider: "remote",
           baseUrl,
           apiKey,
@@ -981,7 +982,13 @@ export function registerAiIpcHandlers(): void {
           dimension,
           hfRemoteHost: "",
           builtinModelCacheDir: "",
-        };
+          ...(isRecord(draft.config)
+            ? {
+                remoteEmbedBatchSize: mergeAiConfigWithDefaults(draft.config)
+                  .embedding.remoteEmbedBatchSize,
+              }
+            : {}),
+        });
         await embedTexts(remoteEndpoint, ["ping"]);
         return { ok: true };
       } catch (e) {

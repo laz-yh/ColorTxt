@@ -1,5 +1,10 @@
 import { openAiCompatEmbeddingsUrl } from "@shared/apiEndpointPresets";
-import type { AIEmbeddingEndpoint, AIConfig } from "@shared/aiTypes";
+import {
+  BUILTIN_EMBEDDING_BATCH_SIZE,
+  resolveEmbeddingBatchSize,
+  type AIEmbeddingEndpoint,
+  type AIConfig,
+} from "@shared/aiTypes";
 import {
   getBuiltinEmbeddingModel,
   isBuiltinEmbeddingModel,
@@ -160,7 +165,10 @@ export async function embedTexts(
   signal?: AbortSignal,
   cfg?: AIConfig,
 ): Promise<number[][]> {
-  const batchSize = 20;
+  const batchSize =
+    endpoint.provider === "builtin"
+      ? BUILTIN_EMBEDDING_BATCH_SIZE
+      : resolveEmbeddingBatchSize(endpoint);
   const all: number[][] = [];
 
   if (endpoint.provider === "builtin") {

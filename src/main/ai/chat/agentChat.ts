@@ -1,14 +1,15 @@
 import type { WebContents } from "electron";
 import { fetchChapterPlainTextFromRenderer } from "../rag/chapterPlainTextBridge";
-import type {
-  AIAgentBookMeta,
-  AIAgentEnabledSkill,
-  AIAgentRendererEvent,
-  AIAgentStartPayload,
-  AIChatEndpoint,
-  AIChatToolCall,
-  AIConfig,
-  AIEmbeddingEndpoint,
+import {
+  DEFAULT_MAX_TOOL_ROUNDS,
+  type AIAgentBookMeta,
+  type AIAgentEnabledSkill,
+  type AIAgentRendererEvent,
+  type AIAgentStartPayload,
+  type AIChatEndpoint,
+  type AIChatToolCall,
+  type AIConfig,
+  type AIEmbeddingEndpoint,
 } from "@shared/aiTypes";
 import {
   AI_USER_VISIBLE_CH_REF_RULE,
@@ -77,7 +78,6 @@ const RAG_CHAPTER_PLAIN_FETCH_MAX = 512_000;
 
 const MAX_SNIPPET_PER_HIT = 900;
 const MAX_TOOL_JSON_CHARS = 14_000;
-const DEFAULT_MAX_TOOL_ROUNDS = 8;
 
 type MutableToolPart = {
   id?: string;
@@ -1249,7 +1249,9 @@ export async function runAgentChat(opts: {
   const maxRounds =
     typeof payload.maxToolRounds === "number"
       ? payload.maxToolRounds
-      : DEFAULT_MAX_TOOL_ROUNDS;
+      : chat.maxToolRounds > 0
+        ? chat.maxToolRounds
+        : DEFAULT_MAX_TOOL_ROUNDS;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

@@ -3,6 +3,8 @@ import { computed, ref, watch } from "vue";
 import { DEFAULT_AI_QUICK_QUESTIONS, type AIConfig } from "@shared/aiTypes";
 import {
   DEFAULT_WORDCLOUD_MAX_WORDS,
+  MAX_TOOL_ROUNDS_MAX,
+  MAX_TOOL_ROUNDS_MIN,
   WORDCLOUD_MAX_WORDS_MAX,
   WORDCLOUD_MAX_WORDS_MIN,
 } from "@shared/aiTypes";
@@ -403,6 +405,10 @@ defineExpose({
               class="temperatureSlider"
             />
           </div>
+          <p class="settingsHint">
+            控制回答的随机程度：越低越稳定、越贴近检索结果；越高越发散、更有变化。建议
+            0.3～0.7。
+          </p>
         </div>
         <div class="settingsRow">
           <div class="settingsRowMain settingsRowMain--baseline">
@@ -417,6 +423,9 @@ defineExpose({
               class="numCompact"
             />
           </div>
+          <p class="settingsHint">
+            单次回复允许生成的最大 Token 数：过小可能会截断长回答，过大则更慢、更耗额度。<br />「智能排版」等长输出可适当调高。
+          </p>
         </div>
         <div class="settingsRow">
           <div class="settingsRowMain settingsRowMain--baseline">
@@ -431,6 +440,27 @@ defineExpose({
               class="numCompact"
             />
           </div>
+          <p class="settingsHint">
+            发给模型的历史对话保留轮数；数值越大，上下文越完整，但也会占用更多 Token。
+          </p>
+        </div>
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel"
+              >工具调用轮数（{{ modelValue.chat.maxToolRounds }} 轮）</span
+            >
+            <NumericInput
+              v-model="modelValue.chat.maxToolRounds"
+              :min="MAX_TOOL_ROUNDS_MIN"
+              :max="MAX_TOOL_ROUNDS_MAX"
+              integer
+              class="numCompact"
+            />
+          </div>
+          <p class="settingsHint">
+            单次提问内，模型调用检索/读章等工具的最大往返次数；复杂问题可适当调高，过大可能更慢、更耗
+            Token。
+          </p>
         </div>
       </section>
 

@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, toRaw, useTemplateRef, watch } from "vue";
+import {
+  applyAllActiveProfilesToConfig,
+} from "@shared/aiEndpointProfiles";
 import type { AIConfig } from "@shared/aiTypes";
 import {
   defaultAIConfig,
-  normalizeTokenPricePerMillion,
+  normalizeEmbeddingEndpoint,
 } from "@shared/aiTypes";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import {
@@ -61,7 +64,6 @@ import {
   mergeVoiceReadSettings,
   voiceReadDashScopeRequiresApiKey,
 } from "../constants/voiceRead";
-import { applyAllActiveProfilesToConfig } from "@shared/aiEndpointProfiles";
 
 type SettingsAIPanelExpose = {
   finalizeChatProfiles?: () => void;
@@ -215,9 +217,8 @@ async function syncAiFromMain() {
   try {
     const c = await window.colorTxt.ai.configGet();
     draftAi.value = structuredClone(c);
-    draftAi.value.chat.tokenPricePerMillion = normalizeTokenPricePerMillion(
-      draftAi.value.chat.tokenPricePerMillion,
-    );
+    draftAi.value.embedding = normalizeEmbeddingEndpoint(draftAi.value.embedding);
+    applyAllActiveProfilesToConfig(draftAi.value);
     loadedAiDimension.value = c.embedding.dimension;
     loadedAiDataCacheDir.value = await resolveEffectiveAiDataCacheDir(
       c.aiDataCacheDir,
@@ -243,6 +244,8 @@ watch(modelValue, (open) => {
     activeTab.value = "general";
     return;
   }
+  draftAi.value.embedding = normalizeEmbeddingEndpoint(draftAi.value.embedding);
+  applyAllActiveProfilesToConfig(draftAi.value);
   syncDraftFromProps();
   void syncAiFromMain();
 });
