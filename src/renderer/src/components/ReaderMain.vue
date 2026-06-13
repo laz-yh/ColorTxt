@@ -3892,4 +3892,17 @@ watch(smartFormatReviewActive, (active) => {
   color: transparent !important;
   font-size: 1em !important;
 }
+/* 章节标题行内文字链接：须压过上行 .chapterTitleLine 的 color !important */
+:deep(.monaco-editor .chapterTitleLine.readerEbookInternalLink),
+:deep(.monaco-editor .readerEbookInternalLink.chapterTitleLine),
+:deep(.monaco-editor .chapterTitleLine.readerEbookExternalLink),
+:deep(.monaco-editor .readerEbookExternalLink.chapterTitleLine) {
+  color: var(--reader-ebook-link-color) !important;
+}
+:deep(.monaco-editor .chapterTitleLine.readerEbookInternalLink:hover),
+:deep(.monaco-editor .readerEbookInternalLink.chapterTitleLine:hover),
+:deep(.monaco-editor .chapterTitleLine.readerEbookExternalLink:hover),
+:deep(.monaco-editor .readerEbookExternalLink.chapterTitleLine:hover) {
+  color: var(--reader-ebook-link-color) !important;
+}
 </style>

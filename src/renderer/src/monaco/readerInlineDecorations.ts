@@ -1,6 +1,4 @@
 import type * as monaco from "monaco-editor";
-import { chapterTitleForDisplay } from "../chapter";
-import { plainTextForEbookTitleMatch } from "../ebook/ebookTitleMatch";
 import type { ReaderSurfacePalette } from "../constants/readerPalette";
 import {
   CHAPTER_TITLE_LINE_CLASS,
@@ -214,22 +212,22 @@ export function setReaderSyntaxHighlightEnabled(
   });
 }
 
-/** 章节标题样式仅覆盖标题文案，勿盖住同行尾部的 MD 内链图标占位 */
+/** Monaco 装饰 endColumn（exclusive）：整行 trimEnd 后的末尾 */
+function trimmedLineEndColumn(lineText: string): number {
+  const len = lineText.trimEnd().length;
+  return len > 0 ? len + 1 : 1;
+}
+
+/**
+ * 章节标题行内样式 endColumn。
+ * 章节标题独占展示行；行内 MD 文字链接保留完整 label（非图标 `\u3000` 单字占位），
+ * 侧栏/匹配用 {@link plainTextForEbookTitleMatch} 会剥链接语法且不含 label，勿用 `want.length` 推算列范围。
+ */
 function chapterTitleStyleEndColumn(
   model: monaco.editor.ITextModel,
   lineNumber: number,
-  title: string,
 ): number {
-  const want = chapterTitleForDisplay(title);
-  if (!want) return model.getLineMaxColumn(lineNumber);
-  const lineText = model.getLineContent(lineNumber);
-  const plain = chapterTitleForDisplay(plainTextForEbookTitleMatch(lineText));
-  if (plain === want || plain.startsWith(want)) {
-    if (lineText.startsWith(want)) {
-      return 1 + want.length;
-    }
-  }
-  return Math.min(model.getLineMaxColumn(lineNumber), 1 + want.length);
+  return trimmedLineEndColumn(model.getLineContent(lineNumber));
 }
 
 /**
@@ -254,7 +252,7 @@ export function buildChapterTitleDecorations(
         ch.lineNumber,
         1,
         ch.lineNumber,
-        chapterTitleStyleEndColumn(model, ch.lineNumber, ch.title),
+        chapterTitleStyleEndColumn(model, ch.lineNumber),
       ),
       options: {
         inlineClassName: CHAPTER_TITLE_LINE_CLASS,
