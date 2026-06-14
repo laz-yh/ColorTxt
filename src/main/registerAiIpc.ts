@@ -16,6 +16,7 @@ import {
   readActiveChatEndpoint,
   readActiveTxt2ImgConfig,
 } from "@shared/aiEndpointProfiles";
+import { resolveEffectiveSystemPromptExtraFromChat } from "@shared/aiSystemPromptPresets";
 import {
   loadAiConfig,
   mergeAiConfigWithDefaults,
@@ -649,7 +650,7 @@ export function registerAiIpcHandlers(): void {
       void streamChatCompletion({
         chat,
         payload: p,
-        configSystemPromptExtra: chat.systemPromptExtra,
+        configSystemPromptExtra: resolveEffectiveSystemPromptExtraFromChat(chat),
         webContents: evt.sender,
       });
       return { ok: true };
@@ -776,7 +777,7 @@ export function registerAiIpcHandlers(): void {
         embeddingEnabled: c.embeddingEnabled,
         aiConfig: c,
         payload: p,
-        configSystemPromptExtra: chat.systemPromptExtra,
+        configSystemPromptExtra: resolveEffectiveSystemPromptExtraFromChat(chat),
         webContents: evt.sender,
         ragTopKDefault: c.ragTopK,
       });

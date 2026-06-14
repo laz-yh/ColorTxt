@@ -32,6 +32,14 @@ import {
   useSortableReorder,
 } from "../composables/useSortableReorder";
 import { MAX_AI_ENDPOINT_PROFILES } from "@shared/aiEndpointProfiles";
+import {
+  AI_SYSTEM_PROMPT_PRESET_CUSTOM_ID,
+  AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+  AI_SYSTEM_PROMPT_PRESETS,
+  isBuiltInSystemPromptPresetMode,
+  systemPromptPresetDisplayLabel,
+  type SystemPromptExtraMode,
+} from "@shared/aiSystemPromptPresets";
 import { useChatProfileDraft } from "../composables/useAiEndpointProfileDraft";
 import AiConfigProfileToolbar from "./AiConfigProfileToolbar.vue";
 
@@ -241,6 +249,48 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   if (r.ok) return { ok: true };
   return { ok: false, error: r.error };
 }
+
+const systemPromptPresetSelectItems = computed((): CustomSelectItem[] =>
+  AI_SYSTEM_PROMPT_PRESETS.map((p) => ({
+    kind: "item",
+    id: p.id,
+    label: p.label,
+    description: p.description,
+  })),
+);
+
+const showSystemPromptExtraEditor = computed(
+  () =>
+    modelValue.value.chat.systemPromptExtraMode !==
+    AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+);
+
+let applyingSystemPromptPresetText = false;
+
+function onSystemPromptModeSelect(id: string) {
+  const mode = id as SystemPromptExtraMode;
+  modelValue.value.chat.systemPromptExtraMode = mode;
+  const hit = AI_SYSTEM_PROMPT_PRESETS.find((p) => p.id === mode);
+  if (hit && isBuiltInSystemPromptPresetMode(mode)) {
+    applyingSystemPromptPresetText = true;
+    modelValue.value.chat.systemPromptExtra = hit.text;
+    applyingSystemPromptPresetText = false;
+  }
+}
+
+watch(
+  () => modelValue.value.chat.systemPromptExtra,
+  (text) => {
+    if (applyingSystemPromptPresetText) return;
+    const mode = modelValue.value.chat.systemPromptExtraMode;
+    if (!isBuiltInSystemPromptPresetMode(mode)) return;
+    const preset = AI_SYSTEM_PROMPT_PRESETS.find((p) => p.id === mode);
+    if (preset && preset.text.trim() !== text.trim()) {
+      modelValue.value.chat.systemPromptExtraMode =
+        AI_SYSTEM_PROMPT_PRESET_CUSTOM_ID;
+    }
+  },
+);
 
 const chatProfileToolbarProfiles = computed(
   () => chatProfileDraft.profileSelectItems.value,
@@ -461,6 +511,43 @@ defineExpose({
             单次提问内，模型调用检索/读章等工具的最大往返次数；复杂问题可适当调高，过大可能更慢、更耗
             Token。
           </p>
+        </div>
+        <div class="settingsRow aiSystemPromptPresetRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">附加系统提示词</span>
+            <AppCustomSelect
+              class="aiChatProviderSelect"
+              :model-value="modelValue.chat.systemPromptExtraMode"
+              :display-label="
+                systemPromptPresetDisplayLabel(
+                  modelValue.chat.systemPromptExtraMode,
+                )
+              "
+              placeholder="选择预设…"
+              :fixed-top-items="selectListsEmpty"
+              :scroll-items="systemPromptPresetSelectItems"
+              :fixed-bottom-items="selectListsEmpty"
+              :scroll-max-height="280"
+              ariaLabel="附加系统提示词预设"
+              @update:model-value="onSystemPromptModeSelect"
+            />
+          </div>
+          <p class="settingsHint">
+            分析敏感题材小说时，可一定程度上减少拒答（云端模型仍可能在服务端拒答，本地未审查模型通常更有效。）
+          </p>
+        </div>
+        <div
+          v-if="showSystemPromptExtraEditor"
+          class="settingsRow aiSystemPromptTextareaRow"
+        >
+          <textarea
+            id="ai-system-prompt-extra"
+            v-model="modelValue.chat.systemPromptExtra"
+            class="settingsStretchTextarea settingsStretchTextarea--multiline"
+            rows="6"
+            spellcheck="false"
+            placeholder="可选择预设后再进行修改；留空表示不附加。"
+          />
         </div>
       </section>
 
@@ -771,6 +858,22 @@ defineExpose({
   width: 100%;
   box-sizing: border-box;
   min-width: 0;
+}
+
+.settingsStretchTextarea--multiline {
+  font-family: inherit;
+  line-height: 1.45;
+}
+
+.aiSystemPromptPresetRow {
+  gap: 6px;
+}
+
+.aiSystemPromptTextareaRow {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: -10px;
 }
 
 .settingsPasswordRow {

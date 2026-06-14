@@ -86,7 +86,7 @@ function buildSystemPrompt(
 
   const extra = (payload.systemPromptExtra ?? "").trim() || configExtra.trim();
   if (extra) {
-    lines.push("## 用户在设置中附加的说明", extra, "");
+    lines.push("## 用户在设置中附加的系统提示词", extra, "");
   }
 
   return lines.join("\n");

@@ -18,6 +18,7 @@ import {
   findTxt2ImgBackendPreset,
   normalizeChatPresetBaseUrl,
 } from "./apiEndpointPresets";
+import { normalizeSystemPromptExtraMode } from "./aiSystemPromptPresets";
 
 export const MAX_AI_ENDPOINT_PROFILES = 12;
 export const LEGACY_DEFAULT_PROFILE_ID = "profile-default";
@@ -71,6 +72,10 @@ export function normalizeChatEndpoint(raw: unknown): AIChatEndpoint {
     const t = o.systemPromptExtra;
     d.systemPromptExtra = t.length > 8_000 ? t.slice(0, 8_000) : t;
   }
+  d.systemPromptExtraMode = normalizeSystemPromptExtraMode(
+    o.systemPromptExtraMode,
+    d.systemPromptExtra,
+  );
   d.tokenPricePerMillion = normalizeTokenPricePerMillion(o.tokenPricePerMillion);
   if (d.baseUrl.trim()) {
     d.baseUrl = normalizeChatPresetBaseUrl(d.baseUrl);

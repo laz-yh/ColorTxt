@@ -327,7 +327,7 @@ function buildAgentSystemPrompt(
 
   const extra = configExtra.trim();
   if (extra) {
-    lines.push("## 用户在设置中附加的说明", extra, "");
+    lines.push("## 用户在设置中附加的系统提示词", extra, "");
   }
 
   if (mindmapInjectHint?.trim()) {

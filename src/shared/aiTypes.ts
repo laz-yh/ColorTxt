@@ -12,6 +12,12 @@ import {
 import type { AITokenUsageTotals } from "./aiTokenUsage";
 import { isTxt2ImgBackend } from "./txt2ImgBackend";
 import { normalizeTxt2ImgCloudQuality } from "./txt2ImgOpenAiQuality";
+import {
+  AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+  type SystemPromptExtraMode,
+} from "./aiSystemPromptPresets";
+
+export type { SystemPromptExtraMode } from "./aiSystemPromptPresets";
 
 export interface AIChatEndpoint {
   baseUrl: string;
@@ -22,6 +28,9 @@ export interface AIChatEndpoint {
   slidingWindowSize: number;
   /** Agent 单次提问内模型↔工具往返轮数上限 */
   maxToolRounds: number;
+  /** 附加系统提示词模式：无 / 内置预设 / 自定义 */
+  systemPromptExtraMode: SystemPromptExtraMode;
+  /** 模式为「自定义」时使用的正文；其它模式下仅作草稿保留 */
   systemPromptExtra: string;
   /** 每百万 Token 单价（0 表示未设置，不参与花费估算） */
   tokenPricePerMillion: AITokenPricePerMillion;
@@ -870,6 +879,7 @@ export const defaultAIConfig: AIConfig = {
     maxTokens: 4096,
     slidingWindowSize: 8,
     maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
+    systemPromptExtraMode: AI_SYSTEM_PROMPT_PRESET_NONE_ID,
     systemPromptExtra: "",
     tokenPricePerMillion: { ...EMPTY_TOKEN_PRICE_PER_MILLION },
   },

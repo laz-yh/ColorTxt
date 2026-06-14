@@ -20,6 +20,7 @@ import {
   ZERO_TOKEN_USAGE,
 } from "@shared/aiTokenUsage";
 import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
+import { appendChatSystemPromptExtra, resolveEffectiveSystemPromptExtraFromChat } from "@shared/aiSystemPromptPresets";
 import {
   extractAliasesFromPortraitFields,
   mergeCharacterAliases,
@@ -333,16 +334,21 @@ async function callAliasDiscoveryLlm(opts: {
   chat: AIChatEndpoint;
   characterName: string;
   retrievalContext: string;
+  systemPromptExtra?: string;
   signal?: AbortSignal;
 }): Promise<{ aliases: string[]; usage: AITokenUsageTotals | null }> {
-  const { chat, characterName, retrievalContext, signal } = opts;
+  const { chat, characterName, retrievalContext, systemPromptExtra, signal } =
+    opts;
 
-  const system = `你是中文小说角色别名识别助手。
+  const system = appendChatSystemPromptExtra(
+    `你是中文小说角色别名识别助手。
 仅依据用户给出的「检索片段」，找出与指定角色名指代同一人物的称呼（绰号、外号、道号、尊称、江湖名号等）。
 不要将其他独立人物名称、亲属称谓（如「师父」「师姐」）或与该角色无关的普通名词当作别名。
 若无明确依据，aliases 须为空数组。
 输出必须是单一 JSON 对象，不要 Markdown、不要代码围栏，键如下：
-{ "aliases": string[] }`;
+{ "aliases": string[] }`,
+    systemPromptExtra,
+  );
 
   const userMain = `角色名：「${characterName}」
 
@@ -411,11 +417,21 @@ async function callPortraitLlm(opts: {
   aliases: string[];
   retrievalContext: string;
   hits: AIIndexSearchHit[];
+  systemPromptExtra?: string;
   signal?: AbortSignal;
 }): Promise<PortraitExtractResult> {
-  const { chat, characterName, aliases, retrievalContext, hits, signal } = opts;
+  const {
+    chat,
+    characterName,
+    aliases,
+    retrievalContext,
+    hits,
+    systemPromptExtra,
+    signal,
+  } = opts;
 
-  const system = `你是中文小说角色外貌分析与插画描述助手。
+  const system = appendChatSystemPromptExtra(
+    `你是中文小说角色外貌分析与插画描述助手。
 你必须只依据用户给出的「检索片段」总结外貌；不得编造书中未出现的细节。
 若文本依据不足，须在 confidence_note 中说明哪些是推断、哪些缺乏原文。
 输出必须是单一 JSON 对象，不要 Markdown、不要代码围栏，键如下：
@@ -440,7 +456,9 @@ gender：依据原文能确定的生理性别；无法判断时用 unknown。
 age_text：具体年龄数字或「少年」「中年」等描述；无任何依据时填空字符串。
 identity_zh：故事中的组织归属、职业或社会地位；无依据时填空字符串。
 bio_zh：人物简介（中文，可多条合并为一段）；无额外信息可与 appearance_zh 呼应但勿杜撰。
-relations_zh：主要人物关系（中文）；无依据时填空字符串。`;
+relations_zh：主要人物关系（中文）；无依据时填空字符串。`,
+    systemPromptExtra,
+  );
 
   const aliasLine =
     aliases.length > 0
@@ -571,7 +589,10 @@ export async function runPortraitPromptZhToEn(
     return { style_en: "", prompt_en: "", negative_en: "" };
   }
 
-  const system = `你是 Stable Diffusion 提示词翻译与整理助手。
+  const chat = readActiveChatEndpoint(cfg);
+
+  const system = appendChatSystemPromptExtra(
+    `你是 Stable Diffusion 提示词翻译与整理助手。
 用户给出三段中文输入（画风前缀、角色主体正面、负面），多为逗号或顿号分隔的短语。请分别整理为适合 SD 1.x 的英文 short tags（英文逗号分隔）；保留已有英文单词与技术名词。
 输出必须是单一 JSON 对象，不要 Markdown、不要代码围栏，键如下：
 { "style_en": string, "prompt_en": string, "negative_en": string }
@@ -580,7 +601,9 @@ export async function runPortraitPromptZhToEn(
 - style_en：全局画风、光影、色调、媒介感等前缀 tag；不要包含具体角色名或剧情专用名词。
 - prompt_en：角色与画面主体内容。
 - negative_en：负面 tag；可为空。
-- 不要堆砌重复近义词。`;
+- 不要堆砌重复近义词。`,
+    resolveEffectiveSystemPromptExtraFromChat(chat),
+  );
 
   const user = `画风前缀（中文）：
 ${styleZh || "（空）"}
@@ -597,8 +620,6 @@ ${negativeZh || "（空）"}
     { role: "system" as const, content: system },
     { role: "user" as const, content: user },
   ];
-
-  const chat = readActiveChatEndpoint(cfg);
 
   try {
     const { text: raw } = await chatCompletionOnce({
@@ -688,14 +709,18 @@ async function callBookStyleLlm(opts: {
   chat: AIChatEndpoint;
   retrievalContext: string;
   fileTitle: string;
+  systemPromptExtra?: string;
   signal?: AbortSignal;
 }): Promise<BookStyleInferResult> {
-  const system = `你是中文小说编辑与 Stable Diffusion 画风归纳助手。
+  const system = appendChatSystemPromptExtra(
+    `你是中文小说编辑与 Stable Diffusion 画风归纳助手。
 仅依据用户给出的「正文摘录」归纳文字阅读时联想到的视觉风格（色调、光影、写实度、媒介感等）；勿编造摘录未出现的设定。
 输出必须是单一 JSON 对象，不要 Markdown，键如下：
 { "style_sd_prefix_zh": string, "note_zh": string }
 style_sd_prefix_zh：中文短语描述画面风格与媒介感，逗号或顿号分隔即可（面向读者编辑，勿写英文 tag）；长度适中，适合作为加在角色 prompt 之前的画风前缀；不要包含具体角色名或剧情专用名词。
-note_zh：一两句中文，说明依据是否充分、是否为推断。`;
+note_zh：一两句中文，说明依据是否充分、是否为推断。`,
+    opts.systemPromptExtra,
+  );
 
   const user = `书名（仅供参考）：${opts.fileTitle.trim() || "（未知）"}
 
@@ -800,10 +825,12 @@ export async function runBookStyleInference(
   }
 
   try {
+    const chat = readActiveChatEndpoint(cfg);
     return await callBookStyleLlm({
-      chat: readActiveChatEndpoint(cfg),
+      chat,
       retrievalContext,
       fileTitle: args.fileTitle,
+      systemPromptExtra: resolveEffectiveSystemPromptExtraFromChat(chat),
       signal: args.signal,
     });
   } catch (e) {
@@ -832,6 +859,7 @@ export async function runCharacterPortraitExtract(
 
   const userAliasesInput = args.characterAliases?.trim() ?? "";
   const chat = readActiveChatEndpoint(cfg);
+  const chatSystemPromptExtra = resolveEffectiveSystemPromptExtraFromChat(chat);
   const usageAcc = { usage: ZERO_TOKEN_USAGE, available: false };
 
   let discoveredAliases: string[] = [];
@@ -854,6 +882,7 @@ export async function runCharacterPortraitExtract(
           chat,
           characterName: name,
           retrievalContext: aliasContext,
+          systemPromptExtra: chatSystemPromptExtra,
           signal: args.signal,
         });
         absorbChatUsage(usageAcc, discovery.usage);
@@ -912,6 +941,7 @@ export async function runCharacterPortraitExtract(
       aliases: mergedAliases,
       retrievalContext,
       hits,
+      systemPromptExtra: chatSystemPromptExtra,
       signal: args.signal,
     });
     let finalAliases = mergeCharacterAliases({
@@ -925,6 +955,7 @@ export async function runCharacterPortraitExtract(
           chat,
           characterName: name,
           retrievalContext,
+          systemPromptExtra: chatSystemPromptExtra,
           signal: args.signal,
         });
         absorbChatUsage(usageAcc, supplement.usage);
