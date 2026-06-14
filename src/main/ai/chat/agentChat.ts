@@ -422,10 +422,87 @@ function dbRowsToApiMessages(
   return out;
 }
 
+/** 从 assistant 消息收集 tool_calls 的 id */
+function assistantToolCallIdSet(
+  m: Extract<ApiMsg, { role: "assistant" }>,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!m.tool_calls?.length) return ids;
+  for (const tc of m.tool_calls) {
+    const id = tc.id?.trim();
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * 剔除无对应 tool_calls 的 tool 消息，并去掉「工具结果未齐」的 assistant.tool_calls，
+ * 避免 OpenAI 兼容接口报 No tool call found for function call output。
+ */
+function sanitizeApiMessagesForToolCalls(msgs: ApiMsg[]): ApiMsg[] {
+  const out: ApiMsg[] = [];
+  let expectingToolIds: Set<string> | null = null;
+
+  const flushIncompleteAssistant = () => {
+    if (!expectingToolIds?.size) {
+      expectingToolIds = null;
+      return;
+    }
+    while (out.length > 0 && out[out.length - 1]!.role === "tool") {
+      out.pop();
+    }
+    const last = out[out.length - 1];
+    if (last?.role === "assistant" && last.tool_calls?.length) {
+      out[out.length - 1] = {
+        role: "assistant",
+        content: last.content ?? null,
+      };
+    }
+    expectingToolIds = null;
+  };
+
+  for (const m of msgs) {
+    if (m.role === "user") {
+      flushIncompleteAssistant();
+      out.push(m);
+      continue;
+    }
+    if (m.role === "assistant") {
+      flushIncompleteAssistant();
+      out.push(m);
+      const ids = assistantToolCallIdSet(m);
+      expectingToolIds = ids.size > 0 ? ids : null;
+      continue;
+    }
+    if (m.role === "tool") {
+      if (expectingToolIds?.has(m.tool_call_id)) {
+        out.push(m);
+        expectingToolIds.delete(m.tool_call_id);
+        if (expectingToolIds.size === 0) expectingToolIds = null;
+      }
+    }
+  }
+  flushIncompleteAssistant();
+  return out;
+}
+
 function trimApiTail(msgs: ApiMsg[], slidingWindowSize: number): ApiMsg[] {
-  if (slidingWindowSize <= 0) return msgs;
-  const cap = Math.max(16, slidingWindowSize * 6);
-  return msgs.length <= cap ? msgs : msgs.slice(-cap);
+  let tail = msgs;
+  if (slidingWindowSize > 0) {
+    const cap = Math.max(16, slidingWindowSize * 6);
+    if (msgs.length > cap) {
+      tail = msgs.slice(-cap);
+      const firstUser = tail.findIndex((m) => m.role === "user");
+      if (firstUser > 0) {
+        tail = tail.slice(firstUser);
+      } else if (firstUser < 0) {
+        while (tail.length > 0 && tail[0]!.role === "tool") {
+          tail = tail.slice(1);
+        }
+      }
+    }
+  }
+  return sanitizeApiMessagesForToolCalls(tail);
 }
 
 /**
