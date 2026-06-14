@@ -2,6 +2,8 @@
  * 各 OpenAI 兼容对话服务的「深度思考 / 推理」请求参数与流式 delta 字段适配。
  */
 
+import { agnesApiLikely } from "@shared/apiEndpointPresets";
+
 function normalizeChatBaseUrl(baseUrl: string): string {
   return baseUrl.trim().toLowerCase();
 }
@@ -62,6 +64,11 @@ export function geminiOpenAiCompatLikely(baseUrl: string): boolean {
   );
 }
 
+/** Agnes AI OpenAI 兼容网关 */
+export function agnesLikely(baseUrl: string): boolean {
+  return agnesApiLikely(baseUrl);
+}
+
 /** 工具轮 assistant 消息是否应携带 reasoning_content（与 DeepSeek / 智谱 / 通义等一致） */
 export function shouldAttachReasoningContentOnToolCalls(
   baseUrl: string,
@@ -73,7 +80,8 @@ export function shouldAttachReasoningContentOnToolCalls(
     moonshotLikely(baseUrl) ||
     siliconflowLikely(baseUrl) ||
     openrouterLikely(baseUrl) ||
-    geminiOpenAiCompatLikely(baseUrl)
+    geminiOpenAiCompatLikely(baseUrl) ||
+    agnesLikely(baseUrl)
   );
 }
 
@@ -114,6 +122,10 @@ function applyDeepThinkingToExtraBody(
   if (geminiOpenAiCompatLikely(baseUrl)) {
     // 与 reasoning_effort 二选一；勿同时传 thinking_config
     extraBody.reasoning_effort = deepThinking ? "high" : "none";
+    return;
+  }
+  if (agnesLikely(baseUrl)) {
+    extraBody.chat_template_kwargs = { enable_thinking: deepThinking };
   }
 }
 

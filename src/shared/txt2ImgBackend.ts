@@ -15,6 +15,7 @@ const SD_BACKENDS: readonly AITxt2ImgBackend[] = [
 
 const NATURAL_BACKENDS: readonly AITxt2ImgBackend[] = [
   "openai_images",
+  "agnes_images",
   "dashscope_wanx",
   "openai_compat_images",
 ];
@@ -54,6 +55,7 @@ export const TXT2IMG_DEFAULT_CLOUD_MODEL: Record<
   string
 > = {
   openai_images: "gpt-image-2",
+  agnes_images: "agnes-image-2.1-flash",
   dashscope_wanx: "wan2.6-t2i",
   stability: "ultra",
   openai_compat_images: "gpt-image-2",

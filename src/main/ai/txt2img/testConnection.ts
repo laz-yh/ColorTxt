@@ -145,6 +145,8 @@ export async function testTxt2ImgConnection(
       return testComfyUI(txt2img);
     case "openai_images":
       return testOpenAiModels(txt2img, "OpenAI");
+    case "agnes_images":
+      return testOpenAiModels(txt2img, "Agnes");
     case "openai_compat_images":
       return testOpenAiModels(txt2img, "文生图");
     case "dashscope_wanx":

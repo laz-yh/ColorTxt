@@ -128,6 +128,7 @@ export type AITxt2ImgBackend =
   | "a1111"
   | "comfyui"
   | "openai_images"
+  | "agnes_images"
   | "dashscope_wanx"
   | "stability"
   | "openai_compat_images";

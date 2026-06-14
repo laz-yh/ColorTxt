@@ -90,6 +90,9 @@ const chatProviderDisplayLabel = computed(() => {
 
 function onChatProviderPresetSelect(id: string) {
   chatProviderExplicitId.value = id;
+  chatModelOptions.value = [];
+  modelValue.value.chat.model = "";
+
   if (isChatApiProviderCustomId(id)) {
     modelValue.value.chat.baseUrl = "";
     return;

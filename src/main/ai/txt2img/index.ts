@@ -1,6 +1,7 @@
 import type { AITxt2ImgConfig } from "@shared/aiTypes";
 import { txt2ImgRequiresApiKey } from "@shared/txt2ImgBackend";
 import { fetchA1111ImageBuffer } from "./a1111";
+import { fetchAgnesImagesBuffer } from "./agnes";
 import { fetchComfyUIImageBuffer } from "./comfy";
 import { fetchDashScopeWanxImageBuffer } from "./dashScope";
 import { fetchOpenAiImagesBuffer } from "./openAI";
@@ -22,6 +23,8 @@ export async function fetchTxt2ImgImageBuffer(
         ? "通义万相"
         : backend === "stability"
           ? "Stability"
+          : backend === "agnes_images"
+            ? "Agnes"
           : backend === "openai_compat_images"
             ? "文生图"
             : "OpenAI";
@@ -38,6 +41,8 @@ export async function fetchTxt2ImgImageBuffer(
     case "openai_images":
     case "openai_compat_images":
       return fetchOpenAiImagesBuffer(txt2img, p, signal);
+    case "agnes_images":
+      return fetchAgnesImagesBuffer(txt2img, p, signal);
     case "dashscope_wanx":
       return fetchDashScopeWanxImageBuffer(txt2img, p, signal);
     case "stability":
