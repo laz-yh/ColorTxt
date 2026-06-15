@@ -11,6 +11,14 @@ export type ReaderViewportRestoreAnchor = {
 /** 与书签保存一致：视口内容区顶沿往下第 2 条字高带 */
 export const READER_VIEWPORT_RESTORE_SLOT_FROM_TOP = 2;
 
+/** 章节列表跳转：顶沿往下第 N 条字高带，N 与 `headingLevel` 对齐（黏性章节条层数） */
+export function chapterJumpAnchorSlotFromTop(headingLevel?: number): number {
+  return Math.max(1, Math.floor(headingLevel ?? 1));
+}
+
+/** 书签跳转：固定第 2 条字高带（单层章节时的黏性条留白） */
+export const READER_BOOKMARK_JUMP_SLOT_FROM_TOP = 2;
+
 /** 在内容坐标 Y 处命中 Monaco 模型行号（1-based） */
 export function findModelLineAtContentY(
   editor: monaco.editor.IStandaloneCodeEditor,
@@ -126,5 +134,28 @@ export function computeScrollTopForReaderViewportRestoreAnchor(
   const layoutH = Math.max(1, editor.getLayoutInfo().height);
   const maxTop = Math.max(0, editor.getScrollHeight() - layoutH);
   const targetTop = pointY - offsetHeights * lineHeightPx;
+  return Math.max(0, Math.min(maxTop, targetTop));
+}
+
+/**
+ * 将指定展示行顶沿对齐到视口内容区「从上往下第 anchorSlotFromTop 条字高带」。
+ * anchorSlotFromTop = 1 表示贴视口顶（与 `revealLineNearTop` 一致）。
+ */
+export function computeScrollTopForLineAtViewportSlot(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  displayLine: number,
+  anchorSlotFromTop: number,
+): number | null {
+  editor.layout();
+  const lineHeightPx = Math.max(
+    1,
+    editor.getOption(monaco.editor.EditorOption.lineHeight),
+  );
+  const top = editor.getTopForLineNumber(displayLine);
+  if (!Number.isFinite(top)) return null;
+  const offsetHeights = Math.max(1, Math.floor(anchorSlotFromTop)) - 1;
+  const layoutH = Math.max(1, editor.getLayoutInfo().height);
+  const maxTop = Math.max(0, editor.getScrollHeight() - layoutH);
+  const targetTop = top - offsetHeights * lineHeightPx;
   return Math.max(0, Math.min(maxTop, targetTop));
 }

@@ -74,7 +74,9 @@ import type {
 import { isMarkdownFilePath } from "../ebook/ebookFormat";
 import {
   captureReaderViewportRestoreAnchor,
+  computeScrollTopForLineAtViewportSlot,
   computeScrollTopForReaderViewportRestoreAnchor,
+  READER_BOOKMARK_JUMP_SLOT_FROM_TOP,
   resolveDisplayLineForViewportRestore,
   type ReaderViewportRestoreAnchor,
 } from "../reader/readerViewportAnchor";
@@ -2199,8 +2201,15 @@ function scrollToDocumentStart(smooth = false) {
   e.focus();
 }
 
-/** 将目标行顶对齐视口顶；不移动光标、不抢焦点（编辑态章节导航等） */
-function scrollToLineNearTop(lineNumber: number, smooth = true) {
+/**
+ * 将目标行顶对齐视口指定字高带；不移动光标、不抢焦点（编辑态章节导航等）。
+ * @param anchorSlotFromTop 视口顶沿往下第几条字高带（1 = 贴顶）；省略则与历史行为一致（贴顶）。
+ */
+function scrollToLineNearTop(
+  lineNumber: number,
+  smooth = true,
+  anchorSlotFromTop?: number,
+) {
   const e = editor.value;
   const m = model.value;
   if (!e || !m) return;
@@ -2213,9 +2222,16 @@ function scrollToLineNearTop(lineNumber: number, smooth = true) {
   const scrollType = monacoScrollType(smooth);
   e.layout();
   e.revealLineNearTop(line, scrollType);
-  const top = e.getTopForLineNumber(line);
-  // 勿再减 lineHeight：否则视口顶行会变成 line-1，恢复阅读位置/章节跳转都会「回退一行」
-  e.setScrollTop(Math.max(0, top), scrollType);
+  let scrollTop = e.getTopForLineNumber(line);
+  if (anchorSlotFromTop != null && anchorSlotFromTop >= 1) {
+    const slotted = computeScrollTopForLineAtViewportSlot(
+      e,
+      line,
+      anchorSlotFromTop,
+    );
+    if (slotted != null) scrollTop = slotted;
+  }
+  e.setScrollTop(Math.max(0, scrollTop), scrollType);
 }
 
 function jumpToLine(lineNumber: number, smooth = true) {
@@ -2362,8 +2378,7 @@ const inlineSearch = useReaderInlineSearch({
 });
 
 /**
- * 书签列表跳转：将目标行顶对齐视口顶后再向上偏移「一行高」像素，为黏性章节条留白；
- * 与物理行号 −1 不同，上一行若自动折行占多段高度时仍只减一行字高。
+ * 书签列表跳转：目标行对齐视口第 2 条字高带，为单层黏性章节条留白。
  * 不并入 {@link jumpToLine}，避免会话恢复/章节导航产生额外偏移。
  */
 function jumpToBookmarkLine(lineNumber: number, smooth = true) {
@@ -2377,11 +2392,15 @@ function jumpToBookmarkLine(lineNumber: number, smooth = true) {
     Math.min(Math.floor(lineNumber), Math.max(1, lineCount)),
   );
   const scrollType = monacoScrollType(smooth);
-  const lineHeightPx = e.getOption(monaco.editor.EditorOption.lineHeight);
   e.layout();
   e.revealLineNearTop(line, scrollType);
-  const top = e.getTopForLineNumber(line);
-  e.setScrollTop(Math.max(0, top - lineHeightPx), scrollType);
+  const scrollTop =
+    computeScrollTopForLineAtViewportSlot(
+      e,
+      line,
+      READER_BOOKMARK_JUMP_SLOT_FROM_TOP,
+    ) ?? e.getTopForLineNumber(line);
+  e.setScrollTop(Math.max(0, scrollTop), scrollType);
   e.setPosition({ lineNumber: line, column: 1 });
   e.focus();
 }

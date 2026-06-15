@@ -16,7 +16,10 @@ import {
   buildChaptersFromReaderDisplayText,
 } from "../reader/readerDisplayPipeline";
 import { yieldToUi } from "../ebook/yieldToUi";
-import type { ReaderViewportRestoreAnchor } from "../reader/readerViewportAnchor";
+import {
+  chapterJumpAnchorSlotFromTop,
+  type ReaderViewportRestoreAnchor,
+} from "../reader/readerViewportAnchor";
 import type { useTxtStreamPipeline } from "./useTxtStreamPipeline";
 
 type Stream = ReturnType<typeof useTxtStreamPipeline>;
@@ -74,7 +77,11 @@ export function useAppChapterNavigation(deps: {
   }
 
   function jumpToChapter(ch: Chapter) {
-    deps.readerRef.value?.scrollToLineNearTop?.(ch.lineNumber);
+    deps.readerRef.value?.scrollToLineNearTop?.(
+      ch.lineNumber,
+      true,
+      chapterJumpAnchorSlotFromTop(ch.headingLevel),
+    );
     const idx = resolveChapterListIndex(ch);
     if (idx !== deps.activeChapterIdx.value) deps.activeChapterIdx.value = idx;
   }
