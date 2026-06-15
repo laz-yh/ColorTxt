@@ -17,6 +17,11 @@ import type {
   BookStyleInferResult,
   PortraitExtractResult,
 } from "@shared/aiTypes";
+import type {
+  AISmartFormatCleanupResult,
+  AISmartFormatProgressEvent,
+  AISmartFormatSegmentInput,
+} from "@shared/aiSmartFormatTypes";
 import type { BuiltinEmbeddingIpcPayload } from "@shared/builtinEmbeddingIpc";
 import type {
   ColorTxtShowMessageBoxOptions,
@@ -319,6 +324,11 @@ const api = {
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   listSystemFonts: () =>
     ipcRenderer.invoke("fonts:listSystemFonts") as Promise<string[]>,
+  convertTextOpenCc: (text: string, config: string) =>
+    ipcRenderer.invoke("text-convert:opencc", {
+      text,
+      config,
+    }) as Promise<string>,
   openExternal: (url: string) =>
     ipcRenderer.invoke("shell:openExternal", url) as Promise<void>,
   showItemInFolder: (filePath: string) =>
@@ -492,6 +502,27 @@ const api = {
       ) as Promise<{ ok: true } | { ok: false; error?: string }>,
     chatAbort: (requestId: number) =>
       ipcRenderer.invoke("ai:chat:abort", requestId) as Promise<{ ok: true }>,
+    textFormatCleanup: (payload: {
+      requestId: number;
+      segment: AISmartFormatSegmentInput;
+      mergeHardWrap: boolean;
+      fixPunctuation: boolean;
+      unifyDialogueQuotes: import("@shared/aiSmartFormatTypes").AiSmartFormatUnifyDialogueQuotes;
+      removePromotionalContent: boolean;
+      removePiracyWatermarks: boolean;
+      restoreGarbledChars: boolean;
+      restoreAsteriskMasks: boolean;
+      cleanHtmlRemnants?: boolean;
+      skillPrompt?: string;
+    }) =>
+      ipcRenderer.invoke("ai:text-format:cleanup", payload) as Promise<
+        | { ok: true; result: AISmartFormatCleanupResult }
+        | { ok: false; error: string }
+      >,
+    textFormatAbort: (requestId: number) =>
+      ipcRenderer.invoke("ai:text-format:abort", requestId) as Promise<{
+        ok: true;
+      }>,
     modelsList: (draft: {
       baseUrl?: string;
       apiKey?: string;
@@ -641,6 +672,17 @@ const api = {
         content,
         aborted,
       ) as Promise<string>,
+    messageUpdateToolContent: (
+      threadId: string,
+      toolCallId: string,
+      content: string,
+    ) =>
+      ipcRenderer.invoke(
+        "ai:message:updateToolContent",
+        threadId,
+        toolCallId,
+        content,
+      ) as Promise<boolean>,
     exportSave: (payload: {
       defaultName: string;
       data: string;
@@ -656,6 +698,7 @@ const api = {
     portraitExtract: (payload: {
       bookHash: string;
       characterName: string;
+      characterAliases?: string;
       spoilerSafe?: boolean;
       activeChapterIdx?: number;
       /** 与 portraitInferBookStyle、portraitRetrieveAbort 对齐，用于中止本轮检索 */
@@ -736,6 +779,14 @@ const api = {
       const fn = (_: unknown, payload: AIAgentRendererEvent) => cb(payload);
       ipcRenderer.on("ai:agent:event", fn);
       return () => ipcRenderer.off("ai:agent:event", fn);
+    },
+    onTextFormatProgress: (
+      cb: (payload: AISmartFormatProgressEvent) => void,
+    ) => {
+      const fn = (_: unknown, payload: AISmartFormatProgressEvent) =>
+        cb(payload);
+      ipcRenderer.on("ai:text-format:progress", fn);
+      return () => ipcRenderer.off("ai:text-format:progress", fn);
     },
   },
   /** 主进程 ragContext 向阅读器索取章节原文 */

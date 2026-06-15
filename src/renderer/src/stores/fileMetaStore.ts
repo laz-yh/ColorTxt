@@ -1,3 +1,4 @@
+import { normalizeReaderAnnotations } from "../utils/readerAnnotations";
 import type {
   CharacterBookStylePersisted,
   CharacterGender,
@@ -23,15 +24,44 @@ export type PersistedEditorViewState = Record<string, unknown>;
 /** 自定义高亮词：键为索引字符串 `"0"`,`"1"`…，值为该索引下高亮词（仅存索引不存色值） */
 export type HighlightWordsByIndex = Record<string, string[]>;
 
+export type ReaderLineationType = "marker" | "wavy" | "straight";
+
+export type ReaderAnnotationRecord = {
+  id: string;
+  startPhysicalLine: number;
+  startColumn: number;
+  endPhysicalLine: number;
+  endColumn: number;
+  /** 创建时 Monaco 展示行（压缩空行切换后仍准确定位） */
+  startDisplayLine?: number;
+  endDisplayLine?: number;
+  /** 源文件物理区间原文（用于校验是否失效） */
+  text: string;
+  /** 阅读器展示层原文（简繁/全半角等与当前展示一致；与 `text` 相同时可不写入） */
+  displayText?: string;
+  lineation?: {
+    type: ReaderLineationType;
+    colorIndex: number;
+  };
+  note?: {
+    content: string;
+    createdAt: number;
+    updatedAt: number;
+  };
+  createdAt: number;
+  updatedAt: number;
+  stale?: boolean;
+};
+
 export type FileMetaRecord = {
   path: string;
   fileName: string;
   /**
-   * 电子书原文件路径为 `path` 时，实际阅读的转换结果 txt 绝对路径（如 `…/abc.epub.txt`）。
-   * 纯 txt 打开时通常不设置。
+   * 电子书原文件路径为 `path` 时，实际阅读的转换结果 md 绝对路径（如 `…/abc.epub.md`）。
+   * 纯 txt / 用户自写 md 打开时通常不设置。
    */
-  convertedTxtPath?: string;
-  /** 写入 `convertedTxtPath` 时源电子书 `mtimeMs`，用于缓存失效 */
+  convertedMdPath?: string;
+  /** 写入 `convertedMdPath` 时源电子书 `mtimeMs`，用于缓存失效 */
   sourceMtimeMsAtConvert?: number;
   progress?: number;
   /** 阅读器滚动/光标视图状态；与 `progress` 同为单文件阅读恢复依据 */
@@ -44,6 +74,8 @@ export type FileMetaRecord = {
   bookmarks: FileBookmarkItem[];
   /** 按高亮色索引分组的高亮词；索引越界时阅读器忽略该桶 */
   highlightWordsByIndex?: HighlightWordsByIndex;
+  /** 阅读器划线 / 笔记标注 */
+  readerAnnotations?: ReaderAnnotationRecord[];
   /**
    * 应用内最后一次打开该文件（阅读器开始加载该会话路径）的时间戳（ms）。
    * 与 `updatedAt` 分离：改分类等操作也会刷新 `updatedAt`，但不应影响「打开时间」排序。
@@ -143,6 +175,7 @@ const MAX_STYLE_NOTE_ZH = 4000;
 const MAX_ROSTER_ENTRIES = 200;
 const MAX_CHAR_FIELD = 32000;
 const MAX_DISPLAY_NAME = 200;
+const MAX_ALIASES = 500;
 const MAX_ID_LEN = 64;
 
 function clampStr(s: string, max: number): string {
@@ -198,6 +231,8 @@ function normalizeCharacterRosterEntry(
   return {
     id,
     displayName,
+    aliases:
+      typeof o.aliases === "string" ? clampStr(o.aliases, MAX_ALIASES) : "",
     gender: normalizeCharacterGender(o.gender),
     ageText:
       typeof o.ageText === "string"
@@ -270,9 +305,10 @@ function normalizeRecord(item: Partial<FileMetaRecord>): FileMetaRecord | null {
   const highlightWordsByIndex = normalizeHighlightWordsByIndex(
     item.highlightWordsByIndex,
   );
-  const convertedTxtPath =
-    typeof item.convertedTxtPath === "string" && item.convertedTxtPath.trim()
-      ? item.convertedTxtPath.trim()
+  const readerAnnotations = normalizeReaderAnnotations(item.readerAnnotations);
+  const convertedMdPath =
+    typeof item.convertedMdPath === "string" && item.convertedMdPath.trim()
+      ? item.convertedMdPath.trim()
       : undefined;
   const sourceMtimeMsAtConvert =
     typeof item.sourceMtimeMsAtConvert === "number" &&
@@ -299,13 +335,14 @@ function normalizeRecord(item: Partial<FileMetaRecord>): FileMetaRecord | null {
   return {
     path,
     fileName,
-    convertedTxtPath,
+    convertedMdPath,
     sourceMtimeMsAtConvert,
     progress,
     editorViewState,
     viewportTopPhysicalLine,
     bookmarks,
     highlightWordsByIndex,
+    ...(readerAnnotations.length ? { readerAnnotations } : {}),
     lastOpenedAt,
     updatedAt,
     ...(characterBookStyle ? { characterBookStyle } : {}),
@@ -398,7 +435,8 @@ export function upsertFileMetaRecord(
     viewportTopPhysicalLine: prev?.viewportTopPhysicalLine,
     bookmarks: prev?.bookmarks ?? [],
     highlightWordsByIndex: prev?.highlightWordsByIndex,
-    convertedTxtPath: prev?.convertedTxtPath,
+    readerAnnotations: prev?.readerAnnotations,
+    convertedMdPath: prev?.convertedMdPath,
     sourceMtimeMsAtConvert: prev?.sourceMtimeMsAtConvert,
     lastOpenedAt: prev?.lastOpenedAt,
     characterBookStyle: prev?.characterBookStyle,
@@ -514,4 +552,49 @@ export function removeHighlightTermFromFile(
       highlightWordsByIndex: Object.keys(base).length > 0 ? base : undefined,
     };
   });
+}
+
+export function upsertReaderAnnotationForFile(
+  items: FileMetaRecord[],
+  path: string,
+  annotation: ReaderAnnotationRecord,
+) {
+  return upsertFileMetaRecord(items, path, (prev) => {
+    const base = [...(prev?.readerAnnotations ?? [])];
+    const idx = base.findIndex((a) => a.id === annotation.id);
+    if (idx >= 0) base[idx] = annotation;
+    else base.push(annotation);
+    return { readerAnnotations: base };
+  });
+}
+
+export function removeReaderAnnotationForFile(
+  items: FileMetaRecord[],
+  path: string,
+  id: string,
+) {
+  return upsertFileMetaRecord(items, path, (prev) => ({
+    readerAnnotations: (prev?.readerAnnotations ?? []).filter(
+      (a) => a.id !== id,
+    ),
+  }));
+}
+
+export function setReaderAnnotationsForFile(
+  items: FileMetaRecord[],
+  path: string,
+  annotations: ReaderAnnotationRecord[],
+) {
+  return upsertFileMetaRecord(items, path, () => ({
+    readerAnnotations: annotations.length ? annotations : undefined,
+  }));
+}
+
+export function clearReaderAnnotationsForFile(
+  items: FileMetaRecord[],
+  path: string,
+) {
+  return upsertFileMetaRecord(items, path, () => ({
+    readerAnnotations: undefined,
+  }));
 }

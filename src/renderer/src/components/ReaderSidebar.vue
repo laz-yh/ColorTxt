@@ -22,12 +22,26 @@ import ChapterListPanel from "./ChapterListPanel.vue";
 import FileListPanel from "./FileListPanel.vue";
 import BookmarkListPanel from "./BookmarkListPanel.vue";
 import HighlightListPanel from "./HighlightListPanel.vue";
+import AnnotationListPanel from "./AnnotationListPanel.vue";
 import type { HighlightListTerm } from "../utils/highlightWords";
+import type {
+  AnnotationListChapterGroup,
+} from "../utils/readerAnnotations";
+import type { ReaderAnnotationRecord } from "../stores/fileMetaStore";
 import AiAssistantPanel from "./AiAssistantPanel.vue";
 import CharacterSidebarPanel from "./CharacterSidebarPanel.vue";
 import SearchPanel from "./SearchPanel.vue";
 import type ReaderMain from "./ReaderMain.vue";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
+import {
+  WORDCLOUD_DEFAULT_ANGLE_MODE,
+  WORDCLOUD_DEFAULT_FONT_FAMILY,
+  type WordcloudAngleMode,
+} from "../constants/wordcloudUi";
+import {
+  WORDCLOUD_DEFAULT_PALETTE_ID,
+  type WordcloudPaletteId,
+} from "../constants/wordcloudPalettes";
 import { icons } from "../icons";
 import type { ReaderSidebarTab } from "../constants/readerSidebarTab";
 import {
@@ -43,6 +57,8 @@ import { appAlert } from "../services/appDialog";
 import {
   collectFsPathsFromDataTransfer,
   dataTransferLikelyHasExternalFiles,
+  DROP_ZONE_CHARACTER_PORTRAIT,
+  isDragOverDropZone,
 } from "../utils/dragDropFsPaths";
 
 const props = withDefaults(
@@ -59,6 +75,7 @@ const props = withDefaults(
     /** 当前打开文件的实时进度（%），滚动时更新 */
     liveReadingProgressPercent?: number;
     highlightTerms?: HighlightListTerm[];
+    annotationGroups?: AnnotationListChapterGroup[];
     searchQuery?: string;
     searchResults?: Array<{
       physicalLine: number;
@@ -70,16 +87,19 @@ const props = withDefaults(
     searchMatchCase?: boolean;
     searchWholeWord?: boolean;
     searchUseRegex?: boolean;
-    activeSearchResult?: { physicalLine: number; rangeStart: number } | null;
+    activeSearchResult?: { displayLine: number; rangeStart: number } | null;
     hasInlineSearchHighlight?: boolean;
     highlightPreviewBg?: string;
     monacoFontFamily?: string;
+    lineationColors?: readonly string[];
     bookmarks: Array<{ line: number; note?: string; content: string }>;
     currentFilePath: string | null;
     activeChapterIdx: number;
     activeBookmarkLine?: number | null;
     showChapterCounts: boolean;
     formatCharCount: (n: number) => string;
+    /** 与设置「章节最少字数」一致 */
+    chapterMinCharCount?: number;
     /** edge：滚入可见区；center：当前项在列表视口垂直居中（全屏浮动侧栏） */
     activeScrollMode?: "edge" | "center";
     /** 全屏浮动侧栏时章节列表不使用平滑滚动（避免与呼出动画叠加） */
@@ -147,6 +167,7 @@ const props = withDefaults(
     hasInlineSearchHighlight: false,
     highlightPreviewBg: "var(--reader-bg, var(--bg))",
     monacoFontFamily: "",
+    lineationColors: () => [],
     readerMainRef: null,
     physicalReaderPath: null,
     aiSkillsEnabled: () => ({}),
@@ -172,6 +193,15 @@ const characterCardTextureEffect = defineModel<CharacterCardTextureEffectId>(
   "characterCardTextureEffect",
   { default: DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT },
 );
+const wordcloudFontFamily = defineModel<string>("wordcloudFontFamily", {
+  default: WORDCLOUD_DEFAULT_FONT_FAMILY,
+});
+const wordcloudAngleMode = defineModel<WordcloudAngleMode>("wordcloudAngleMode", {
+  default: WORDCLOUD_DEFAULT_ANGLE_MODE,
+});
+const wordcloudPaletteId = defineModel<WordcloudPaletteId>("wordcloudPaletteId", {
+  default: WORDCLOUD_DEFAULT_PALETTE_ID,
+});
 
 const emit = defineEmits<{
   "update:activeTab": [value: ReaderSidebarTab];
@@ -222,6 +252,13 @@ const emit = defineEmits<{
   unfavoriteHighlightTerm: [payload: { text: string; colorIndex: number }];
   clearInlineSearchHighlight: [];
   clearHighlights: [];
+  jumpToAnnotation: [ann: ReaderAnnotationRecord];
+  removeAnnotation: [id: string];
+  clearAnnotations: [];
+  clearStaleAnnotations: [];
+  exportAnnotationsMd: [];
+  exportAnnotationsJson: [];
+  importAnnotationsJson: [];
   "update:searchQuery": [value: string];
   "update:searchMatchCase": [value: boolean];
   "update:searchWholeWord": [value: boolean];
@@ -251,7 +288,7 @@ const {
   chaptersVisible,
   bookmarkListRef,
   bookmarksVisible,
-  sidebarActiveLineNumber,
+  isChapterActive,
   onChapterItemClick,
   scrollFileListToIndex,
   resetChapterListScroll,
@@ -407,6 +444,8 @@ const activePanelTitle = computed(() => {
       return "书签";
     case "highlights":
       return "高亮词";
+    case "notes":
+      return "笔记";
     case "aiAssistant":
       return "AI 阅读助手";
     case "character":
@@ -419,10 +458,16 @@ const activePanelTitle = computed(() => {
 });
 
 /** 侧栏「AI 阅读助手」标题行「更多」菜单 */
-const AI_ASSISTANT_HEADER_MORE_MENU_W = 150;
+const AI_ASSISTANT_HEADER_MORE_MENU_W = 168;
 const aiAssistantPanelRef = ref<{
   requestRebuildVectorIndex: () => Promise<void>;
+  requestClearAiBookCache: () => Promise<void>;
+  prefillQuotedText: (text: string) => void;
 } | null>(null);
+const annotationPanelRef = ref<InstanceType<typeof AnnotationListPanel> | null>(
+  null,
+);
+const notesHeaderMoreBtnRef = ref<HTMLButtonElement | null>(null);
 const aiAssistantHeaderMoreBtnRef = ref<HTMLButtonElement | null>(null);
 
 const aiAssistantPanelTeleportPopoversOpen = ref(false);
@@ -460,6 +505,12 @@ async function onAiAssistantHeaderMoreRebuildIndex() {
   closeAiAssistantHeaderMoreMenu();
   await nextTick();
   await aiAssistantPanelRef.value?.requestRebuildVectorIndex?.();
+}
+
+async function onAiAssistantHeaderMoreClearCache() {
+  closeAiAssistantHeaderMoreMenu();
+  await nextTick();
+  await aiAssistantPanelRef.value?.requestClearAiBookCache?.();
 }
 
 watch(
@@ -508,20 +559,29 @@ function bindBookmarkListRef(value: any) {
 
 const sidebarDragOverlayVisible = ref(false);
 
-function onSidebarDragEnter(ev: DragEvent) {
+function syncSidebarDragOverlay(ev: DragEvent) {
   const dt = ev.dataTransfer;
-  if (!dataTransferLikelyHasExternalFiles(dt)) return;
-  ev.preventDefault();
+  if (!dataTransferLikelyHasExternalFiles(dt)) {
+    sidebarDragOverlayVisible.value = false;
+    return;
+  }
+  if (isDragOverDropZone(ev, DROP_ZONE_CHARACTER_PORTRAIT)) {
+    sidebarDragOverlayVisible.value = false;
+    return;
+  }
   sidebarDragOverlayVisible.value = true;
 }
 
-function onSidebarDragOver(ev: DragEvent) {
-  const dt = ev.dataTransfer;
-  if (!dataTransferLikelyHasExternalFiles(dt)) return;
+function onSidebarDragEnter(ev: DragEvent) {
   ev.preventDefault();
-  sidebarDragOverlayVisible.value = true;
+  syncSidebarDragOverlay(ev);
+}
+
+function onSidebarDragOver(ev: DragEvent) {
+  ev.preventDefault();
+  syncSidebarDragOverlay(ev);
   try {
-    if (dt) dt.dropEffect = "copy";
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
   } catch {
     /* ignore */
   }
@@ -548,6 +608,9 @@ defineExpose({
   scrollFileListToIndex,
   resetChapterListScroll,
   centerActiveChapterInList,
+  prefillAiAssistantQuotedText(text: string) {
+    aiAssistantPanelRef.value?.prefillQuotedText(text);
+  },
 });
 </script>
 
@@ -556,8 +619,8 @@ defineExpose({
     class="sidebar"
     data-reader-sidebar-root
     data-drop-zone="reader-sidebar"
-    @dragenter="onSidebarDragEnter"
-    @dragover="onSidebarDragOver"
+    @dragenter.capture="onSidebarDragEnter"
+    @dragover.capture="onSidebarDragOver"
     @dragleave="onSidebarDragLeave"
     @drop="onSidebarDrop"
   >
@@ -619,6 +682,16 @@ defineExpose({
           @click="onPrimaryTabClick('highlights')"
         >
           <span class="activityIcon" v-html="icons.highlightMark"></span>
+        </button>
+        <button
+          type="button"
+          class="activityTabBtn"
+          :class="{ active: panelExpanded && activeTab === 'notes' }"
+          title="笔记"
+          aria-label="笔记"
+          @click="onPrimaryTabClick('notes')"
+        >
+          <span class="activityIcon" v-html="icons.note"></span>
         </button>
         <button
           v-if="aiAssistantTabVisible"
@@ -711,6 +784,18 @@ defineExpose({
             <span class="svg" v-html="icons.more" />
           </button>
         </div>
+        <div v-else-if="activeTab === 'notes'" class="sidebarHeaderEnd">
+          <button
+            ref="notesHeaderMoreBtnRef"
+            type="button"
+            class="aiReaderSidebarHeaderIconBtn"
+            title="更多"
+            aria-label="更多"
+            @click="annotationPanelRef?.openMoreMenu()"
+          >
+            <span class="svg" v-html="icons.more" />
+          </button>
+        </div>
         <div v-else-if="activeTab === 'aiAssistant'" class="sidebarHeaderEnd">
           <button
             ref="aiAssistantHeaderMoreBtnRef"
@@ -732,7 +817,7 @@ defineExpose({
         v-show="activeTab === 'chapters'"
         :current-file-path="currentFilePath"
         :chapters-visible="chaptersVisible"
-        :sidebar-active-line-number="sidebarActiveLineNumber"
+        :is-chapter-active="isChapterActive"
         :show-chapter-counts="showChapterCounts"
         :format-char-count="formatCharCount"
         @jump-to-chapter="onChapterItemClick"
@@ -798,6 +883,22 @@ defineExpose({
         @clear-inline-search-highlight="emit('clearInlineSearchHighlight')"
         @clear-highlights="emit('clearHighlights')"
       />
+      <AnnotationListPanel
+        ref="annotationPanelRef"
+        v-show="activeTab === 'notes'"
+        :current-file-path="currentFilePath"
+        :groups="annotationGroups ?? []"
+        :menu-anchor-el="notesHeaderMoreBtnRef"
+        :monaco-font-family="monacoFontFamily"
+        :lineation-colors="lineationColors"
+        @jump-to-annotation="emit('jumpToAnnotation', $event)"
+        @remove-annotation="emit('removeAnnotation', $event)"
+        @clear-annotations="emit('clearAnnotations')"
+        @clear-stale-annotations="emit('clearStaleAnnotations')"
+        @export-annotations-md="emit('exportAnnotationsMd')"
+        @export-annotations-json="emit('exportAnnotationsJson')"
+        @import-annotations-json="emit('importAnnotationsJson')"
+      />
       <div v-show="activeTab === 'aiAssistant'" class="sidebarAiHost">
         <AiAssistantPanel
           ref="aiAssistantPanelRef"
@@ -813,6 +914,9 @@ defineExpose({
           :ai-skill-overrides="aiSkillOverrides"
           :ai-custom-skills="aiCustomSkills"
           :ai-config-sync-nonce="aiAssistantConfigSyncNonce"
+          v-model:wordcloud-font-family="wordcloudFontFamily"
+          v-model:wordcloud-angle-mode="wordcloudAngleMode"
+          v-model:wordcloud-palette-id="wordcloudPaletteId"
           @jump-to-chapter="emit('jumpToChapterFromAi', $event)"
           @update:fullscreen-ai-assistant-popovers-open="
             aiAssistantPanelTeleportPopoversOpen = $event
@@ -884,6 +988,15 @@ defineExpose({
         @click="onAiAssistantHeaderMoreRebuildIndex"
       >
         重建向量索引
+      </button>
+      <div class="appShellMenuDivider" role="separator" />
+      <button
+        type="button"
+        class="appShellMenuItem appShellMenuItem--danger"
+        role="menuitem"
+        @click="onAiAssistantHeaderMoreClearCache"
+      >
+        清除缓存
       </button>
     </AppShellMenuTeleport>
     <AppShellMenuTeleport

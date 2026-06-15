@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, toRaw, useTemplateRef, watch } from "vue";
+import {
+  applyAllActiveProfilesToConfig,
+} from "@shared/aiEndpointProfiles";
 import type { AIConfig } from "@shared/aiTypes";
 import {
   defaultAIConfig,
-  EMPTY_TOKEN_PRICE_PER_MILLION,
-  normalizeTokenPricePerMillion,
+  normalizeEmbeddingEndpoint,
 } from "@shared/aiTypes";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
+import {
+  defaultAiSmartFormatSettings,
+  mergeAiSmartFormatSettings,
+  type AiSmartFormatSettings,
+} from "@shared/aiSmartFormatTypes";
 import {
   mergeAiCustomSkills,
   mergeAiSkillOverrides,
@@ -46,8 +53,6 @@ import { appAlert } from "../services/appDialog";
 import { getBuiltinEmbeddingBlockMessage } from "../ai/embeddingReady";
 import { icons } from "../icons";
 import {
-  resolveDefaultCharacterPortraitCacheDirSync,
-  resolveDefaultAiDataCacheDirSync,
   resolveDefaultBuiltinModelCacheDirSync,
   resolveDefaultEbookConvertOutputDirSync,
   resolveEffectiveAiDataCacheDir,
@@ -60,6 +65,18 @@ import {
   voiceReadDashScopeRequiresApiKey,
 } from "../constants/voiceRead";
 
+type SettingsAIPanelExpose = {
+  finalizeChatProfiles?: () => void;
+  initChatProfiles?: () => void;
+  resetCurrentChatProfile?: () => void;
+};
+
+type SettingsTxt2ImgPanelExpose = {
+  finalizeTxt2ImgProfiles?: () => void;
+  initTxt2ImgProfiles?: () => void;
+  resetCurrentTxt2ImgProfile?: () => void;
+};
+
 export type SettingsApplyPayload = {
   restoreSessionOnStartup: boolean;
   syncCurrentFile: boolean;
@@ -70,6 +87,7 @@ export type SettingsApplyPayload = {
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
+  aiSmartFormat: AiSmartFormatSettings;
   fontSize: number;
   lineHeightMultiple: number;
   compressBlankKeepOneBlank: boolean;
@@ -96,6 +114,7 @@ const props = defineProps<{
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
+  aiSmartFormat: AiSmartFormatSettings;
   compressBlankKeepOneBlank: boolean;
   monacoCustomHighlight: boolean;
   txtrDelimitedMatchCrossLine: boolean;
@@ -119,6 +138,9 @@ const settingsTabScrollerEl = useTemplateRef<HTMLElement>(
 type SettingsSkillsPanelExpose = { openCreateSkill: () => void };
 const skillsPanelRef =
   useTemplateRef<SettingsSkillsPanelExpose>("skillsPanelRef");
+const aiPanelRef = useTemplateRef<SettingsAIPanelExpose>("aiPanelRef");
+const txt2imgPanelRef =
+  useTemplateRef<SettingsTxt2ImgPanelExpose>("txt2imgPanelRef");
 
 function onAddSkillClick() {
   skillsPanelRef.value?.openCreateSkill();
@@ -135,6 +157,9 @@ const draftMonacoSmoothScrolling = ref(true);
 const draftReaderEditShowLineNumbers = ref(defaultReaderEditShowLineNumbers);
 const draftReaderEditMinimap = ref(defaultReaderEditMinimap);
 const draftEditAutoRefreshChapterList = ref(defaultEditAutoRefreshChapterList);
+const draftAiSmartFormat = ref<AiSmartFormatSettings>({
+  ...defaultAiSmartFormatSettings,
+});
 const draftCompressBlankKeepOneBlank = ref(false);
 const draftTxtrDelimitedMatchCrossLine = ref(
   defaultTxtrDelimitedMatchCrossLine,
@@ -174,6 +199,7 @@ function syncDraftFromProps() {
   draftReaderEditShowLineNumbers.value = props.readerEditShowLineNumbers;
   draftReaderEditMinimap.value = props.readerEditMinimap;
   draftEditAutoRefreshChapterList.value = props.editAutoRefreshChapterList;
+  draftAiSmartFormat.value = mergeAiSmartFormatSettings(props.aiSmartFormat);
   draftCompressBlankKeepOneBlank.value = props.compressBlankKeepOneBlank;
   draftTxtrDelimitedMatchCrossLine.value = props.txtrDelimitedMatchCrossLine;
   draftEbookConvertOutputDir.value = props.ebookConvertOutputDir;
@@ -191,9 +217,8 @@ async function syncAiFromMain() {
   try {
     const c = await window.colorTxt.ai.configGet();
     draftAi.value = structuredClone(c);
-    draftAi.value.chat.tokenPricePerMillion = normalizeTokenPricePerMillion(
-      draftAi.value.chat.tokenPricePerMillion,
-    );
+    draftAi.value.embedding = normalizeEmbeddingEndpoint(draftAi.value.embedding);
+    applyAllActiveProfilesToConfig(draftAi.value);
     loadedAiDimension.value = c.embedding.dimension;
     loadedAiDataCacheDir.value = await resolveEffectiveAiDataCacheDir(
       c.aiDataCacheDir,
@@ -209,6 +234,9 @@ async function syncAiFromMain() {
     loadedBuiltinModelCacheDir.value =
       await resolveEffectiveBuiltinModelCacheDir("");
   }
+  await nextTick();
+  aiPanelRef.value?.initChatProfiles?.();
+  txt2imgPanelRef.value?.initTxt2ImgProfiles?.();
 }
 
 watch(modelValue, (open) => {
@@ -216,6 +244,8 @@ watch(modelValue, (open) => {
     activeTab.value = "general";
     return;
   }
+  draftAi.value.embedding = normalizeEmbeddingEndpoint(draftAi.value.embedding);
+  applyAllActiveProfilesToConfig(draftAi.value);
   syncDraftFromProps();
   void syncAiFromMain();
 });
@@ -272,20 +302,11 @@ function resetEditDraft() {
   draftReaderEditShowLineNumbers.value = defaultReaderEditShowLineNumbers;
   draftReaderEditMinimap.value = defaultReaderEditMinimap;
   draftEditAutoRefreshChapterList.value = defaultEditAutoRefreshChapterList;
+  draftAiSmartFormat.value = { ...defaultAiSmartFormatSettings };
 }
 
 function resetAiDraft() {
-  const def = defaultAIConfig;
-  const chat = structuredClone(def.chat);
-  chat.tokenPricePerMillion = { ...EMPTY_TOKEN_PRICE_PER_MILLION };
-  draftAi.value = {
-    ...draftAi.value,
-    aiEnabled: def.aiEnabled,
-    aiDataCacheDir: resolveDefaultAiDataCacheDirSync(),
-    chat,
-    quickQuestions: structuredClone(def.quickQuestions),
-    showTokenUsage: def.showTokenUsage,
-  };
+  aiPanelRef.value?.resetCurrentChatProfile?.();
 }
 
 function resetVectorModelDraft() {
@@ -302,12 +323,7 @@ function resetVectorModelDraft() {
 }
 
 function resetTxt2ImgDraft() {
-  draftAi.value = {
-    ...draftAi.value,
-    txt2img: structuredClone(defaultAIConfig.txt2img),
-  };
-  draftCharacterPortraitCacheDir.value =
-    resolveDefaultCharacterPortraitCacheDirSync();
+  txt2imgPanelRef.value?.resetCurrentTxt2ImgProfile?.();
 }
 
 function resetSkillsDraft() {
@@ -428,6 +444,10 @@ async function onConfirm() {
     return;
   }
 
+  aiPanelRef.value?.finalizeChatProfiles?.();
+  txt2imgPanelRef.value?.finalizeTxt2ImgProfiles?.();
+  applyAllActiveProfilesToConfig(draftAi.value);
+
   const aiPayload = JSON.parse(
     JSON.stringify(toRaw(draftAi.value)),
   ) as AIConfig;
@@ -455,6 +475,7 @@ async function onConfirm() {
     readerEditShowLineNumbers: draftReaderEditShowLineNumbers.value,
     readerEditMinimap: draftReaderEditMinimap.value,
     editAutoRefreshChapterList: draftEditAutoRefreshChapterList.value,
+    aiSmartFormat: { ...draftAiSmartFormat.value },
     fontSize: draftFontSize.value,
     lineHeightMultiple: draftLineHeightMultiple.value,
     compressBlankKeepOneBlank: draftCompressBlankKeepOneBlank.value,
@@ -550,6 +571,7 @@ async function onClearCache() {
 
             <SettingsEditPanel
               v-show="activeTab === 'edit'"
+              :ai-features-enabled="showAiExtensionTabs"
               v-model:draft-reader-edit-show-line-numbers="
                 draftReaderEditShowLineNumbers
               "
@@ -557,6 +579,7 @@ async function onClearCache() {
               v-model:draft-edit-auto-refresh-chapter-list="
                 draftEditAutoRefreshChapterList
               "
+              v-model:draft-ai-smart-format="draftAiSmartFormat"
             />
 
             <SettingsVoiceReadPanel
@@ -564,7 +587,11 @@ async function onClearCache() {
               v-model="draftVoiceRead"
             />
 
-            <SettingsAIPanel v-show="activeTab === 'ai'" v-model="draftAi" />
+            <SettingsAIPanel
+              ref="aiPanelRef"
+              v-show="activeTab === 'ai'"
+              v-model="draftAi"
+            />
 
             <SettingsVectorModelPanel
               v-show="activeTab === 'vectorModel'"
@@ -572,6 +599,7 @@ async function onClearCache() {
             />
 
             <SettingsTxt2ImgPanel
+              ref="txt2imgPanelRef"
               v-show="activeTab === 'txt2img'"
               v-model="draftAi"
               v-model:character-portrait-cache-dir="

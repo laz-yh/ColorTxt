@@ -12,13 +12,14 @@ import {
 import type ReaderMain from "./ReaderMain.vue";
 import type { Chapter } from "../chapter";
 import { pickActiveChapterIdx } from "../reader/chapterIndex";
-import type { AIAgentRendererEvent } from "@shared/aiTypes";
+import type { AIAgentRendererEvent, AIConfig } from "@shared/aiTypes";
 import {
   EMPTY_TOKEN_PRICE_PER_MILLION,
   normalizeAiQuickQuestions,
   normalizeTokenPricePerMillion,
   type AITokenPricePerMillion,
 } from "@shared/aiTypes";
+import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import { collectEnabledAgentSkills } from "@shared/aiSkills";
 import {
@@ -33,7 +34,14 @@ import {
 } from "../utils/readerSurroundingPlainText";
 import { dirnameFs, joinFs } from "../ebook/pathUtils";
 import AiAssistantChatMessages from "./AiAssistantChatMessages.vue";
+import type { WordcloudAngleMode } from "../constants/wordcloudUi";
+import type { WordcloudPaletteId } from "../constants/wordcloudPalettes";
 import { rowsToUiMessages } from "../aiAssistant/aiAssistantDbMessages";
+import { parseMindmapToolResult } from "../aiAssistant/parseMindmapToolResult";
+import {
+  parseWordcloudToolResult,
+  patchWordcloudToolResultLayoutSeed,
+} from "../aiAssistant/parseWordcloudToolResult";
 import type { UiTokenUsageMsg } from "../aiAssistant/aiAssistantTypes";
 import {
   buildChatExportDefaultName,
@@ -63,6 +71,7 @@ import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import { icons } from "../icons";
 import { appAlert } from "../services/appDialog";
 import { appToast } from "../services/appToast";
+import { APP_DISPLAY_NAME } from "../constants/appUi";
 
 /** 导出对话下拉菜单固定宽度（与内容版式一致，不作视口/触发器推算） */
 const AI_EXPORT_MENU_WIDTH_PX = 210;
@@ -100,6 +109,16 @@ const props = defineProps<{
   /** 设置「确定」保存 AI 配置后递增，用于刷新快速提问与对话模型缓存 */
   aiConfigSyncNonce?: number;
 }>();
+
+const wordcloudFontFamily = defineModel<string>("wordcloudFontFamily", {
+  required: true,
+});
+const wordcloudAngleMode = defineModel<WordcloudAngleMode>("wordcloudAngleMode", {
+  required: true,
+});
+const wordcloudPaletteId = defineModel<WordcloudPaletteId>("wordcloudPaletteId", {
+  required: true,
+});
 
 const emit = defineEmits<{
   jumpToChapter: [chapter: Chapter];
@@ -513,15 +532,12 @@ async function syncChatModelFromConfig() {
   }
 }
 
-function chatEndpointFingerprint(cfg: {
-  chat: { baseUrl: string; apiKey: string };
-}): string {
-  return `${cfg.chat.baseUrl.trim()}\0${cfg.chat.apiKey}`;
+function chatEndpointFingerprint(cfg: AIConfig): string {
+  const chat = readActiveChatEndpoint(cfg);
+  return `${chat.baseUrl.trim()}\0${chat.apiKey}`;
 }
 
-function isChatModelsListStale(cfg: {
-  chat: { baseUrl: string; apiKey: string };
-}): boolean {
+function isChatModelsListStale(cfg: AIConfig): boolean {
   if (!chatModelsListFingerprint.value) return true;
   return chatModelsListFingerprint.value !== chatEndpointFingerprint(cfg);
 }
@@ -538,10 +554,11 @@ async function refreshChatModels(opts?: { composerSuccessFlash?: boolean }) {
   let ok = false;
   try {
     const cfg = await window.colorTxt.ai.configGet();
+    const chat = readActiveChatEndpoint(cfg);
     const fp = chatEndpointFingerprint(cfg);
     const r = await window.colorTxt.ai.modelsList({
-      baseUrl: cfg.chat.baseUrl,
-      apiKey: cfg.chat.apiKey,
+      baseUrl: chat.baseUrl,
+      apiKey: chat.apiKey,
     });
     ok = r.ok;
     if (r.ok) {
@@ -670,6 +687,36 @@ async function loadMessagesForThread(tid: string) {
   await scrollListToBottomAfterMessagesLoad();
 }
 
+function onWordcloudLayoutSeedChange(
+  toolCallId: string,
+  layoutSeed: number,
+) {
+  const tid = threadId.value;
+  if (!tid || !toolCallId) return;
+
+  let patched: string | null = null;
+  for (const m of messages.value) {
+    if (m.role !== "assistant") continue;
+    const t = m.tools.find((x) => x.toolCallId === toolCallId);
+    if (!t?.wordcloud) continue;
+    patched = patchWordcloudToolResultLayoutSeed(t.full, layoutSeed);
+    if (!patched) return;
+    t.full = patched;
+    t.preview =
+      patched.length > 360 ? `${patched.slice(0, 360)}…` : patched;
+    if (t.wordcloud) {
+      t.wordcloud.layoutSeed = layoutSeed > 0 ? layoutSeed : undefined;
+    }
+    break;
+  }
+  if (!patched) return;
+  void window.colorTxt.ai.messageUpdateToolContent(tid, toolCallId, patched).catch(
+    () => {
+      /* 界面已更新；落库失败时下次载入会回到旧 seed */
+    },
+  );
+}
+
 async function ensureThread() {
   if (!bookHash.value) return;
   const bh = bookHash.value;
@@ -721,6 +768,7 @@ watch(
         void refreshChatModels();
       }
       await nextTick();
+      autosizeComposerInput();
       flushPendingScrollToBottomAfterVisible();
       focusComposer();
     })();
@@ -909,6 +957,7 @@ onMounted(() => {
           toolCallId: ev.toolCallId,
           name: ev.name,
           argsPreview: ev.argsPreview,
+          argsJson: ev.argsJson,
           status: "running",
           preview: "",
           full: "",
@@ -934,6 +983,14 @@ onMounted(() => {
           t.status = ev.ok ? "done" : "error";
           t.preview = ev.preview;
           t.full = ev.full;
+          if (ev.name === "mindmap") {
+            t.mindmap =
+              ev.ok ? (parseMindmapToolResult(ev.full) ?? undefined) : undefined;
+          }
+          if (ev.name === "wordcloud") {
+            t.wordcloud =
+              ev.ok ? (parseWordcloudToolResult(ev.full) ?? undefined) : undefined;
+          }
         }
         break;
       }
@@ -1031,9 +1088,7 @@ async function requestRebuildVectorIndex(): Promise<void> {
     return;
   }
   if (isAiVectorIndexPhaseBusy()) {
-    appToast("索引任务正在进行中，请稍候。", {
-      kind: "primary",
-    });
+    appToast("索引任务正在进行中，请稍候。");
     return;
   }
   if (chatAwaitingReply.value || streaming.value) {
@@ -1054,6 +1109,41 @@ async function requestRebuildVectorIndex(): Promise<void> {
     indexPhase.value = "error";
     indexError.value = e instanceof Error ? e.message : String(e);
   }
+}
+
+/** 侧栏 header「更多 → 清除缓存」：删除本书向量索引与分词缓存（不含对话记录） */
+async function requestClearAiBookCache(): Promise<void> {
+  if (!bookHash.value) return;
+  if (isAiVectorIndexPhaseBusy()) {
+    appToast("索引任务正在进行中，请稍候。");
+    return;
+  }
+  if (chatAwaitingReply.value || streaming.value) {
+    appToast("对话正在进行中，请先停止或等待完成后再清除缓存。");
+    return;
+  }
+  const r = await window.colorTxt.showMessageBox({
+    type: "warning",
+    title: APP_DISPLAY_NAME,
+    buttons: ["取消", "清除"],
+    defaultId: 1,
+    cancelId: 0,
+    message: "是否清除本书 AI 缓存？",
+    detail:
+      "将删除本书的向量索引与词云分词缓存；对话记录会保留。",
+    noLink: true,
+  });
+  if (r.response !== 1) return;
+  const del = await window.colorTxt.ai.indexDeleteBook(bookHash.value);
+  if (!del.ok) {
+    await appAlert("清除缓存失败。");
+    return;
+  }
+  indexPhase.value = "idle";
+  indexError.value = "";
+  indexEmbedCurrent.value = 0;
+  indexEmbedTotal.value = 0;
+  appToast("已清除本书 AI 缓存。", { kind: "success" });
 }
 
 async function buildIndex(
@@ -1138,7 +1228,7 @@ function bookMetaPayload() {
   if (idx >= 0 && ch) {
     const titleBit = (ch.title ?? "").trim() || "（无标题）";
     surroundingParts.push(
-      `【与本节选同位的当前章】第 ${idx + 1} 章 · ${titleBit}（总结/问答「本章」时 ragContext 的 chapterIndex=${idx}）`,
+      `【与本节选同位的当前章】${titleBit}（「本章」类问题 ragContext 用 chapterIndex=${idx}，勿在对用户回复中写该序号）`,
     );
   }
   if (selPart) surroundingParts.push(`当前选中：\n${selPart}`);
@@ -1262,6 +1352,7 @@ async function onSend() {
       spoilerSafe: spoilerSafe.value,
       chatModelOverride: override,
       slidingWindowSize: cfg.chat.slidingWindowSize,
+      maxToolRounds: cfg.chat.maxToolRounds,
       enabledSkills: collectEnabledAgentSkills(
         props.aiSkillsEnabled ?? {},
         props.aiSkillOverrides ?? {},
@@ -1463,6 +1554,7 @@ async function exportMd() {
       exportTitle,
       false,
       skillToolDisplayLabels.value,
+      props.chapters,
     ),
     filters: [{ name: "Markdown", extensions: ["md"] }],
   });
@@ -1487,6 +1579,7 @@ async function exportMdWithReasoning() {
       exportTitle,
       true,
       skillToolDisplayLabels.value,
+      props.chapters,
     ),
     filters: [{ name: "Markdown", extensions: ["md"] }],
   });
@@ -1511,6 +1604,7 @@ async function exportJson() {
       exportTitle,
       false,
       skillToolDisplayLabels.value,
+      props.chapters,
     ),
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
@@ -1535,6 +1629,7 @@ async function exportJsonWithReasoning() {
       exportTitle,
       true,
       skillToolDisplayLabels.value,
+      props.chapters,
     ),
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
@@ -1556,10 +1651,11 @@ async function copyAllMarkdown() {
         exportTitle,
         false,
         skillToolDisplayLabels.value,
+        props.chapters,
       ),
     );
   } catch {
-    appToast("复制失败：剪贴板不可用");
+    appToast("复制失败：剪贴板不可用", { kind: "danger", showClose: true, duration: 0 });
   }
 }
 
@@ -1578,10 +1674,11 @@ async function copyAllMarkdownWithReasoning() {
         exportTitle,
         true,
         skillToolDisplayLabels.value,
+        props.chapters,
       ),
     );
   } catch {
-    appToast("复制失败：剪贴板不可用");
+    appToast("复制失败：剪贴板不可用", { kind: "danger", showClose: true, duration: 0 });
   }
 }
 
@@ -1652,6 +1749,7 @@ async function onChClick(chapterIndexZeroBased: number) {
   else
     appToast(
       `未找到第 ${chapterIndexZeroBased + 1} 章（chapterIndex=${chapterIndexZeroBased}）`,
+      { kind: "danger", showClose: true, duration: 0 },
     );
 }
 
@@ -1662,8 +1760,37 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+function scrollComposerToCaretEnd() {
+  const el = composerInputRef.value;
+  if (!el) return;
+  const len = el.value.length;
+  el.setSelectionRange(len, len);
+  el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+}
+
+function prefillQuotedText(text: string) {
+  const quoted = text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  input.value = `${quoted}\n\n`;
+  void nextTick(() => {
+    const layoutComposer = () => {
+      autosizeComposerInput();
+      const el = composerInputRef.value;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      scrollComposerToCaretEnd();
+    };
+    layoutComposer();
+    requestAnimationFrame(layoutComposer);
+  });
+}
+
 defineExpose({
   requestRebuildVectorIndex,
+  requestClearAiBookCache,
+  prefillQuotedText,
 });
 </script>
 
@@ -1765,9 +1892,11 @@ defineExpose({
               >
                 <div class="aiHistoryDropdownRowBody">
                   <div class="aiHistoryDropdownTitleRow">
-                    <span class="aiHistoryDropdownLabel">{{
-                      t.title || "未命名"
-                    }}</span>
+                    <span
+                      class="aiHistoryDropdownLabel"
+                      :title="t.title || '未命名'"
+                      >{{ t.title || "未命名" }}</span
+                    >
                     <time
                       class="aiHistoryDropdownTime"
                       :datetime="new Date(t.updatedAt).toISOString()"
@@ -1868,7 +1997,12 @@ defineExpose({
             :token-price-per-million="
               showTokenUsage ? chatTokenPricePerMillion : null
             "
+            :chapters="chapters"
+            v-model:wordcloud-font-family="wordcloudFontFamily"
+            v-model:wordcloud-angle-mode="wordcloudAngleMode"
+            v-model:wordcloud-palette-id="wordcloudPaletteId"
             @chapter-click="onChClick"
+            @wordcloud-layout-seed-change="onWordcloudLayoutSeedChange"
           />
         </div>
         <button
@@ -2084,46 +2218,6 @@ defineExpose({
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
-}
-
-/**
- * 与左侧活动栏图标按钮同系（透明底、tab 字色），
- * 尺寸与当前行模型下拉触发器高度对齐。
- */
-.aiActivityLikeBtn {
-  box-sizing: border-box;
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  margin: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
-  color: var(--tab-fg);
-}
-
-.aiActivityLikeBtn:hover:not(:disabled) {
-  color: var(--tab-fg-hover);
-  background: var(--icon-btn-bg-hover);
-}
-
-.aiActivityLikeBtn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
-.aiActivityLikeBtn .svg :deep(svg) {
-  width: 16px;
-  height: 16px;
-}
-
-.aiActivityLikeBtn .svg :deep(svg path) {
-  fill: currentColor;
 }
 
 .svg :deep(svg) {

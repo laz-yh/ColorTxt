@@ -1,9 +1,17 @@
 <script setup lang="ts">
+import { defineAsyncComponent } from "vue";
 import AiAssistantDetailsFold from "./AiAssistantDetailsFold.vue";
 import AiIndexProgressBanner from "./AiIndexProgressBanner.vue";
 import AiMarkdown from "./AiMarkdown.vue";
 import AiTokenUsageBanner from "./AiTokenUsageBanner.vue";
 import AiToolFoldBody from "./AiToolFoldBody.vue";
+
+const AiMindmapView = defineAsyncComponent(
+  () => import("./AiMindmapView.vue"),
+);
+const AiWordcloudView = defineAsyncComponent(
+  () => import("./AiWordcloudView.vue"),
+);
 import { vAiStickScroll } from "../directives/aiStickScroll";
 import {
   expandAssistantSegRows,
@@ -11,7 +19,10 @@ import {
 } from "../aiAssistant/aiAssistantSegments";
 import type { UiMsg } from "../aiAssistant/aiAssistantTypes";
 import type { AITokenPricePerMillion } from "@shared/aiTypes";
+import type { Chapter } from "../chapter";
 import { assistantAnswerMdSource } from "../aiAssistant/aiAssistantPlainText";
+import type { WordcloudAngleMode } from "../constants/wordcloudUi";
+import type { WordcloudPaletteId } from "../constants/wordcloudPalettes";
 import { icons } from "../icons";
 
 defineProps<{
@@ -19,10 +30,22 @@ defineProps<{
   /** OpenAI 工具名 → 技能展示名（含内置与自定义） */
   skillToolLabels?: Record<string, string>;
   tokenPricePerMillion?: AITokenPricePerMillion | null;
+  chapters?: Chapter[];
 }>();
+
+const wordcloudFontFamily = defineModel<string>("wordcloudFontFamily", {
+  required: true,
+});
+const wordcloudAngleMode = defineModel<WordcloudAngleMode>("wordcloudAngleMode", {
+  required: true,
+});
+const wordcloudPaletteId = defineModel<WordcloudPaletteId>("wordcloudPaletteId", {
+  required: true,
+});
 
 const emit = defineEmits<{
   chapterClick: [chapterIndexZeroBased: number];
+  wordcloudLayoutSeedChange: [toolCallId: string, layoutSeed: number];
 }>();
 
 function onChClick(chIdx: number) {
@@ -144,10 +167,36 @@ function onAiFoldContentPointerDown(ev: PointerEvent) {
                 }}</template>
                 <AiToolFoldBody :tool="row.tool" />
               </AiAssistantDetailsFold>
+              <AiMindmapView
+                v-if="row.rowKind === 'tool' && row.tool.mindmap"
+                :key="`${row.tool.toolCallId || row.tool.id}-mindmap`"
+                :title="row.tool.mindmap.title"
+                :markdown="row.tool.mindmap.markdown"
+                :stats="row.tool.mindmap.stats"
+                :chapters="chapters ?? []"
+              />
+              <AiWordcloudView
+                v-if="row.rowKind === 'tool' && row.tool.wordcloud"
+                :key="`${row.tool.toolCallId || row.tool.id}-wordcloud`"
+                :title="row.tool.wordcloud.title"
+                :mode="row.tool.wordcloud.mode"
+                :semantic-query="row.tool.wordcloud.semanticQuery"
+                :words="row.tool.wordcloud.words"
+                :stats="row.tool.wordcloud.stats"
+                :layout-seed="row.tool.wordcloud.layoutSeed ?? 0"
+                v-model:wordcloud-font-family="wordcloudFontFamily"
+                v-model:wordcloud-angle-mode="wordcloudAngleMode"
+                v-model:wordcloud-palette-id="wordcloudPaletteId"
+                @update:layout-seed="
+                  (seed) =>
+                    emit('wordcloudLayoutSeedChange', row.tool.toolCallId, seed)
+                "
+              />
             </template>
             <AiMarkdown
               v-if="assistantAnswerMdSource(m).trim() && !m.error"
               :source="assistantAnswerMdSource(m)"
+              :chapters="chapters ?? []"
               @chapter-click="onChClick"
             />
             <div v-if="m.error" class="aiAssistantErr">{{ m.answer }}</div>

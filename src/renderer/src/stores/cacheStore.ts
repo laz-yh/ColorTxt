@@ -14,6 +14,8 @@ import {
 
 export type { TxtFileItem };
 import { parseHighlightColorsArray } from "../constants/highlightColors";
+import { parseLineationColorsArray } from "../constants/lineationColors";
+import { parseLineationLastColors } from "../constants/annotationColors";
 import {
   normalizeHighlightWordsByIndex,
   type HighlightWordsByIndex,
@@ -31,6 +33,8 @@ import {
 } from "@shared/aiSkills";
 import type { VoiceReadSettings } from "../constants/voiceRead";
 import { normalizeCharacterCardTextureEffect } from "@shared/characterCardTextureEffects";
+import { parseWordcloudAngleMode } from "../constants/wordcloudUi";
+import { parseWordcloudPaletteId } from "../constants/wordcloudPalettes";
 
 export type PersistedSettingsData = {
   theme?: "vs" | "vs-dark";
@@ -42,6 +46,8 @@ export type PersistedSettingsData = {
   /** Monaco 行高倍数，实际行高 = round(fontSize * lineHeightMultiple) */
   lineHeightMultiple?: number;
   fontFamily?: string;
+  /** 阅读器字体弹框：钉在外层的「其他字体」名称列表 */
+  pinnedOtherFonts?: string[];
   monacoCustomHighlight?: boolean;
   /** 与「内容上色」同时开启时：成对引号/括号是否允许跨行 */
   txtrDelimitedMatchCrossLine?: boolean;
@@ -51,6 +57,9 @@ export type PersistedSettingsData = {
   compressBlankKeepOneBlank?: boolean;
   /** 是否为正文行统一行首两个全角空格（章节标题行与空行除外） */
   leadIndentFullWidth?: boolean;
+  textConvertZh?: string;
+  textConvertLetter?: string;
+  textConvertDigit?: string;
   /** 章节列表是否显示每章字数 */
   showChapterCounts?: boolean;
   chapterRules?: ChapterMatchRule[];
@@ -70,6 +79,10 @@ export type PersistedSettingsData = {
   readerEditMinimap?: boolean;
   /** 编辑模式下内容变更时是否自动刷新侧栏章节列表（超过行数上限时需手动刷新） */
   editAutoRefreshChapterList?: boolean;
+  /** 编辑模式 AI 智能排版选项 */
+  aiSmartFormat?: Partial<
+    import("@shared/aiSmartFormatTypes").AiSmartFormatSettings
+  >;
   /** 全屏时阅读区宽度（百分比） */
   fullscreenReaderWidthPercent?: number;
   /** 用户自定义快捷键（动作ID -> accelerator） */
@@ -82,8 +95,14 @@ export type PersistedSettingsData = {
   highlightColorsLight?: string[];
   /** 自定义高亮色（暗色主题） */
   highlightColorsDark?: string[];
+  /** 划线标注色（亮色主题） */
+  lineationColorsLight?: string[];
+  /** 划线标注色（暗色主题） */
+  lineationColorsDark?: string[];
   /** 已收藏（全书通用）高亮词，按高亮色索引分桶 */
   highlightWordsByIndexGlobal?: HighlightWordsByIndex;
+  /** 划线（马克笔/波浪/直线）各自上次选用的 5 色索引 */
+  lineationLastColors?: import("../constants/annotationColors").LineationLastColorPrefs;
   /**
    * 电子书转换输出目录：空字符串表示与源书同目录。
    * 非空时为绝对路径。若设置 JSON 中无此键，应用默认使用 `userData/ConvertedTxt`。
@@ -107,6 +126,20 @@ export type PersistedSettingsData = {
   aiAssistantDeepThinking?: boolean;
   /** AI 阅读助手：防剧透 */
   aiAssistantSpoilerSafe?: boolean;
+  /** 词云全屏：字体（CSS font-family 串，与阅读器独立） */
+  wordcloudFontFamily?: string;
+  /** 词云全屏：角度布局 */
+  wordcloudAngleMode?: "horizontal" | "mixed" | "random";
+  /** 词云全屏：配色方案 */
+  wordcloudPaletteId?:
+    | "category10"
+    | "category20"
+    | "pastel"
+    | "paired"
+    | "dark"
+    | "accent"
+    | "warm"
+    | "cool";
   /**
    * 角色立绘缓存根目录（绝对路径）。
    * 缺省时运行时使用 `userData/CharacterPortrait`（子目录名见 `@shared/characterPortraitPaths`）。
@@ -196,6 +229,11 @@ export function loadPersistedSettingsData(
   if (typeof obj.fontFamily === "string" && obj.fontFamily.trim()) {
     data.fontFamily = obj.fontFamily;
   }
+  if (Array.isArray(obj.pinnedOtherFonts)) {
+    data.pinnedOtherFonts = obj.pinnedOtherFonts.filter(
+      (f): f is string => typeof f === "string" && f.trim().length > 0,
+    );
+  }
   if (typeof obj.monacoCustomHighlight === "boolean") {
     data.monacoCustomHighlight = obj.monacoCustomHighlight;
   }
@@ -210,6 +248,15 @@ export function loadPersistedSettingsData(
   }
   if (typeof obj.leadIndentFullWidth === "boolean") {
     data.leadIndentFullWidth = obj.leadIndentFullWidth;
+  }
+  if (typeof obj.textConvertZh === "string") {
+    data.textConvertZh = obj.textConvertZh;
+  }
+  if (typeof obj.textConvertLetter === "string") {
+    data.textConvertLetter = obj.textConvertLetter;
+  }
+  if (typeof obj.textConvertDigit === "string") {
+    data.textConvertDigit = obj.textConvertDigit;
   }
   if (typeof obj.showChapterCounts === "boolean") {
     data.showChapterCounts = obj.showChapterCounts;
@@ -250,6 +297,9 @@ export function loadPersistedSettingsData(
   if (typeof obj.editAutoRefreshChapterList === "boolean") {
     data.editAutoRefreshChapterList = obj.editAutoRefreshChapterList;
   }
+  if (obj.aiSmartFormat && typeof obj.aiSmartFormat === "object") {
+    data.aiSmartFormat = obj.aiSmartFormat as PersistedSettingsData["aiSmartFormat"];
+  }
   if (
     typeof obj.fullscreenReaderWidthPercent === "number" &&
     Number.isFinite(obj.fullscreenReaderWidthPercent)
@@ -285,6 +335,17 @@ export function loadPersistedSettingsData(
   if (Array.isArray(obj.highlightColorsDark)) {
     const h = parseHighlightColorsArray(obj.highlightColorsDark);
     if (h) data.highlightColorsDark = h;
+  }
+  if (Array.isArray(obj.lineationColorsLight)) {
+    const c = parseLineationColorsArray(obj.lineationColorsLight);
+    if (c) data.lineationColorsLight = c;
+  }
+  if (Array.isArray(obj.lineationColorsDark)) {
+    const c = parseLineationColorsArray(obj.lineationColorsDark);
+    if (c) data.lineationColorsDark = c;
+  }
+  if (obj.lineationLastColors != null && typeof obj.lineationLastColors === "object") {
+    data.lineationLastColors = parseLineationLastColors(obj.lineationLastColors);
   }
   const globalHl = normalizeHighlightWordsByIndex(
     obj.highlightWordsByIndexGlobal,
@@ -337,6 +398,21 @@ export function loadPersistedSettingsData(
   }
   if (typeof obj.aiAssistantSpoilerSafe === "boolean") {
     data.aiAssistantSpoilerSafe = obj.aiAssistantSpoilerSafe;
+  }
+
+  if (
+    typeof obj.wordcloudFontFamily === "string" &&
+    obj.wordcloudFontFamily.trim()
+  ) {
+    data.wordcloudFontFamily = obj.wordcloudFontFamily.trim();
+  }
+  const wordcloudAngle = parseWordcloudAngleMode(obj.wordcloudAngleMode);
+  if (wordcloudAngle) {
+    data.wordcloudAngleMode = wordcloudAngle;
+  }
+  const wordcloudPalette = parseWordcloudPaletteId(obj.wordcloudPaletteId);
+  if (wordcloudPalette) {
+    data.wordcloudPaletteId = wordcloudPalette;
   }
 
   if (typeof obj.characterPortraitCacheDir === "string") {

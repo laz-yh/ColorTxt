@@ -15,6 +15,14 @@ import {
   type ChapterMatchRule,
 } from "../chapter";
 import {
+  mergeAiSmartFormatSettings,
+  type AiSmartFormatSettings,
+} from "@shared/aiSmartFormatTypes";
+import {
+  parseTextConvertWidthMode,
+  parseTextConvertZhMode,
+} from "@shared/textConvertTypes";
+import {
   loadPersistedSettingsData,
   loadSessionSnapshot,
   loadTxtFileListSnapshot,
@@ -62,6 +70,19 @@ import {
   parseHighlightColorsArray,
 } from "../constants/highlightColors";
 import {
+  DEFAULT_LINEATION_COLORS_DARK,
+  DEFAULT_LINEATION_COLORS_LIGHT,
+  lineationColorsPersistPayload,
+  mergeLineationColors,
+  parseLineationColorsArray,
+} from "../constants/lineationColors";
+import {
+  clampLineationLastColorsToCount,
+  DEFAULT_LINEATION_LAST_COLORS,
+  parseLineationLastColors,
+  type LineationLastColorPrefs,
+} from "../constants/annotationColors";
+import {
   defaultChapterMinCharCount,
   defaultFullscreenReaderWidthPercent,
   defaultRecentFilesHistoryLimit,
@@ -93,6 +114,8 @@ import {
   mergeVoiceReadSettings,
   type VoiceReadSettings,
 } from "../constants/voiceRead";
+import type { WordcloudAngleMode } from "../constants/wordcloudUi";
+import type { WordcloudPaletteId } from "../constants/wordcloudPalettes";
 import {
   mergeAiCustomSkills,
   mergeAiSkillOverrides,
@@ -144,10 +167,14 @@ export function useAppPersistence(deps: {
   /** 与「内容上色」同时生效：成对引号/括号是否跨行 */
   txtrDelimitedMatchCrossLine: Ref<boolean>;
   leadIndentFullWidth: Ref<boolean>;
+  textConvertZh: Ref<import("@shared/textConvertTypes").TextConvertZhMode>;
+  textConvertLetter: Ref<import("@shared/textConvertTypes").TextConvertWidthMode>;
+  textConvertDigit: Ref<import("@shared/textConvertTypes").TextConvertWidthMode>;
   showChapterCounts: Ref<boolean>;
   readerFontSize: Ref<number>;
   readerLineHeightMultiple: Ref<number>;
   monacoFontFamily: Ref<string>;
+  pinnedOtherFonts: Ref<string[]>;
   chapterRuleState: Ref<{ rules: ChapterMatchRule[] }>;
   recentFiles: Ref<RecentFileItem[]>;
   restoreSessionOnStartup: Ref<boolean>;
@@ -158,6 +185,7 @@ export function useAppPersistence(deps: {
   readerEditShowLineNumbers: Ref<boolean>;
   readerEditMinimap: Ref<boolean>;
   editAutoRefreshChapterList: Ref<boolean>;
+  aiSmartFormat: Ref<AiSmartFormatSettings>;
   fullscreenReaderWidthPercent: Ref<number>;
   fileMetaRecords: Ref<FileMetaRecord[]>;
   shortcutBindings: Ref<ShortcutBindingMap>;
@@ -166,7 +194,10 @@ export function useAppPersistence(deps: {
   readerPaletteOverridesDark: Ref<Partial<ReaderSurfacePalette>>;
   highlightColorsLight: Ref<string[]>;
   highlightColorsDark: Ref<string[]>;
+  lineationColorsLight: Ref<string[]>;
+  lineationColorsDark: Ref<string[]>;
   highlightWordsByIndexGlobal: Ref<HighlightWordsByIndex | undefined>;
+  lineationLastColors: Ref<LineationLastColorPrefs>;
   /** 电子书转换输出目录；空字符串表示与源文件同目录；无持久化键时默认 userData/ConvertedTxt */
   ebookConvertOutputDir: Ref<string>;
   /** 角色立绘缓存根目录（绝对路径）；无键时默认 userData/CharacterPortrait */
@@ -186,6 +217,9 @@ export function useAppPersistence(deps: {
   aiCustomSkills: Ref<AiCustomSkill[]>;
   aiAssistantDeepThinking: Ref<boolean>;
   aiAssistantSpoilerSafe: Ref<boolean>;
+  wordcloudFontFamily: Ref<string>;
+  wordcloudAngleMode: Ref<WordcloudAngleMode>;
+  wordcloudPaletteId: Ref<WordcloudPaletteId>;
   voiceReadSettings: Ref<VoiceReadSettings>;
 }) {
   const settingsLoaded = ref(false);
@@ -504,14 +538,14 @@ export function useAppPersistence(deps: {
 
   function setEbookConvertedMeta(
     bookPath: string,
-    convertedTxtPath: string,
+    convertedMdPath: string,
     sourceMtimeMs: number,
   ) {
     deps.fileMetaRecords.value = upsertFileMetaRecord(
       deps.fileMetaRecords.value,
       bookPath,
       () => ({
-        convertedTxtPath,
+        convertedMdPath,
         sourceMtimeMsAtConvert: sourceMtimeMs,
       }),
     );
@@ -665,6 +699,20 @@ export function useAppPersistence(deps: {
       deps.leadIndentFullWidth.value = data.leadIndentFullWidth;
     }
 
+    if (data.textConvertZh != null) {
+      deps.textConvertZh.value = parseTextConvertZhMode(data.textConvertZh);
+    }
+    if (data.textConvertLetter != null) {
+      deps.textConvertLetter.value = parseTextConvertWidthMode(
+        data.textConvertLetter,
+      );
+    }
+    if (data.textConvertDigit != null) {
+      deps.textConvertDigit.value = parseTextConvertWidthMode(
+        data.textConvertDigit,
+      );
+    }
+
     if (typeof data.showChapterCounts === "boolean") {
       deps.showChapterCounts.value = data.showChapterCounts;
     }
@@ -685,6 +733,11 @@ export function useAppPersistence(deps: {
 
     if (typeof data.fontFamily === "string" && data.fontFamily.trim()) {
       deps.monacoFontFamily.value = data.fontFamily;
+    }
+    if (Array.isArray(data.pinnedOtherFonts)) {
+      deps.pinnedOtherFonts.value = data.pinnedOtherFonts
+        .map((f) => f.trim())
+        .filter(Boolean);
     }
 
     if (typeof data.restoreSessionOnStartup === "boolean") {
@@ -736,6 +789,7 @@ export function useAppPersistence(deps: {
     if (typeof data.editAutoRefreshChapterList === "boolean") {
       deps.editAutoRefreshChapterList.value = data.editAutoRefreshChapterList;
     }
+    deps.aiSmartFormat.value = mergeAiSmartFormatSettings(data.aiSmartFormat);
     if (
       typeof data.fullscreenReaderWidthPercent === "number" &&
       Number.isFinite(data.fullscreenReaderWidthPercent)
@@ -774,8 +828,24 @@ export function useAppPersistence(deps: {
       parsedHD,
     );
 
+    const parsedLL = parseLineationColorsArray(data.lineationColorsLight);
+    deps.lineationColorsLight.value = mergeLineationColors(
+      DEFAULT_LINEATION_COLORS_LIGHT,
+      parsedLL,
+    );
+    const parsedLD = parseLineationColorsArray(data.lineationColorsDark);
+    deps.lineationColorsDark.value = mergeLineationColors(
+      DEFAULT_LINEATION_COLORS_DARK,
+      parsedLD,
+    );
+
     deps.highlightWordsByIndexGlobal.value = normalizeHighlightWordsByIndex(
       data.highlightWordsByIndexGlobal,
+    );
+
+    deps.lineationLastColors.value = clampLineationLastColorsToCount(
+      parseLineationLastColors(data.lineationLastColors),
+      deps.lineationColorsLight.value.length,
     );
 
     const normalizedRules = normalizeLoadedChapterRules(data.chapterRules);
@@ -831,6 +901,19 @@ export function useAppPersistence(deps: {
       deps.aiAssistantSpoilerSafe.value = data.aiAssistantSpoilerSafe;
     }
 
+    if (
+      typeof data.wordcloudFontFamily === "string" &&
+      data.wordcloudFontFamily.trim()
+    ) {
+      deps.wordcloudFontFamily.value = data.wordcloudFontFamily.trim();
+    }
+    if (data.wordcloudAngleMode) {
+      deps.wordcloudAngleMode.value = data.wordcloudAngleMode;
+    }
+    if (data.wordcloudPaletteId) {
+      deps.wordcloudPaletteId.value = data.wordcloudPaletteId;
+    }
+
     deps.voiceReadSettings.value = mergeVoiceReadSettings(data.voiceRead);
 
     return {
@@ -862,11 +945,18 @@ export function useAppPersistence(deps: {
       fontSize: deps.readerFontSize.value,
       lineHeightMultiple: deps.readerLineHeightMultiple.value,
       fontFamily: deps.monacoFontFamily.value,
+      pinnedOtherFonts:
+        deps.pinnedOtherFonts.value.length > 0
+          ? deps.pinnedOtherFonts.value
+          : undefined,
       monacoCustomHighlight: deps.monacoCustomHighlight.value,
       compressBlankLines: deps.compressBlankLines.value,
       compressBlankKeepOneBlank: deps.compressBlankKeepOneBlank.value,
       txtrDelimitedMatchCrossLine: deps.txtrDelimitedMatchCrossLine.value,
       leadIndentFullWidth: deps.leadIndentFullWidth.value,
+      textConvertZh: deps.textConvertZh.value,
+      textConvertLetter: deps.textConvertLetter.value,
+      textConvertDigit: deps.textConvertDigit.value,
       showChapterCounts: deps.showChapterCounts.value,
       chapterRules: deps.chapterRuleState.value.rules,
       restoreSessionOnStartup: deps.restoreSessionOnStartup.value,
@@ -878,6 +968,7 @@ export function useAppPersistence(deps: {
       readerEditShowLineNumbers: deps.readerEditShowLineNumbers.value,
       readerEditMinimap: deps.readerEditMinimap.value,
       editAutoRefreshChapterList: deps.editAutoRefreshChapterList.value,
+      aiSmartFormat: deps.aiSmartFormat.value,
       fullscreenReaderWidthPercent: deps.fullscreenReaderWidthPercent.value,
       shortcutBindings: deps.shortcutBindings.value,
       readerPaletteOverridesLight:
@@ -896,7 +987,24 @@ export function useAppPersistence(deps: {
         deps.highlightColorsDark.value,
         DEFAULT_HIGHLIGHT_COLORS_DARK,
       ),
+      lineationColorsLight: lineationColorsPersistPayload(
+        deps.lineationColorsLight.value,
+        DEFAULT_LINEATION_COLORS_LIGHT,
+      ),
+      lineationColorsDark: lineationColorsPersistPayload(
+        deps.lineationColorsDark.value,
+        DEFAULT_LINEATION_COLORS_DARK,
+      ),
       highlightWordsByIndexGlobal: deps.highlightWordsByIndexGlobal.value,
+      lineationLastColors:
+        deps.lineationLastColors.value.marker ===
+          DEFAULT_LINEATION_LAST_COLORS.marker &&
+        deps.lineationLastColors.value.wavy ===
+          DEFAULT_LINEATION_LAST_COLORS.wavy &&
+        deps.lineationLastColors.value.straight ===
+          DEFAULT_LINEATION_LAST_COLORS.straight
+          ? undefined
+          : { ...deps.lineationLastColors.value },
       ebookConvertOutputDir: deps.ebookConvertOutputDir.value,
       characterPortraitCacheDir: deps.characterPortraitCacheDir.value.trim(),
       characterCardTextureEffect: deps.characterCardTextureEffect.value,
@@ -914,6 +1022,9 @@ export function useAppPersistence(deps: {
           : undefined,
       aiAssistantDeepThinking: deps.aiAssistantDeepThinking.value,
       aiAssistantSpoilerSafe: deps.aiAssistantSpoilerSafe.value,
+      wordcloudFontFamily: deps.wordcloudFontFamily.value,
+      wordcloudAngleMode: deps.wordcloudAngleMode.value,
+      wordcloudPaletteId: deps.wordcloudPaletteId.value,
       voiceRead: {
         ...voiceReadMerged,
         dashscopeApiKey: "",

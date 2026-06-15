@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { AIConfig } from "@shared/aiTypes";
+import { DEFAULT_AI_QUICK_QUESTIONS, type AIConfig } from "@shared/aiTypes";
+import {
+  DEFAULT_WORDCLOUD_MAX_WORDS,
+  MAX_TOOL_ROUNDS_MAX,
+  MAX_TOOL_ROUNDS_MIN,
+  WORDCLOUD_MAX_WORDS_MAX,
+  WORDCLOUD_MAX_WORDS_MIN,
+} from "@shared/aiTypes";
 import {
   CHAT_API_PROVIDER_CUSTOM_ID,
   CHAT_API_PROVIDER_PRESETS,
@@ -20,8 +27,24 @@ import SwitchToggle from "./SwitchToggle.vue";
 import { icons } from "../icons";
 import { resolveDefaultAiDataCacheDirSync } from "../utils/defaultCacheDirs";
 import { useSecretStorageHint } from "../composables/useSecretStorageHint";
+import {
+  SORTABLE_ROW_HANDLE_CLASS,
+  useSortableReorder,
+} from "../composables/useSortableReorder";
+import { MAX_AI_ENDPOINT_PROFILES } from "@shared/aiEndpointProfiles";
+import {
+  AI_SYSTEM_PROMPT_PRESET_CUSTOM_ID,
+  AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+  AI_SYSTEM_PROMPT_PRESETS,
+  isBuiltInSystemPromptPresetMode,
+  systemPromptPresetDisplayLabel,
+  type SystemPromptExtraMode,
+} from "@shared/aiSystemPromptPresets";
+import { useChatProfileDraft } from "../composables/useAiEndpointProfileDraft";
+import AiConfigProfileToolbar from "./AiConfigProfileToolbar.vue";
 
 const modelValue = defineModel<AIConfig>({ required: true });
+const chatProfileDraft = useChatProfileDraft(modelValue);
 const { secretStorageHint } = useSecretStorageHint();
 
 /** 留空时实际使用的绝对路径，用作输入框 placeholder */
@@ -67,6 +90,9 @@ const chatProviderDisplayLabel = computed(() => {
 
 function onChatProviderPresetSelect(id: string) {
   chatProviderExplicitId.value = id;
+  chatModelOptions.value = [];
+  modelValue.value.chat.model = "";
+
   if (isChatApiProviderCustomId(id)) {
     modelValue.value.chat.baseUrl = "";
     return;
@@ -146,38 +172,76 @@ function onChatModelPanelOpenChange(isOpen: boolean) {
   void refreshChatModels();
 }
 
+let quickQRowIdSeq = 0;
+
+function newQuickQRowId(): string {
+  quickQRowIdSeq += 1;
+  return `qq-${Date.now()}-${quickQRowIdSeq}`;
+}
+
+/** 与 quickQuestions 下标对齐，供 Sortable 拖动后 Vue 正确复用行 */
+const quickQuestionRowIds = ref<string[]>([]);
+
+function resetQuickQuestionRowIds(count: number) {
+  quickQuestionRowIds.value = Array.from({ length: count }, () => newQuickQRowId());
+}
+
+function ensureQuickQuestionRowIds() {
+  const n = modelValue.value.quickQuestions.length;
+  const ids = quickQuestionRowIds.value;
+  if (ids.length === n) return;
+  if (ids.length < n) {
+    quickQuestionRowIds.value = [
+      ...ids,
+      ...Array.from({ length: n - ids.length }, () => newQuickQRowId()),
+    ];
+    return;
+  }
+  quickQuestionRowIds.value = ids.slice(0, n);
+}
+
+watch(
+  () => modelValue.value.quickQuestions.length,
+  () => ensureQuickQuestionRowIds(),
+  { immediate: true },
+);
+
 function addQuickQuestion() {
   modelValue.value.quickQuestions.push("");
+  quickQuestionRowIds.value.push(newQuickQRowId());
+}
+
+function restoreDefaultQuickQuestions() {
+  modelValue.value.quickQuestions = [...DEFAULT_AI_QUICK_QUESTIONS];
+  resetQuickQuestionRowIds(modelValue.value.quickQuestions.length);
 }
 
 function removeQuickQuestion(i: number) {
   const q = modelValue.value.quickQuestions;
   if (q.length <= 1) return;
   q.splice(i, 1);
+  quickQuestionRowIds.value.splice(i, 1);
 }
 
-function canMoveQuickQuestionUp(i: number): boolean {
-  return i > 0;
-}
+const quickQListRef = ref<HTMLElement | null>(null);
+const quickQCount = computed(() => modelValue.value.quickQuestions.length);
 
-function canMoveQuickQuestionDown(i: number): boolean {
-  const q = modelValue.value.quickQuestions;
-  return q.length > 1 && i < q.length - 1;
-}
-
-function moveQuickQuestionUp(i: number) {
-  if (!canMoveQuickQuestionUp(i)) return;
-  const q = modelValue.value.quickQuestions;
-  const [row] = q.splice(i, 1);
-  q.splice(i - 1, 0, row);
-}
-
-function moveQuickQuestionDown(i: number) {
-  if (!canMoveQuickQuestionDown(i)) return;
-  const q = modelValue.value.quickQuestions;
-  const [row] = q.splice(i, 1);
-  q.splice(i + 1, 0, row);
-}
+const { remount: remountQuickQSortable } = useSortableReorder({
+  containerRef: quickQListRef,
+  draggable: ".quickQRow",
+  itemCount: quickQCount,
+  enabled: computed(() => modelValue.value.quickQuestions.length > 1),
+  onReorder(from, to) {
+    const q = modelValue.value.quickQuestions;
+    const ids = quickQuestionRowIds.value;
+    const [row] = q.splice(from, 1);
+    const [id] = ids.splice(from, 1);
+    if (!row || !id) return;
+    q.splice(to, 0, row);
+    ids.splice(to, 0, id);
+    remountQuickQSortable();
+  },
+});
 
 async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   const r = await window.colorTxt.ai.testChat({
@@ -188,6 +252,75 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   if (r.ok) return { ok: true };
   return { ok: false, error: r.error };
 }
+
+const systemPromptPresetSelectItems = computed((): CustomSelectItem[] =>
+  AI_SYSTEM_PROMPT_PRESETS.map((p) => ({
+    kind: "item",
+    id: p.id,
+    label: p.label,
+    description: p.description,
+  })),
+);
+
+const showSystemPromptExtraEditor = computed(
+  () =>
+    modelValue.value.chat.systemPromptExtraMode !==
+    AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+);
+
+let applyingSystemPromptPresetText = false;
+
+function onSystemPromptModeSelect(id: string) {
+  const mode = id as SystemPromptExtraMode;
+  modelValue.value.chat.systemPromptExtraMode = mode;
+  const hit = AI_SYSTEM_PROMPT_PRESETS.find((p) => p.id === mode);
+  if (hit && isBuiltInSystemPromptPresetMode(mode)) {
+    applyingSystemPromptPresetText = true;
+    modelValue.value.chat.systemPromptExtra = hit.text;
+    applyingSystemPromptPresetText = false;
+  }
+}
+
+watch(
+  () => modelValue.value.chat.systemPromptExtra,
+  (text) => {
+    if (applyingSystemPromptPresetText) return;
+    const mode = modelValue.value.chat.systemPromptExtraMode;
+    if (!isBuiltInSystemPromptPresetMode(mode)) return;
+    const preset = AI_SYSTEM_PROMPT_PRESETS.find((p) => p.id === mode);
+    if (preset && preset.text.trim() !== text.trim()) {
+      modelValue.value.chat.systemPromptExtraMode =
+        AI_SYSTEM_PROMPT_PRESET_CUSTOM_ID;
+    }
+  },
+);
+
+const chatProfileToolbarProfiles = computed(
+  () => chatProfileDraft.profileSelectItems.value,
+);
+const chatProfileToolbarEditingId = computed(
+  () => chatProfileDraft.editingId.value,
+);
+const chatProfileToolbarDisplayName = computed(
+  () => chatProfileDraft.editingDisplayName.value,
+);
+const chatProfileToolbarPlaceholder = computed(
+  () => chatProfileDraft.editingProviderLabel.value,
+);
+
+function onChatProfileEditingIdChange(id: string) {
+  chatProfileDraft.selectEditingProfile(id);
+}
+
+function initChatProfiles() {
+  chatProfileDraft.initFromConfig();
+}
+
+defineExpose({
+  finalizeChatProfiles: chatProfileDraft.finalizeBeforeSave,
+  initChatProfiles,
+  resetCurrentChatProfile: chatProfileDraft.resetCurrentProfileChat,
+});
 
 </script>
 
@@ -206,6 +339,21 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
       <p class="aiMasterHint">启用后，会在侧栏显示「AI 阅读助手」入口。</p>
     </section>
     <template v-if="modelValue.aiEnabled">
+      <section class="aiSection aiSection--compact">
+        <h3 class="aiSectionTitle">配置方案</h3>
+        <AiConfigProfileToolbar
+          :profiles="chatProfileToolbarProfiles"
+          :editing-id="chatProfileToolbarEditingId"
+          :display-name="chatProfileToolbarDisplayName"
+          :placeholder="chatProfileToolbarPlaceholder"
+          :max-profiles="MAX_AI_ENDPOINT_PROFILES"
+          @update:editing-id="onChatProfileEditingIdChange"
+          @add="chatProfileDraft.addProfile()"
+          @rename="void chatProfileDraft.renameProfile()"
+          @delete="chatProfileDraft.deleteProfile()"
+        />
+      </section>
+
       <section class="aiSection">
         <h3 class="aiSectionTitle">对话模型</h3>
         <div class="settingsRow">
@@ -310,6 +458,10 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
               class="temperatureSlider"
             />
           </div>
+          <p class="settingsHint">
+            控制回答的随机程度：越低越稳定、越贴近检索结果；越高越发散、更有变化。建议
+            0.3～0.7。
+          </p>
         </div>
         <div class="settingsRow">
           <div class="settingsRowMain settingsRowMain--baseline">
@@ -324,6 +476,9 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
               class="numCompact"
             />
           </div>
+          <p class="settingsHint">
+            单次回复允许生成的最大 Token 数：过小可能会截断长回答，过大则更慢、更耗额度。<br />「智能排版」等长输出可适当调高。
+          </p>
         </div>
         <div class="settingsRow">
           <div class="settingsRowMain settingsRowMain--baseline">
@@ -338,6 +493,64 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
               class="numCompact"
             />
           </div>
+          <p class="settingsHint">
+            发给模型的历史对话保留轮数；数值越大，上下文越完整，但也会占用更多 Token。
+          </p>
+        </div>
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel"
+              >工具调用轮数（{{ modelValue.chat.maxToolRounds }} 轮）</span
+            >
+            <NumericInput
+              v-model="modelValue.chat.maxToolRounds"
+              :min="MAX_TOOL_ROUNDS_MIN"
+              :max="MAX_TOOL_ROUNDS_MAX"
+              integer
+              class="numCompact"
+            />
+          </div>
+          <p class="settingsHint">
+            单次提问内，模型调用检索/读章等工具的最大往返次数；复杂问题可适当调高，过大可能更慢、更耗
+            Token。
+          </p>
+        </div>
+        <div class="settingsRow aiSystemPromptPresetRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">附加系统提示词</span>
+            <AppCustomSelect
+              class="aiChatProviderSelect"
+              :model-value="modelValue.chat.systemPromptExtraMode"
+              :display-label="
+                systemPromptPresetDisplayLabel(
+                  modelValue.chat.systemPromptExtraMode,
+                )
+              "
+              placeholder="选择预设…"
+              :fixed-top-items="selectListsEmpty"
+              :scroll-items="systemPromptPresetSelectItems"
+              :fixed-bottom-items="selectListsEmpty"
+              :scroll-max-height="280"
+              ariaLabel="附加系统提示词预设"
+              @update:model-value="onSystemPromptModeSelect"
+            />
+          </div>
+          <p class="settingsHint">
+            分析敏感题材小说时，可一定程度上减少拒答（云端模型仍可能在服务端拒答，本地未审查模型通常更有效。）
+          </p>
+        </div>
+        <div
+          v-if="showSystemPromptExtraEditor"
+          class="settingsRow aiSystemPromptTextareaRow"
+        >
+          <textarea
+            id="ai-system-prompt-extra"
+            v-model="modelValue.chat.systemPromptExtra"
+            class="settingsStretchTextarea settingsStretchTextarea--multiline"
+            rows="6"
+            spellcheck="false"
+            placeholder="可选择预设后再进行修改；留空表示不附加。"
+          />
         </div>
       </section>
 
@@ -415,55 +628,94 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
         </p>
       </section>
 
-      <section class="aiSection quickQSection">
-        <h3 class="aiSectionTitle">快速提问</h3>
-        <div
-          v-for="(_q, i) in modelValue.quickQuestions"
-          :key="i"
-          class="quickQRow"
-        >
-          <input
-            v-model="modelValue.quickQuestions[i]"
-            type="text"
-            class="settingsStretchInput quickQInput"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="提问内容…"
+      <section class="aiSection aiSection--compact">
+        <div class="aiMasterToggleRow">
+          <span class="settingsLabel aiMasterToggleLabel"
+            >生成思维导图</span
+          >
+          <SwitchToggle
+            v-model="modelValue.autoMindmapOnSummaryAndCharacters"
+            aria-label="生成思维导图"
           />
-          <div class="quickQRowActions">
-            <button
-              type="button"
-              class="btn iconOnly quickQReorder"
-              title="上移"
-              :disabled="!canMoveQuickQuestionUp(i)"
-              @click="moveQuickQuestionUp(i)"
+        </div>
+        <p class="aiMasterHint">
+          开启后，当问题涉及「内容概括」或「人物关系」时，阅读助手会自动生成思维导图；<br />关闭后，也可以在问题中带上「思维导图」等关键字来让阅读助手生成思维导图。
+        </p>
+      </section>
+
+      <section class="aiSection aiSection--compact">
+        <div class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel"
+              >词云图词项上限（{{ modelValue.wordcloudMaxWords }}）</span
             >
-              <span class="iconSvg" v-html="icons.up" />
-            </button>
-            <button
-              type="button"
-              class="btn iconOnly quickQReorder"
-              title="下移"
-              :disabled="!canMoveQuickQuestionDown(i)"
-              @click="moveQuickQuestionDown(i)"
-            >
-              <span class="iconSvg" v-html="icons.down" />
-            </button>
-            <button
-              type="button"
-              class="btn iconOnly quickQRemove"
-              title="删除"
-              :disabled="modelValue.quickQuestions.length <= 1"
-              @click="removeQuickQuestion(i)"
-            >
-              <span class="iconSvg" v-html="icons.remove" />
-            </button>
+            <NumericInput
+              v-model="modelValue.wordcloudMaxWords"
+              :min="WORDCLOUD_MAX_WORDS_MIN"
+              :max="WORDCLOUD_MAX_WORDS_MAX"
+              integer
+              class="numCompact"
+            />
           </div>
         </div>
-        <button type="button" class="btn quickQAdd" @click="addQuickQuestion">
-          <span class="iconSvg" v-html="icons.add" />
-          添加一项
-        </button>
+        <p class="aiMasterHint">
+          词云图最多展示的高频词数量；默认 {{ DEFAULT_WORDCLOUD_MAX_WORDS }}，范围
+          {{ WORDCLOUD_MAX_WORDS_MIN }}～{{ WORDCLOUD_MAX_WORDS_MAX }}。
+        </p>
+      </section>
+
+      <section class="aiSection quickQSection">
+        <h3 class="aiSectionTitle">快速提问</h3>
+        <div ref="quickQListRef" class="quickQList">
+          <div
+            v-for="(_q, i) in modelValue.quickQuestions"
+            :key="quickQuestionRowIds[i]"
+            class="quickQRow"
+          >
+            <input
+              v-model="modelValue.quickQuestions[i]"
+              type="text"
+              class="settingsStretchInput quickQInput"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="提问内容…"
+            />
+            <div class="quickQRowActions">
+              <button
+                type="button"
+                class="btn iconOnly quickQReorder"
+                :class="SORTABLE_ROW_HANDLE_CLASS"
+                title="拖动排序"
+                aria-label="拖动排序"
+                :disabled="modelValue.quickQuestions.length <= 1"
+              >
+                <span class="iconSvg" v-html="icons.move" />
+              </button>
+              <button
+                type="button"
+                class="btn iconOnly quickQRemove"
+                title="删除"
+                :disabled="modelValue.quickQuestions.length <= 1"
+                @click="removeQuickQuestion(i)"
+              >
+                <span class="iconSvg" v-html="icons.remove" />
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="quickQActions">
+          <button type="button" class="btn quickQAdd" @click="addQuickQuestion">
+            <span class="iconSvg" v-html="icons.add" />
+            添加一项
+          </button>
+          <button
+            type="button"
+            class="btn quickQRestore"
+            @click="restoreDefaultQuickQuestions"
+          >
+            恢复默认
+          </button>
+        </div>
       </section>
     </template>
   </div>
@@ -611,6 +863,22 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   min-width: 0;
 }
 
+.settingsStretchTextarea--multiline {
+  font-family: inherit;
+  line-height: 1.45;
+}
+
+.aiSystemPromptPresetRow {
+  gap: 6px;
+}
+
+.aiSystemPromptTextareaRow {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: -10px;
+}
+
 .settingsPasswordRow {
   display: flex;
   align-items: stretch;
@@ -657,6 +925,12 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
 
 .quickQSection .aiSectionTitle {
   margin-bottom: 15px;
+}
+
+.quickQList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .iconOnly {
@@ -719,17 +993,40 @@ async function runChatConnectionTest(): Promise<ConnectionTestResult> {
   flex-shrink: 0;
 }
 
+.quickQReorder.sortableRowHandle:not(:disabled) {
+  cursor: grab;
+}
+
+.quickQReorder.sortableRowHandle:not(:disabled):active {
+  cursor: grabbing;
+}
+
+:deep(.quickQRow.sortableRowGhost) {
+  opacity: 0.45;
+}
+
+:deep(.quickQRow.sortableRowChosen) {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 6px;
+}
+
 .quickQRemove:hover:not(:disabled) {
   color: var(--danger);
   border-color: var(--danger);
 }
 
 .quickQAdd {
-  align-self: flex-start;
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.quickQActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 10px;
+  flex-wrap: wrap;
 }
 
 .quickQAdd .iconSvg :deep(svg) {

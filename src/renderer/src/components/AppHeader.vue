@@ -3,9 +3,14 @@ import { computed } from "vue";
 import IconButton from "./IconButton.vue";
 import FontPicker from "./FontPicker.vue";
 import MoreMenu from "./MoreMenu.vue";
+import ConvertMenu from "./ConvertMenu.vue";
 import { icons } from "../icons";
 import readingSvg from "../assets/reading.svg?raw";
 import type { ShortcutBindingMap } from "../services/shortcutRegistry";
+import type {
+  TextConvertWidthMode,
+  TextConvertZhMode,
+} from "@shared/textConvertTypes";
 
 /** 仅路径；阅读进度由 `file.meta` 提供（菜单侧由父组件合并） */
 export type RecentFileItem = { path: string; progress?: number };
@@ -19,6 +24,8 @@ const props = withDefaults(
     canIncreaseLineHeight: boolean;
     canDecreaseLineHeight: boolean;
     monacoFontFamily: string;
+    /** 钉在外层列表的「其他字体」 */
+    pinnedOtherFonts?: string[];
     /** Monaco 高级换行策略（wrappingStrategy: advanced）是否开启 */
     monacoAdvancedWrapping: boolean;
     /** Monaco 自定义语法着色是否开启 */
@@ -27,6 +34,10 @@ const props = withDefaults(
     compressBlankLines: boolean;
     /** 是否将正文行首统一为两个全角空格（章节标题与空行除外） */
     leadIndentFullWidth: boolean;
+    /** 阅读模式：简繁展示转换 */
+    textConvertZh?: TextConvertZhMode;
+    textConvertLetter?: TextConvertWidthMode;
+    textConvertDigit?: TextConvertWidthMode;
     /** 当前是否处于全屏阅读（全屏浮动顶栏为 true，用于全屏按钮图标与提示） */
     inFullscreen?: boolean;
     /** 最近打开的文件（含阅读进度），最多 20 条 */
@@ -50,6 +61,11 @@ const props = withDefaults(
     shortcutBindings: ShortcutBindingMap;
     /** Markdown 文件：禁用章节正则规则（使用 # 标题） */
     chapterRulesDisabled?: boolean;
+    aiFeaturesEnabled?: boolean;
+    canUseAiSmartFormat?: boolean;
+    aiSmartFormatRunning?: boolean;
+    /** 智能排版 Diff 预览中：禁止退出编辑模式 */
+    smartFormatReviewActive?: boolean;
   }>(),
   {
     inFullscreen: false,
@@ -64,6 +80,14 @@ const props = withDefaults(
     readerEditMode: false,
     canEnterReaderEditMode: false,
     chapterRulesDisabled: false,
+    aiFeaturesEnabled: false,
+    canUseAiSmartFormat: false,
+    aiSmartFormatRunning: false,
+    smartFormatReviewActive: false,
+    pinnedOtherFonts: () => [],
+    textConvertZh: "off",
+    textConvertLetter: "off",
+    textConvertDigit: "off",
   },
 );
 
@@ -73,6 +97,7 @@ const emit = defineEmits<{
   toggleSidebar: [];
   toggleFullscreen: [];
   setMonacoFont: [fontFamily: string];
+  togglePinOtherFont: [fontName: string];
   increaseFontSize: [];
   decreaseFontSize: [];
   increaseLineHeight: [];
@@ -83,6 +108,12 @@ const emit = defineEmits<{
   formatEditCompressBlankLines: [];
   /** 编辑模式：对当前全文执行行首缩进 */
   formatEditLeadIndentFullWidth: [];
+  selectTextConvertZhRead: [mode: TextConvertZhMode];
+  selectTextConvertLetterRead: [mode: TextConvertWidthMode];
+  selectTextConvertDigitRead: [mode: TextConvertWidthMode];
+  applyTextConvertZhEdit: [mode: Exclude<TextConvertZhMode, "off">];
+  applyTextConvertLetterEdit: [mode: Exclude<TextConvertWidthMode, "off">];
+  applyTextConvertDigitEdit: [mode: Exclude<TextConvertWidthMode, "off">];
   toggleMonacoAdvancedWrapping: [];
   toggleMonacoCustomHighlight: [];
   toggleFind: [];
@@ -102,6 +133,7 @@ const emit = defineEmits<{
   bookmarkClick: [];
   toggleReaderEdit: [];
   saveReaderFile: [];
+  aiSmartFormatFull: [];
   voiceReadToggle: [];
 }>();
 
@@ -117,9 +149,17 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
       :icon-html="icons.edit"
       :active="readerEditMode"
       :pressed="readerEditMode"
-      title="编辑模式"
+      :title="
+        smartFormatReviewActive
+          ? '排版预览中，请先应用或放弃'
+          : '编辑模式'
+      "
       aria-label="切换编辑模式"
-      :disabled="vrFormatLock || (!readerEditMode && !canEnterReaderEditMode)"
+      :disabled="
+        vrFormatLock ||
+        smartFormatReviewActive ||
+        (!readerEditMode && !canEnterReaderEditMode)
+      "
       @click="emit('toggleReaderEdit')"
     />
     <IconButton
@@ -127,8 +167,21 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
       :icon-html="icons.save"
       title="保存"
       aria-label="保存"
+      :disabled="aiSmartFormatRunning || smartFormatReviewActive"
       @click="emit('saveReaderFile')"
     />
+    <template
+      v-if="readerEditMode && aiFeaturesEnabled && canUseAiSmartFormat"
+    >
+      <span class="toolbarDivider" aria-hidden="true"></span>
+      <IconButton
+        :icon-html="icons.aiCompose"
+        title="AI 智能排版"
+        aria-label="AI 智能排版"
+        :disabled="vrFormatLock || aiSmartFormatRunning"
+        @click="emit('aiSmartFormatFull')"
+      />
+    </template>
     <div class="themePicker">
       <div class="headerQuickRow">
         <IconButton
@@ -171,8 +224,12 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
         <div class="hdrLockable">
           <FontPicker
             :monaco-font-family="monacoFontFamily"
+            :pinned-other-fonts="pinnedOtherFonts"
             :disabled="vrFormatLock"
             @set-monaco-font="(fontFamily) => emit('setMonacoFont', fontFamily)"
+            @toggle-pin-other-font="
+              (fontName) => emit('togglePinOtherFont', fontName)
+            "
           />
           <IconButton
             :icon-html="icons.fontSizeDown"
@@ -204,6 +261,19 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
           />
         </div>
         <span class="toolbarDivider" aria-hidden="true"></span>
+        <ConvertMenu
+          :reader-edit-mode="readerEditMode"
+          :disabled="vrFormatLock"
+          :text-convert-zh="textConvertZh"
+          :text-convert-letter="textConvertLetter"
+          :text-convert-digit="textConvertDigit"
+          @select-zh-read="emit('selectTextConvertZhRead', $event)"
+          @select-letter-read="emit('selectTextConvertLetterRead', $event)"
+          @select-digit-read="emit('selectTextConvertDigitRead', $event)"
+          @apply-zh-edit="emit('applyTextConvertZhEdit', $event)"
+          @apply-letter-edit="emit('applyTextConvertLetterEdit', $event)"
+          @apply-digit-edit="emit('applyTextConvertDigitEdit', $event)"
+        />
         <template v-if="!readerEditMode">
           <IconButton
             :icon-html="icons.compress"
@@ -227,6 +297,7 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
         <template v-else>
           <IconButton
             :icon-html="icons.compress"
+            primary
             title="格式化：压缩空行"
             aria-label="格式化：压缩空行"
             :disabled="vrFormatLock"
@@ -234,6 +305,7 @@ const vrFormatLock = computed(() => props.voiceReadHeaderLocked);
           />
           <IconButton
             :icon-html="icons.indent"
+            primary
             title="格式化：行首缩进"
             aria-label="格式化：行首缩进"
             :disabled="vrFormatLock"

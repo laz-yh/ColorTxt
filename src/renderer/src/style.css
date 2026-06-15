@@ -494,6 +494,7 @@ textarea:focus {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+  user-select: none;
 }
 
 .appShellMenuDivider {
@@ -546,6 +547,33 @@ textarea:focus {
   margin-top: 1px;
 }
 
+.appShellMenuItem--primary {
+  color: var(--primary);
+}
+
+.appShellMenuItem--primary:hover:not(:disabled) {
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.appShellMenuItem--success {
+  color: var(--success);
+}
+
+.appShellMenuItem--success:hover:not(:disabled) {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.appShellMenuItem--warning {
+  color: var(--warning);
+}
+
+.appShellMenuItem--warning:hover:not(:disabled) {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
 .appShellMenuItem--danger {
   color: var(--danger);
 }
@@ -555,37 +583,20 @@ textarea:focus {
   color: var(--danger);
 }
 
-.appShellMenuItem--primary {
-  color: var(--primary);
-}
-
-.appShellMenuItem--primary:hover:not(:disabled) {
-  background: var(--primary-bg);
-}
-
-.appShellMenuItem--success {
-  color: var(--success);
-}
-
-.appShellMenuItem.appShellMenuItem--success:hover:not(:disabled) {
-  background: var(--success-bg);
-  color: var(--success);
+.appShellMenuItem--primary .appShellMenuItemPrefix svg path {
+  fill: currentColor;
 }
 
 .appShellMenuItem--success .appShellMenuItemPrefix svg path {
   fill: currentColor;
 }
 
-.appShellMenuItem--danger .appShellMenuItemPrefix svg path {
+.appShellMenuItem--warning .appShellMenuItemPrefix svg path {
   fill: currentColor;
 }
 
-.appShellMenuItem--warning {
-  color: var(--warning);
-}
-
-.appShellMenuItem--warning:hover:not(:disabled) {
-  background: var(--warning-bg);
+.appShellMenuItem--danger .appShellMenuItemPrefix svg path {
+  fill: currentColor;
 }
 
 /** 阅读助手「用户取消」、角色卡检索提示等：与历史 aiUserStoppedBanner 视觉一致 */
@@ -661,6 +672,46 @@ textarea:focus {
 }
 
 .aiPillToggle__icon svg path {
+  fill: currentColor;
+}
+
+/**
+ * AI 阅读助手顶栏等同系图标按钮（导出对话、新对话、思维导图工具栏等）
+ */
+.aiActivityLikeBtn {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--tab-fg);
+}
+
+.aiActivityLikeBtn:hover:not(:disabled) {
+  color: var(--tab-fg-hover);
+  background: var(--icon-btn-bg-hover);
+}
+
+.aiActivityLikeBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.aiActivityLikeBtn .svg svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.aiActivityLikeBtn .svg svg path {
   fill: currentColor;
 }
 

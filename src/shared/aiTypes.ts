@@ -12,6 +12,12 @@ import {
 import type { AITokenUsageTotals } from "./aiTokenUsage";
 import { isTxt2ImgBackend } from "./txt2ImgBackend";
 import { normalizeTxt2ImgCloudQuality } from "./txt2ImgOpenAiQuality";
+import {
+  AI_SYSTEM_PROMPT_PRESET_NONE_ID,
+  type SystemPromptExtraMode,
+} from "./aiSystemPromptPresets";
+
+export type { SystemPromptExtraMode } from "./aiSystemPromptPresets";
 
 export interface AIChatEndpoint {
   baseUrl: string;
@@ -20,10 +26,20 @@ export interface AIChatEndpoint {
   temperature: number;
   maxTokens: number;
   slidingWindowSize: number;
+  /** Agent 单次提问内模型↔工具往返轮数上限 */
+  maxToolRounds: number;
+  /** 附加系统提示词模式：无 / 内置预设 / 自定义 */
+  systemPromptExtraMode: SystemPromptExtraMode;
+  /** 模式为「自定义」时使用的正文；其它模式下仅作草稿保留 */
   systemPromptExtra: string;
   /** 每百万 Token 单价（0 表示未设置，不参与花费估算） */
   tokenPricePerMillion: AITokenPricePerMillion;
 }
+
+/** Agent 工具调用轮数默认上限 */
+export const DEFAULT_MAX_TOOL_ROUNDS = 8;
+export const MAX_TOOL_ROUNDS_MIN = 1;
+export const MAX_TOOL_ROUNDS_MAX = 64;
 
 /** 对话模型每百万 Token 价格 */
 export interface AITokenPricePerMillion {
@@ -59,6 +75,13 @@ export function normalizeTokenPricePerMillion(
 
 export type EmbeddingProvider = "remote" | "builtin";
 
+/** 内置本地嵌入每批条数（固定，不可配置） */
+export const BUILTIN_EMBEDDING_BATCH_SIZE = 20;
+/** 远程 API 嵌入默认每批条数 */
+export const DEFAULT_REMOTE_EMBEDDING_BATCH_SIZE = 10;
+export const REMOTE_EMBEDDING_BATCH_SIZE_MIN = 1;
+export const REMOTE_EMBEDDING_BATCH_SIZE_MAX = 64;
+
 export interface AIEmbeddingEndpoint {
   provider: EmbeddingProvider;
   /** OpenAI 兼容 Base URL；拉模型与嵌入分别派生为 `{baseUrl}/models`、`{baseUrl}/embeddings` */
@@ -66,6 +89,8 @@ export interface AIEmbeddingEndpoint {
   apiKey: string;
   /** 远程 API 嵌入模型名 */
   remoteModel: string;
+  /** 远程 API 单次请求 `input` 条数上限（仅 provider=remote 生效） */
+  remoteEmbedBatchSize: number;
   /** 内置本地模型目录 id（如 bge-small-zh-v1.5） */
   builtinModel: string;
   dimension: number;
@@ -73,6 +98,22 @@ export interface AIEmbeddingEndpoint {
   hfRemoteHost: string;
   /** builtin：模型缓存根目录；空 → userData/ai/model-cache */
   builtinModelCacheDir: string;
+}
+
+/** 按嵌入来源解析建索引 / embed 时使用的批量条数 */
+export function resolveEmbeddingBatchSize(
+  embedding: AIEmbeddingEndpoint,
+): number {
+  if (embedding.provider === "builtin") {
+    return BUILTIN_EMBEDDING_BATCH_SIZE;
+  }
+  return Math.min(
+    REMOTE_EMBEDDING_BATCH_SIZE_MAX,
+    Math.max(
+      REMOTE_EMBEDDING_BATCH_SIZE_MIN,
+      Math.trunc(embedding.remoteEmbedBatchSize),
+    ),
+  );
 }
 
 /** 当前嵌入来源实际使用的模型标识 */
@@ -87,6 +128,7 @@ export type AITxt2ImgBackend =
   | "a1111"
   | "comfyui"
   | "openai_images"
+  | "agnes_images"
   | "dashscope_wanx"
   | "stability"
   | "openai_compat_images";
@@ -290,7 +332,9 @@ export interface PortraitExtractResult {
   bio_zh: string;
   /** 主要人物关系 */
   relations_zh: string;
-  /** 本轮检索对话模型实际 token 消耗（含重试） */
+  /** 合并用户填写与检索识别后的别名（不含角色名） */
+  aliases: string[];
+  /** 本轮检索对话模型实际 token 消耗（含别名发现，含重试） */
   tokenUsage?: AITokenUsageTotals;
   /** 是否从模型响应解析到 usage */
   tokenUsageAvailable?: boolean;
@@ -324,13 +368,62 @@ export interface AIConfig {
   quickQuestions: string[];
   /** 侧栏展示 Token 消耗信息；关闭后隐藏价格相关设置 */
   showTokenUsage: boolean;
+  /**
+   * 开放型 / 结构化问题是否引导 Agent 自动调用 mindmap；默认 true。
+   * 关闭后仅在用户明确提到「思维导图/导图」等时注入出图提示。
+   */
+  autoMindmapOnSummaryAndCharacters: boolean;
+  /** 词云图展示词项数量上限（general / semantic 均适用） */
+  wordcloudMaxWords: number;
   txt2img: AITxt2ImgConfig;
+  /** 对话模型配置方案列表 */
+  chatProfiles: import("./aiEndpointProfiles").AiChatProfile[];
+  /** 当前使用的对话模型方案 id */
+  activeChatProfileId: string;
+  /** 文生图配置方案列表 */
+  txt2imgProfiles: import("./aiEndpointProfiles").AiTxt2ImgProfile[];
+  /** 当前使用的文生图方案 id */
+  activeTxt2ImgProfileId: string;
+}
+
+export type { AiChatProfile, AiTxt2ImgProfile } from "./aiEndpointProfiles";
+
+/** mindmap 工具返回（持久化在 tool 消息 content） */
+export interface AIMindmapToolResult {
+  type: "mindmap";
+  title: string;
+  markdown: string;
+  stats?: { nodeCount: number; maxDepth: number };
+}
+
+export type AIWordcloudMode = "general" | "semantic";
+
+/** wordcloud 工具返回（持久化在 tool 消息 content） */
+export interface AIWordcloudToolResult {
+  type: "wordcloud";
+  title: string;
+  mode: AIWordcloudMode;
+  /** 语义词云：Agent 从用户原话归纳的语义描述 */
+  semanticQuery?: string;
+  scope: "full" | "chapter";
+  chapterIndex?: number;
+  words: Array<{ text: string; weight: number }>;
+  /** 布局随机种子（每条词云独立；重新生成时递增并持久化） */
+  layoutSeed?: number;
+  stats?: {
+    totalChars: number;
+    uniqueTerms: number;
+    cacheHits: number;
+    termsExtracted?: number;
+  };
 }
 
 /** 内置默认快速提问（配置缺失或清空后回退） */
 export const DEFAULT_AI_QUICK_QUESTIONS: readonly string[] = [
   "这章讲了什么",
-  "本书的主角与重要配角都有谁",
+  "生成人物关系图",
+  "生成角色词云",
+  "概括本书内容",
 ];
 
 /** 归一化磁盘 / IPC 传入的快速提问列表 */
@@ -347,6 +440,20 @@ export function normalizeAiQuickQuestions(raw: unknown): string[] {
     if (out.length >= 24) break;
   }
   return out.length > 0 ? out : [...DEFAULT_AI_QUICK_QUESTIONS];
+}
+
+export const WORDCLOUD_MAX_WORDS_MIN = 10;
+export const WORDCLOUD_MAX_WORDS_MAX = 200;
+export const DEFAULT_WORDCLOUD_MAX_WORDS = 80;
+
+export function normalizeWordcloudMaxWords(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return DEFAULT_WORDCLOUD_MAX_WORDS;
+  }
+  return Math.min(
+    WORDCLOUD_MAX_WORDS_MAX,
+    Math.max(WORDCLOUD_MAX_WORDS_MIN, Math.trunc(raw)),
+  );
 }
 
 export interface AIChunkRecord {
@@ -421,7 +528,7 @@ export interface AIAgentStartPayload {
   chatModelOverride?: string;
   /** 默认用配置的 slidingWindowSize */
   slidingWindowSize?: number;
-  /** 默认 8 */
+  /** 默认用配置的 maxToolRounds */
   maxToolRounds?: number;
   /** 已启用技能（用于注册 getSkills 与各 skill_* 工具）；缺省视为空数组 */
   enabledSkills?: AIAgentEnabledSkill[];
@@ -443,7 +550,10 @@ export type AIAgentRendererEvent =
       requestId: number;
       toolCallId: string;
       name: string;
+      /** 列表/标题用摘要（合法 JSON，大字段已缩短） */
       argsPreview: string;
+      /** 完整 tool arguments 原文，供折叠「请求」区 JSON 格式化 */
+      argsJson: string;
     }
   | {
       type: "tool_progress";
@@ -562,6 +672,81 @@ export const AI_AGENT_TOOLS: Array<{
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "mindmap",
+      description:
+        "生成交互式思维导图（markmap）。用于知识图、章节/全书概括、人物关系等结构化可视化。markdown 须为标准 Markdown 标题层级（# ## ### 与 - 列表），禁止使用 Mermaid 的 mindmap 语法。须在先完成 ragSearch/ragContext 后再调用。",
+      parameters: {
+        type: "object",
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "简要说明为何调用本工具",
+          },
+          title: {
+            type: "string",
+            description: "思维导图标题",
+          },
+          markdown: {
+            type: "string",
+            description:
+              "导图内容：# 根节点，## 主枝，### 子枝，- 叶子。示例：\n# 书名\n## 主线\n### 事件A\n- 细节",
+          },
+        },
+        required: ["reasoning", "title", "markdown"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "wordcloud",
+      description:
+        "生成交互式词云图。general=全书/本章高频词（本地分词统计）；semantic=按 semanticQuery 自由文本语义筛选词项后本地计数。禁止自行编造词频；不依赖向量索引。",
+      parameters: {
+        type: "object",
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "简要说明为何调用本工具",
+          },
+          title: {
+            type: "string",
+            description: "词云标题",
+          },
+          mode: {
+            type: "string",
+            enum: ["general", "semantic"],
+            description:
+              "general=通用高频词；semantic=按 semanticQuery 语义词云",
+          },
+          semanticQuery: {
+            type: "string",
+            description:
+              "mode=semantic 时必填：用户想要的词云语义（自由文本，贴近用户原话）",
+          },
+          scope: {
+            type: "string",
+            enum: ["full", "chapter"],
+            description: "统计范围；默认 full",
+          },
+          chapterIndex: {
+            type: "number",
+            description: "scope=chapter 时的章节索引（从 0 起）",
+          },
+          maxWords: {
+            type: "number",
+            description: "展示词数上限；未指定时使用阅读助手设置中的词云图词项上限",
+          },
+        },
+        required: ["reasoning", "title", "mode"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 export interface AIIndexSearchHit {
@@ -612,6 +797,7 @@ const DEFAULT_EMBEDDING_ENDPOINT: AIEmbeddingEndpoint = {
   baseUrl: DEFAULT_EMBEDDING_REMOTE_BASE_URL,
   apiKey: "",
   remoteModel: "",
+  remoteEmbedBatchSize: DEFAULT_REMOTE_EMBEDDING_BATCH_SIZE,
   builtinModel: DEFAULT_BUILTIN_EMBEDDING_MODEL_ID,
   dimension: 512,
   hfRemoteHost: DEFAULT_HF_REMOTE_HOST,
@@ -633,6 +819,18 @@ export function normalizeEmbeddingEndpoint(
   if (typeof o.baseUrl === "string") d.baseUrl = o.baseUrl;
   if (typeof o.apiKey === "string") d.apiKey = o.apiKey;
   if (typeof o.remoteModel === "string") d.remoteModel = o.remoteModel;
+  if (
+    typeof o.remoteEmbedBatchSize === "number" &&
+    Number.isFinite(o.remoteEmbedBatchSize)
+  ) {
+    d.remoteEmbedBatchSize = Math.min(
+      REMOTE_EMBEDDING_BATCH_SIZE_MAX,
+      Math.max(
+        REMOTE_EMBEDDING_BATCH_SIZE_MIN,
+        Math.trunc(o.remoteEmbedBatchSize),
+      ),
+    );
+  }
   if (typeof o.builtinModel === "string") d.builtinModel = o.builtinModel;
   if (typeof o.dimension === "number" && Number.isFinite(o.dimension)) {
     d.dimension = o.dimension;
@@ -681,6 +879,8 @@ export const defaultAIConfig: AIConfig = {
     temperature: 0.7,
     maxTokens: 4096,
     slidingWindowSize: 8,
+    maxToolRounds: DEFAULT_MAX_TOOL_ROUNDS,
+    systemPromptExtraMode: AI_SYSTEM_PROMPT_PRESET_NONE_ID,
     systemPromptExtra: "",
     tokenPricePerMillion: { ...EMPTY_TOKEN_PRICE_PER_MILLION },
   },
@@ -691,5 +891,11 @@ export const defaultAIConfig: AIConfig = {
   ragTopK: 5,
   quickQuestions: [...DEFAULT_AI_QUICK_QUESTIONS],
   showTokenUsage: true,
+  autoMindmapOnSummaryAndCharacters: true,
+  wordcloudMaxWords: DEFAULT_WORDCLOUD_MAX_WORDS,
   txt2img: structuredClone(defaultTxt2ImgConfig),
+  chatProfiles: [],
+  activeChatProfileId: "",
+  txt2imgProfiles: [],
+  activeTxt2ImgProfileId: "",
 };

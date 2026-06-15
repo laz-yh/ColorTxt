@@ -37,6 +37,7 @@ const props = defineProps<{
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
+  aiSmartFormat: import("@shared/aiSmartFormatTypes").AiSmartFormatSettings;
   compressBlankKeepOneBlank: boolean;
   monacoCustomHighlight: boolean;
   txtrDelimitedMatchCrossLine: boolean;
@@ -62,6 +63,8 @@ const props = defineProps<{
   monacoFontFamily: string;
   highlightColorsLight: string[];
   highlightColorsDark: string[];
+  lineationColorsLight: string[];
+  lineationColorsDark: string[];
   ebookConvertOutputDir: string;
   characterPortraitCacheDir: string;
   aiSkillsEnabled: Record<string, boolean>;
@@ -81,6 +84,7 @@ const emit = defineEmits<{
     payload: { light: ReaderSurfacePalette; dark: ReaderSurfacePalette },
   ];
   applyHighlightColors: [payload: { light: string[]; dark: string[] }];
+  applyLineationColors: [payload: { light: string[]; dark: string[] }];
 }>();
 
 const showAboutPanel = defineModel<boolean>("showAboutPanel", {
@@ -187,6 +191,7 @@ onBeforeUnmount(() => {
     :reader-edit-show-line-numbers="readerEditShowLineNumbers"
     :reader-edit-minimap="readerEditMinimap"
     :edit-auto-refresh-chapter-list="editAutoRefreshChapterList"
+    :ai-smart-format="aiSmartFormat"
     :compress-blank-keep-one-blank="compressBlankKeepOneBlank"
     :monaco-custom-highlight="monacoCustomHighlight"
     :txtr-delimited-match-cross-line="txtrDelimitedMatchCrossLine"
@@ -213,8 +218,11 @@ onBeforeUnmount(() => {
     :monaco-font-family="monacoFontFamily"
     :highlight-colors-light="highlightColorsLight"
     :highlight-colors-dark="highlightColorsDark"
+    :lineation-colors-light="lineationColorsLight"
+    :lineation-colors-dark="lineationColorsDark"
     @apply-reader-palettes="emit('applyReaderPalettes', $event)"
     @apply-highlight-colors="emit('applyHighlightColors', $event)"
+    @apply-lineation-colors="emit('applyLineationColors', $event)"
   />
 
   <AppModal

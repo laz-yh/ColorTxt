@@ -4,7 +4,10 @@ import { isSupportedBookPath } from "../ebook/ebookFormat";
 import {
   collectFsPathsFromDataTransfer,
   dataTransferLikelyHasExternalFiles,
+  DROP_ZONE_READER_SIDEBAR,
+  isDragOverDropZone,
 } from "../utils/dragDropFsPaths";
+import { formatTextEncodingLabel } from "@shared/textEncodingDisplay";
 import { appAlert } from "../services/appDialog";
 import {
   bindAppShortcuts,
@@ -20,12 +23,7 @@ type Stream = ReturnType<typeof useTxtStreamPipeline>;
 
 /** 侧栏任意区域拖入均合并进文件列表，不显示阅读区「打开文件」蒙层 */
 function isOverSidebarImportDropZone(ev: DragEvent): boolean {
-  for (const n of ev.composedPath()) {
-    if (n instanceof HTMLElement && n.dataset.dropZone === "reader-sidebar") {
-      return true;
-    }
-  }
-  return false;
+  return isDragOverDropZone(ev, DROP_ZONE_READER_SIDEBAR);
 }
 
 /** 键盘事件是否起源于阅读侧栏（活动栏 + 面板）；与全局快捷键捕获监听配合，避免侧栏输入触发阅读器快捷键 */
@@ -293,7 +291,9 @@ export function useAppWindowBindings(deps: {
         if (!streamMatchesCurrent(payload)) return;
         deps.activeStreamRequestId.value = payload.requestId;
         deps.activeStreamFilePath.value = payload.filePath;
-        deps.fileEncoding.value = payload.encoding || "-";
+        deps.fileEncoding.value = formatTextEncodingLabel(
+          payload.encoding || "-",
+        );
         const total = payload.totalBytes;
         deps.loadingProgressPercent.value = total > 0 ? 0 : null;
       }),
@@ -348,11 +348,26 @@ export function useAppWindowBindings(deps: {
           const finishReadingSync = () => {
             deps.readerRef.value?.normalizeScrollAfterEmbeddedViewZones?.();
             deps.readerRef.value?.emitProbeLine();
-            void Promise.resolve(deps.syncChaptersAfterViewportSettled()).then(
-              () => {
-                markReadingProgressSynced();
-              },
-            );
+            const runChapterSync = () => {
+              void Promise.resolve(deps.syncChaptersAfterViewportSettled()).then(
+                () => {
+                  markReadingProgressSynced();
+                },
+              );
+            };
+            const ric = (
+              globalThis as typeof globalThis & {
+                requestIdleCallback?: (
+                  cb: () => void,
+                  opts?: { timeout: number },
+                ) => number;
+              }
+            ).requestIdleCallback;
+            if (typeof ric === "function") {
+              ric(() => runChapterSync(), { timeout: 3000 });
+            } else {
+              window.setTimeout(runChapterSync, 0);
+            }
           };
 
           if (

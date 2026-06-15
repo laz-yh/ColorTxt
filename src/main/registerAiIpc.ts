@@ -1,37 +1,44 @@
 import { app, dialog, ipcMain, type FileFilter } from "electron";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import type {
-  AIAgentStartPayload,
-  AIChunkRecord,
-  AIChatStreamPayload,
-  AIConfig,
-  BookStyleInferResult,
-  PortraitExtractResult,
+import {
+  normalizeEmbeddingEndpoint,
+  type AIAgentStartPayload,
+  type AIChunkRecord,
+  type AIChatStreamPayload,
+  type AIConfig,
+  type BookStyleInferResult,
+  type PortraitExtractResult,
 } from "@shared/aiTypes";
 import type { AiTxt2ImgInvokeResult } from "@shared/aiTxt2ImgIpc";
+import {
+  applyAllActiveProfilesToConfig,
+  readActiveChatEndpoint,
+  readActiveTxt2ImgConfig,
+} from "@shared/aiEndpointProfiles";
+import { resolveEffectiveSystemPromptExtraFromChat } from "@shared/aiSystemPromptPresets";
 import {
   loadAiConfig,
   mergeAiConfigWithDefaults,
   saveAiConfig,
-} from "./aiConfig";
-import { embedTexts, probeEmbeddingDimension } from "./aiEmbedding";
-import { fetchOpenAiCompatModelIds } from "./openAiCompatModelList";
+} from "./ai/infra/config";
+import { embedTexts, probeEmbeddingDimension } from "./ai/rag/embedding";
+import { fetchOpenAiCompatModelIds } from "./ai/infra/openAiCompatModelList";
 import { normalizeChatPresetBaseUrl } from "@shared/apiEndpointPresets";
 import {
   migrateAiDataCacheRoot,
   migrateBuiltinModelCacheRoot,
   openPathInShell,
   upgradeLegacyAiDataLayoutIfNeeded,
-} from "./aiDataFs";
+} from "./ai/infra/dataFs";
 import {
   getDefaultAiDataCacheDirSync,
   getDefaultBuiltinModelCacheDirSync,
-} from "./aiConfig";
+} from "./ai/infra/config";
 import {
   resolveAiDataCacheRoot,
   resolveBuiltinModelCacheRoot,
-} from "./aiPaths";
+} from "./ai/infra/paths";
 import {
   BUILTIN_EMBEDDING_MODELS,
   getBuiltinEmbeddingModel,
@@ -46,19 +53,21 @@ import {
   getLoadedBuiltinModelId,
   isBuiltinModelDownloaded,
   loadBuiltinEmbeddingModel,
-} from "./embedding/localEmbeddingBackend";
-import { reopenAiVectorDb } from "./aiVectorDb";
-import { runAgentChat } from "./aiAgentChat";
-import { abortChatRequest, streamChatCompletion } from "./aiChat";
+} from "./ai/rag/embedding/localBackend";
+import { reopenAiVectorDb } from "./ai/rag/vectorDb";
+import { runAgentChat } from "./ai/chat/agentChat";
+import { abortChatRequest, streamChatCompletion } from "./ai/chat/chat";
+import { runSmartFormatCleanupSegment } from "./ai/chat/textFormatCleanup";
+import type { AISmartFormatSegmentInput } from "@shared/aiSmartFormatTypes";
 import {
   runBookStyleInference,
   runCharacterPortraitExtract,
   runPortraitPromptZhToEn,
   runTxt2ImgToAbsolutePath,
-} from "./aiCharacterPortrait";
-import { adaptPortraitPromptForBackend } from "./aiTxt2ImgPromptAdapt";
-import { testTxt2ImgConnection } from "./aiTxt2ImgTestConnection";
-import { mergeTxt2ImgZhGeneralBeforeSpecific } from "./txt2imgMergeZh";
+} from "./ai/tools/characterPortrait";
+import { deleteBookSegmentCache } from "./ai/rag/segmentCache";
+import { adaptPortraitPromptForBackend } from "./ai/txt2img/promptAdapt";
+import { testTxt2ImgConnection } from "./ai/txt2img/testConnection";
 import { isTxt2ImgBackend, txt2ImgRequiresApiKey } from "@shared/txt2ImgBackend";
 import {
   appendMessage,
@@ -74,13 +83,16 @@ import {
   renameThread,
   resetEmbeddingDimension,
   searchChunks,
-} from "./aiVectorDb";
+  updateToolMessageContent,
+} from "./ai/rag/vectorDb";
 
 /** 角色「AI 检索」：同一会话的 extract + infer 共用 AbortSignal（renderer 传 retrieveSessionId） */
 const portraitRetrieveSessionAbortById = new Map<number, AbortController>();
 
 /** 侧栏「生成立绘」：单次 txt2imgToPath 会话，可由 renderer 调用 abort 中断 */
 let portraitTxt2ImgSessionAc: AbortController | null = null;
+
+const smartFormatAbortByRequestId = new Map<number, AbortController>();
 
 function portraitRetrieveSessionAc(sid: number): AbortController {
   let ac = portraitRetrieveSessionAbortById.get(sid);
@@ -103,6 +115,7 @@ let cachedConfig: AIConfig | null = null;
 
 async function cfg(): Promise<AIConfig> {
   if (!cachedConfig) cachedConfig = await loadAiConfig();
+  applyAllActiveProfilesToConfig(cachedConfig);
   return cachedConfig;
 }
 
@@ -287,6 +300,7 @@ export function registerAiIpcHandlers(): void {
 
   ipcMain.handle("ai:config:get", async () => {
     cachedConfig = await loadAiConfig();
+    applyAllActiveProfilesToConfig(cachedConfig);
     openOrRecreateAiVectorDb(cachedConfig.embedding.dimension);
     return cachedConfig;
   });
@@ -538,6 +552,7 @@ export function registerAiIpcHandlers(): void {
       openOrRecreateAiVectorDb(c.embedding.dimension);
       if (typeof bookHash !== "string") return { ok: false };
       deleteBookIndex(bookHash);
+      deleteBookSegmentCache(bookHash, c);
       return { ok: true };
     },
   );
@@ -631,10 +646,11 @@ export function registerAiIpcHandlers(): void {
       if (!Array.isArray(p.messages))
         return { ok: false, error: "无效 messages" };
 
+      const chat = readActiveChatEndpoint(c);
       void streamChatCompletion({
-        chat: c.chat,
+        chat,
         payload: p,
-        configSystemPromptExtra: c.chat.systemPromptExtra,
+        configSystemPromptExtra: resolveEffectiveSystemPromptExtraFromChat(chat),
         webContents: evt.sender,
       });
       return { ok: true };
@@ -643,6 +659,92 @@ export function registerAiIpcHandlers(): void {
 
   ipcMain.handle("ai:chat:abort", (_evt, requestId: unknown) => {
     if (typeof requestId === "number") abortChatRequest(requestId);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(
+    "ai:text-format:cleanup",
+    async (evt, payloadRaw: unknown) => {
+      if (!isRecord(payloadRaw)) {
+        return { ok: false as const, error: "无效 payload" };
+      }
+      const requestId = payloadRaw.requestId;
+      if (typeof requestId !== "number" || !Number.isFinite(requestId)) {
+        return { ok: false as const, error: "无效 requestId" };
+      }
+      const segRaw = payloadRaw.segment;
+      if (!isRecord(segRaw) || typeof segRaw.id !== "string") {
+        return { ok: false as const, error: "无效 segment" };
+      }
+      if (typeof segRaw.text !== "string") {
+        return { ok: false as const, error: "无效 segment.text" };
+      }
+      const segment: AISmartFormatSegmentInput = {
+        id: segRaw.id,
+        text: segRaw.text,
+        ...(typeof segRaw.contextBefore === "string"
+          ? { contextBefore: segRaw.contextBefore }
+          : {}),
+        ...(typeof segRaw.contextAfter === "string"
+          ? { contextAfter: segRaw.contextAfter }
+          : {}),
+      };
+      const mergeHardWrap = payloadRaw.mergeHardWrap === true;
+      const fixPunctuation =
+        payloadRaw.fixPunctuation === true ||
+        payloadRaw.fixQuotes === true;
+      const restoreGarbledChars = payloadRaw.restoreGarbledChars === true;
+      const unifyDialogueQuotes =
+        payloadRaw.unifyDialogueQuotes === "none" ||
+        payloadRaw.unifyDialogueQuotes === "double" ||
+        payloadRaw.unifyDialogueQuotes === "corner"
+          ? payloadRaw.unifyDialogueQuotes
+          : "double";
+      const removePromotionalContent =
+        payloadRaw.removePromotionalContent === true;
+      const removePiracyWatermarks =
+        payloadRaw.removePiracyWatermarks === true;
+      const restoreAsteriskMasks = payloadRaw.restoreAsteriskMasks === true;
+      const cleanHtmlRemnants = payloadRaw.cleanHtmlRemnants !== false;
+      const skillPrompt =
+        typeof payloadRaw.skillPrompt === "string"
+          ? payloadRaw.skillPrompt
+          : undefined;
+
+      let ac = smartFormatAbortByRequestId.get(requestId);
+      if (!ac) {
+        ac = new AbortController();
+        smartFormatAbortByRequestId.set(requestId, ac);
+      }
+
+      const c = await cfg();
+      const result = await runSmartFormatCleanupSegment({
+        payload: {
+          requestId,
+          segment,
+          mergeHardWrap,
+          fixPunctuation,
+          unifyDialogueQuotes,
+          removePromotionalContent,
+          removePiracyWatermarks,
+          restoreGarbledChars,
+          restoreAsteriskMasks,
+          cleanHtmlRemnants,
+          ...(skillPrompt !== undefined ? { skillPrompt } : {}),
+        },
+        config: c,
+        webContents: evt.sender,
+        signal: ac.signal,
+      });
+      return { ok: true as const, result };
+    },
+  );
+
+  ipcMain.handle("ai:text-format:abort", (_evt, requestId: unknown) => {
+    if (typeof requestId !== "number") return { ok: true as const };
+    const ac = smartFormatAbortByRequestId.get(requestId);
+    ac?.abort();
+    smartFormatAbortByRequestId.delete(requestId);
     return { ok: true as const };
   });
 
@@ -668,13 +770,14 @@ export function registerAiIpcHandlers(): void {
       if (typeof p.deepThinking !== "boolean")
         return { ok: false, error: "无效 deepThinking" };
 
+      const chat = readActiveChatEndpoint(c);
       void runAgentChat({
-        chat: c.chat,
+        chat,
         embedding: c.embedding,
         embeddingEnabled: c.embeddingEnabled,
         aiConfig: c,
         payload: p,
-        configSystemPromptExtra: c.chat.systemPromptExtra,
+        configSystemPromptExtra: resolveEffectiveSystemPromptExtraFromChat(chat),
         webContents: evt.sender,
         ragTopKDefault: c.ragTopK,
       });
@@ -699,11 +802,18 @@ export function registerAiIpcHandlers(): void {
           models: BUILTIN_EMBEDDING_MODELS.map((m) => m.id),
         };
       }
-      const apiKey = typeof draft.apiKey === "string" ? draft.apiKey : "";
-      const baseUrl = draftOpenAiCompatBaseUrl(draft);
+      const c = await cfg();
+      const activeChat = readActiveChatEndpoint(c);
+      const draftApiKey =
+        typeof draft.apiKey === "string" ? draft.apiKey.trim() : "";
+      const draftBaseUrl = draftOpenAiCompatBaseUrl(draft);
+      const baseUrl =
+        draftBaseUrl ??
+        draftOpenAiCompatBaseUrl({ baseUrl: activeChat.baseUrl });
       if (!baseUrl) {
         return { ok: false, error: "缺少接口地址" };
       }
+      const apiKey = draftApiKey || activeChat.apiKey.trim();
       return fetchOpenAiCompatModelIds({ baseUrl, apiKey });
     },
   );
@@ -717,12 +827,15 @@ export function registerAiIpcHandlers(): void {
         typeof draft.apiBaseUrl === "string" ? draft.apiBaseUrl.trim() : "";
       if (op === "testConnection") {
         const c = await cfg();
+        const activeTxt2img = readActiveTxt2ImgConfig(c);
         const backendRaw =
-          typeof draft.backend === "string" ? draft.backend : c.txt2img.backend;
+          typeof draft.backend === "string"
+            ? draft.backend
+            : activeTxt2img.backend;
         if (!isTxt2ImgBackend(backendRaw)) {
           return { ok: false, error: "无效的文生图 backend" };
         }
-        const txt2img = { ...c.txt2img, backend: backendRaw };
+        const txt2img = { ...activeTxt2img, backend: backendRaw };
         if (typeof draft.apiBaseUrl === "string" && draft.apiBaseUrl.trim()) {
           txt2img.apiBaseUrl = draft.apiBaseUrl.trim();
         }
@@ -860,7 +973,7 @@ export function registerAiIpcHandlers(): void {
         return { ok: false, error: "缺少参数" };
       }
       try {
-        const remoteEndpoint: AIConfig["embedding"] = {
+        const remoteEndpoint = normalizeEmbeddingEndpoint({
           provider: "remote",
           baseUrl,
           apiKey,
@@ -869,7 +982,13 @@ export function registerAiIpcHandlers(): void {
           dimension,
           hfRemoteHost: "",
           builtinModelCacheDir: "",
-        };
+          ...(isRecord(draft.config)
+            ? {
+                remoteEmbedBatchSize: mergeAiConfigWithDefaults(draft.config)
+                  .embedding.remoteEmbedBatchSize,
+              }
+            : {}),
+        });
         await embedTexts(remoteEndpoint, ["ping"]);
         return { ok: true };
       } catch (e) {
@@ -1020,6 +1139,24 @@ export function registerAiIpcHandlers(): void {
   );
 
   ipcMain.handle(
+    "ai:message:updateToolContent",
+    async (
+      _evt,
+      threadId: unknown,
+      toolCallId: unknown,
+      content: unknown,
+    ) => {
+      const c = await cfg();
+      openOrRecreateAiVectorDb(c.embedding.dimension);
+      if (typeof threadId !== "string") throw new Error("threadId");
+      if (typeof toolCallId !== "string" || !toolCallId.trim())
+        throw new Error("toolCallId");
+      if (typeof content !== "string") throw new Error("content");
+      return updateToolMessageContent(threadId, toolCallId.trim(), content);
+    },
+  );
+
+  ipcMain.handle(
     "ai:portrait:extract",
     async (
       _evt,
@@ -1032,6 +1169,10 @@ export function registerAiIpcHandlers(): void {
       if (!isRecord(payloadRaw)) return { error: "无效参数" };
       const bookHash = payloadRaw.bookHash;
       const characterName = payloadRaw.characterName;
+      const characterAliases =
+        typeof payloadRaw.characterAliases === "string"
+          ? payloadRaw.characterAliases
+          : undefined;
       const spoilerSafe = payloadRaw.spoilerSafe === true;
       const activeChapterIdx = payloadRaw.activeChapterIdx;
       if (typeof bookHash !== "string" || typeof characterName !== "string") {
@@ -1049,6 +1190,7 @@ export function registerAiIpcHandlers(): void {
       return runCharacterPortraitExtract(c, {
         bookHash,
         characterName,
+        characterAliases,
         spoilerSafe,
         activeChapterIdx: ch,
         signal,
@@ -1176,13 +1318,14 @@ export function registerAiIpcHandlers(): void {
         if (typeof outputPath !== "string" || !outputPath.trim()) {
           return { ok: false, error: "无效 outputPath" };
         }
+        const txt2img = readActiveTxt2ImgConfig(c);
         const adapted = await adaptPortraitPromptForBackend(c, {
-          backend: c.txt2img.backend,
+          backend: txt2img.backend,
           styleZh,
           appearanceZh,
           negativeZh,
-          defaultPositivePrompt: c.txt2img.defaultPositivePrompt,
-          defaultNegativePrompt: c.txt2img.defaultNegativePrompt,
+          defaultPositivePrompt: txt2img.defaultPositivePrompt,
+          defaultNegativePrompt: txt2img.defaultNegativePrompt,
           signal: ac.signal,
         });
         if (ac.signal.aborted) {
@@ -1196,7 +1339,7 @@ export function registerAiIpcHandlers(): void {
         const negativePrompt =
           adapted.family === "sd" ? adapted.negativePrompt : "";
         return await runTxt2ImgToAbsolutePath({
-          txt2img: c.txt2img,
+          txt2img,
           prompt,
           negativePrompt,
           outputPathAbsolute: outputPath.trim(),

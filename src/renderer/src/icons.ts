@@ -5,6 +5,9 @@ import enterFullscreenIcon from "./assets/enter_fullscreen.svg?raw";
 import leaveFullscreenIcon from "./assets/leave_fullscreen.svg?raw";
 import paletteIcon from "./assets/palette.svg?raw";
 import moreIcon from "./assets/more.svg?raw";
+import mindmapIcon from "./assets/mindmap.svg?raw";
+import wordcloudIcon from "./assets/wordcloud.svg?raw";
+import wordcloudAngleIcon from "./assets/wordcloud_angle.svg?raw";
 import findIcon from "./assets/find.svg?raw";
 import regExpIcon from "./assets/RegExp.svg?raw";
 import githubIcon from "./assets/GitHub.svg?raw";
@@ -38,11 +41,13 @@ import chapterListIcon from "./assets/chapter_list.svg?raw";
 import highlightMarkIcon from "./assets/highlight.svg?raw";
 import clearIcon from "./assets/clear.svg?raw";
 import addIcon from "./assets/add.svg?raw";
+import moveIcon from "./assets/move.svg?raw";
 import closeIcon from "./assets/close.svg?raw";
 import ascIcon from "./assets/asc.svg?raw";
 import descIcon from "./assets/desc.svg?raw";
 import folderOpenIcon from "./assets/folder_open.svg?raw";
 import aiChatIcon from "./assets/AI_chat.svg?raw";
+import aiComposeIcon from "./assets/AI_compose.svg?raw";
 import brainIcon from "./assets/brain.svg?raw";
 import copyIcon from "./assets/copy.svg?raw";
 import downloadIcon from "./assets/download.svg?raw";
@@ -53,11 +58,18 @@ import successIcon from "./assets/success.svg?raw";
 import viewIcon from "./assets/view.svg?raw";
 import viewOffIcon from "./assets/view_off.svg?raw";
 import refreshIcon from "./assets/refresh.svg?raw";
+import resetIcon from "./assets/reset.svg?raw";
 import unknowIcon from "./assets/unknow.svg?raw";
 import failIcon from "./assets/fail.svg?raw";
 import stopIcon from "./assets/stop.svg?raw";
 import thinkingPulseIcon from "./assets/thinking_pulse.svg?raw";
 import foldChevronIcon from "./assets/fold_chevron.svg?raw";
+import foldIcon from "./assets/fold.svg?raw";
+import upThinIcon from "./assets/up_thin.svg?raw";
+import downThinIcon from "./assets/down_thin.svg?raw";
+import paragraphIcon from "./assets/paragraph.svg?raw";
+import foldUnchangedIcon from "./assets/fold_unchanged.svg?raw";
+import expandIcon from "./assets/expand.svg?raw";
 import jumpBottomIcon from "./assets/jump_bottom.svg?raw";
 import characterIcon from "./assets/character.svg?raw";
 import genderMaleIcon from "./assets/male.svg?raw";
@@ -66,6 +78,9 @@ import genderUnknownIcon from "./assets/unknown.svg?raw";
 import warningIcon from "./assets/warning.svg?raw";
 import favoriteIcon from "./assets/favorite.svg?raw";
 import favoriteFillIcon from "./assets/favorite_fill.svg?raw";
+import noteIcon from "./assets/note.svg?raw";
+import quoteIcon from "./assets/quote.svg?raw";
+import deleteLineationIcon from "./assets/delete_lineation.svg?raw";
 
 export const icons = {
   dark: darkIcon,
@@ -75,6 +90,12 @@ export const icons = {
   leaveFullscreen: leaveFullscreenIcon,
   palette: paletteIcon,
   more: moreIcon,
+  /** 思维导图面板标题 */
+  mindmap: mindmapIcon,
+  /** 词云面板标题 */
+  wordcloud: wordcloudIcon,
+  /** 词云角度布局 */
+  wordcloudAngle: wordcloudAngleIcon,
   find: findIcon,
   regExp: regExpIcon,
   github: githubIcon,
@@ -108,11 +129,14 @@ export const icons = {
   highlightMark: highlightMarkIcon,
   clear: clearIcon,
   add: addIcon,
+  /** 列表拖动排序手柄 */
+  move: moveIcon,
   close: closeIcon,
   asc: ascIcon,
   desc: descIcon,
   folderOpen: folderOpenIcon,
   aiChat: aiChatIcon,
+  aiCompose: aiComposeIcon,
   brain: brainIcon,
   copy: copyIcon,
   download: downloadIcon,
@@ -123,6 +147,8 @@ export const icons = {
   view: viewIcon,
   viewOff: viewOffIcon,
   refresh: refreshIcon,
+  /** 思维导图 / 词云「复位」 */
+  reset: resetIcon,
   unknow: unknowIcon,
   fail: failIcon,
   stop: stopIcon,
@@ -130,6 +156,17 @@ export const icons = {
   thinkingPulse: thinkingPulseIcon,
   /** 折叠面板标题右侧 chevron（默认向下，展开时旋转为向上） */
   foldChevron: foldChevronIcon,
+  /** 思维导图「全部收起」 */
+  fold: foldIcon,
+  /** Diff 预览：上一个 / 下一个更改 */
+  upThin: upThinIcon,
+  downThin: downThinIcon,
+  /** Diff 预览：显示行首/行尾空白差异 */
+  paragraph: paragraphIcon,
+  /** Diff 预览：折叠未更改区域 */
+  foldUnchanged: foldUnchangedIcon,
+  /** 思维导图「全部展开」 */
+  expand: expandIcon,
   jumpBottom: jumpBottomIcon,
   character: characterIcon,
   genderMale: genderMaleIcon,
@@ -141,4 +178,7 @@ export const icons = {
   favorite: favoriteIcon,
   /** 高亮词：已收藏（常驻） */
   favoriteFill: favoriteFillIcon,
+  note: noteIcon,
+  quote: quoteIcon,
+  deleteLineation: deleteLineationIcon,
 } as const;

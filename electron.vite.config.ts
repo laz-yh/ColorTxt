@@ -65,9 +65,9 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__electronViteConfigDir, "src/main/index.ts"),
-          "embedding/embeddingWorker": resolve(
+          "ai/rag/embedding/worker": resolve(
             __electronViteConfigDir,
-            "src/main/embedding/embeddingWorker.ts",
+            "src/main/ai/rag/embedding/worker.ts",
           ),
         },
         /**
@@ -85,10 +85,13 @@ export default defineConfig({
           "better-sqlite3",
           "sqlite-vec",
           "ws",
+          "@node-rs/jieba",
+          "@node-rs/jieba/dict",
           "@huggingface/transformers",
           "@huggingface/jinja",
           "onnxruntime-node",
           "onnxruntime-common",
+          "opencc",
         ],
         output: {
           format: "es",
@@ -155,6 +158,9 @@ export default defineConfig({
         },
       }),
     ],
+    optimizeDeps: {
+      include: ["markmap-lib", "markmap-view", "d3-cloud", "d3-scale"],
+    },
     build: {
       outDir: resolve(__electronViteConfigDir, "dist/renderer"),
       rollupOptions: {

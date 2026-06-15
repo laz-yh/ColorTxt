@@ -1,17 +1,30 @@
 import { nextTick, type Ref } from "vue";
 import {
   applyLeadIndentFullWidth,
-  physicalRangeToDisplayColumns,
+  chapterTitleForDisplay,
 } from "../chapter";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
+  annotationColumnMapOptions,
+  physicalColumnToDisplayColumn,
+} from "../utils/readerAnnotations";
+import {
   physicalLineToChapterTitleDisplayLine,
   physicalLineToLastFilteredDisplayLine,
+  shiftChapterTitleDisplayLineMap,
 } from "../reader/lineMapping";
-import { formatPhysicalLinesForReader } from "../reader/readerDisplayPipeline";
+import { formatPhysicalLinesForReaderAsync } from "../reader/readerDisplayPipeline";
+import { visibleReaderLineFromPhysicalRaw } from "../ebook/ebookTitleMatch";
+import { stripMdInternalLinksFromPhysicalLinesAsync } from "../markdown/markdownInternalLinks";
+import { yieldToUi } from "../ebook/yieldToUi";
 import type { ReaderViewportRestoreAnchor } from "../reader/readerViewportAnchor";
 import { floorReadingProgressPercentByLines } from "../utils/format";
 import { createPhysicalLineSplitter } from "../services/physicalLineStream";
+import { applyTextDisplayConverts } from "../services/textConvertApply";
+import type {
+  TextConvertWidthMode,
+  TextConvertZhMode,
+} from "@shared/textConvertTypes";
 
 type ReaderRef = Ref<InstanceType<typeof ReaderMain> | null>;
 
@@ -26,19 +39,31 @@ export function useTxtStreamPipeline(deps: {
   compressBlankLines: Ref<boolean>;
   compressBlankKeepOneBlank: Ref<boolean>;
   leadIndentFullWidth: Ref<boolean>;
+  textConvertZh: Ref<TextConvertZhMode>;
+  textConvertLetter: Ref<TextConvertWidthMode>;
+  textConvertDigit: Ref<TextConvertWidthMode>;
   chapterMinCharCount: Ref<number>;
   currentFileIsMarkdown: Ref<boolean>;
   /** 展示正文写入 Monaco 且插图/内链处理完成后 */
   afterFullTextInstalled: () => void | Promise<void>;
+  /** 正文已写入 Monaco、可解除加载遮罩（插图/内链等在后台继续） */
+  onReaderDisplayReady?: () => void;
 }) {
   const lineSplitter = createPhysicalLineSplitter();
 
   /** Monaco 展示行数（滤空后与物理行数可能不同） */
   let lineCount = 0;
-  /** 源文件物理行（含空行）；加载阶段只 push，行/字数在格式化完成后写入 ref */
+  /** 源文件物理行（含空行）；加载阶段只 push */
   let physicalLineContents: string[] = [];
   /** 展示行号 i（1-based）→ 物理行号 */
   let filteredDisplayToPhysicalLine: number[] = [];
+  /**
+   * 最近一次 `formatPhysicalLinesForReader` 的展示行（与 Monaco 一致）。
+   * 章节/内链映展示行时优先用此缓存，避免 `setChapters` 剥标题缩进或侧车未装完时读 Monaco 错位。
+   */
+  let lastFormattedDisplayLines: string[] = [];
+  /** 最近一次 format 写出的章节标题物理行 → 展示行（压缩空行时含留白偏移） */
+  let chapterTitleDisplayLineByPhysical = new Map<number, number>();
 
   function lineForReaderDisplay(rawLine: string): string {
     return deps.leadIndentFullWidth.value
@@ -48,48 +73,92 @@ export function useTxtStreamPipeline(deps: {
 
   function viewportDisplayLineToPhysicalLine(displayLine: number): number {
     const v = Math.max(1, Math.floor(displayLine));
-    if (!deps.compressBlankLines.value) return v;
+    const map = filteredDisplayToPhysicalLine;
+    if (map.length === 0) return v;
     const idx = v - 1;
     if (idx < 0) return 1;
-    if (idx >= filteredDisplayToPhysicalLine.length) {
-      return (
-        filteredDisplayToPhysicalLine[
-          filteredDisplayToPhysicalLine.length - 1
-        ] ?? 1
-      );
+    if (idx >= map.length) {
+      return map[map.length - 1] ?? v;
     }
-    return filteredDisplayToPhysicalLine[idx]!;
+    return map[idx]!;
   }
 
-  function physicalLineToDisplayForReader(physicalLine: number): number {
-    if (!deps.compressBlankLines.value) {
-      return Math.max(1, Math.floor(physicalLine));
+  /** 空锚点行 → 向后找首行可见正文，避免展示行落到下一段正文 */
+  function resolvePhysicalLineForDisplayAnchor(physicalLine: number): number {
+    const p0 = Math.max(1, Math.floor(physicalLine));
+    const total = physicalLineContents.length;
+    const stripped0 = (physicalLineContents[p0 - 1] ?? "").trim();
+    if (stripped0.length > 0) return p0;
+    for (let p = p0 + 1; p <= Math.min(total, p0 + 10); p++) {
+      if ((physicalLineContents[p - 1] ?? "").trim().length > 0) return p;
     }
+    return p0;
+  }
+
+  function physicalLineToDisplayForReader(
+    physicalLine: number,
+    tocTitle?: string,
+  ): number {
     const map = filteredDisplayToPhysicalLine;
-    const p = Math.max(1, Math.floor(physicalLine));
-    const raw = physicalLineContents[p - 1] ?? "";
-    const wantShown = lineForReaderDisplay(raw);
+    const preferTitle = chapterTitleForDisplay(tocTitle ?? "");
+    // 嵌入目录已解析到标题物理行：勿将空锚点行转发到邻行（会误命中邻章缓存行号）
+    const p =
+      preferTitle.length > 0
+        ? Math.max(1, Math.floor(physicalLine))
+        : resolvePhysicalLineForDisplayAnchor(physicalLine);
+    if (map.length === 0) return p;
 
     const reader = deps.readerRef.value;
     const getEditorLineContent = reader?.getEditorLineContent;
+    const getDisplayLineContent =
+      reader && typeof getEditorLineContent === "function"
+        ? (displayLine: number) =>
+            chapterTitleForDisplay(
+              getEditorLineContent.call(reader, displayLine) ?? "",
+            )
+        : lastFormattedDisplayLines.length > 0
+          ? (displayLine: number) =>
+              chapterTitleForDisplay(
+                lastFormattedDisplayLines[displayLine - 1] ?? "",
+              )
+          : undefined;
+
+    // 压缩空行：同一物理行对应多行展示，format 写出的标题行须校验标题后再采用
+    if (deps.compressBlankLines.value && getDisplayLineContent) {
+      const cachedDl = chapterTitleDisplayLineByPhysical.get(p);
+      if (cachedDl != null && cachedDl >= 1) {
+        if (!preferTitle.length) {
+          return cachedDl;
+        }
+        if (
+          chapterTitleForDisplay(getDisplayLineContent(cachedDl)) === preferTitle
+        ) {
+          return cachedDl;
+        }
+      }
+    }
+
+    const raw = physicalLineContents[p - 1] ?? "";
+    const visible = visibleReaderLineFromPhysicalRaw(raw);
+    const basis = visible.trim().length > 0 ? visible : raw;
+    const exemptLeadIndent = preferTitle.length > 0;
+    const wantShown = preferTitle
+      ? preferTitle
+      : exemptLeadIndent
+        ? chapterTitleForDisplay(basis)
+        : lineForReaderDisplay(basis);
+
     return physicalLineToChapterTitleDisplayLine(p, map, {
       wantShown,
-      getDisplayLineContent:
-        reader && typeof getEditorLineContent === "function"
-          ? (displayLine) =>
-              getEditorLineContent.call(reader, displayLine) ?? ""
-          : undefined,
+      getDisplayLineContent,
     });
   }
 
   function physicalLineToBottomDisplayForReader(physicalLine: number): number {
-    if (!deps.compressBlankLines.value) {
-      return Math.max(1, Math.floor(physicalLine));
-    }
-    return physicalLineToLastFilteredDisplayLine(
-      physicalLine,
-      filteredDisplayToPhysicalLine,
-    );
+    const p = Math.max(1, Math.floor(physicalLine));
+    const map = filteredDisplayToPhysicalLine;
+    if (map.length === 0) return p;
+    return physicalLineToLastFilteredDisplayLine(p, map);
   }
 
   function calcProgressPercentByPhysicalLine(
@@ -122,6 +191,8 @@ export function useTxtStreamPipeline(deps: {
     lineCount = 0;
     physicalLineContents = [];
     filteredDisplayToPhysicalLine = [];
+    lastFormattedDisplayLines = [];
+    chapterTitleDisplayLineByPhysical = new Map();
     lineSplitter.reset();
   }
 
@@ -211,24 +282,52 @@ export function useTxtStreamPipeline(deps: {
     const r = deps.readerRef.value;
     if (!r) return false;
 
-    const formatted = formatPhysicalLinesForReader(physicalLineContents, {
-      compressBlankLines: deps.compressBlankLines.value,
-      compressBlankKeepOneBlank: deps.compressBlankKeepOneBlank.value,
-      leadIndentFullWidth: deps.leadIndentFullWidth.value,
-      minCharCount: deps.chapterMinCharCount.value,
-      isMarkdown: deps.currentFileIsMarkdown.value,
+    const preStrip = deps.currentFileIsMarkdown.value
+      ? await stripMdInternalLinksFromPhysicalLinesAsync(physicalLineContents)
+      : undefined;
+    if (preStrip) await yieldToUi();
+
+    const formatted = await formatPhysicalLinesForReaderAsync(
+      physicalLineContents,
+      {
+        compressBlankLines: deps.compressBlankLines.value,
+        compressBlankKeepOneBlank: deps.compressBlankKeepOneBlank.value,
+        leadIndentFullWidth: deps.leadIndentFullWidth.value,
+        minCharCount: deps.chapterMinCharCount.value,
+        isMarkdown: deps.currentFileIsMarkdown.value,
+      },
+      preStrip,
+    );
+    await yieldToUi();
+
+    let displayText = formatted.text;
+    displayText = await applyTextDisplayConverts(displayText, {
+      zh: deps.textConvertZh.value,
+      letter: deps.textConvertLetter.value,
+      digit: deps.textConvertDigit.value,
     });
+    await yieldToUi();
 
     filteredDisplayToPhysicalLine = formatted.displayLineToPhysicalLine;
+    lastFormattedDisplayLines =
+      displayText.length > 0 ? displayText.split("\n") : [];
+    chapterTitleDisplayLineByPhysical = new Map(
+      formatted.chapterTitleDisplayLineByPhysical,
+    );
     lineCount = formatted.lineCount;
-    deps.totalCharCount.value = formatted.text.length;
+    deps.totalCharCount.value = displayText.length;
     deps.totalLineCount.value = formatted.lineCount;
 
-    await r.setFullText(formatted.text);
+    const isHeavyDocument =
+      formatted.lineCount > 80_000 || displayText.length > 25_000_000;
+
+    r.setPendingEbookInternalLinkSidecar?.(formatted.ebookSidecar ?? null);
+    await r.setFullText(displayText, { heavy: isHeavyDocument });
     if (deps.leadIndentFullWidth.value) {
       r.normalizeLastLineLeadIndent?.();
     }
-    await deps.afterFullTextInstalled();
+    await yieldToUi();
+    deps.onReaderDisplayReady?.();
     if (restore != null && typeof restore === "object") {
       await deps.readerRef.value?.restoreViewportToRestoreAnchor?.(restore, [
         ...filteredDisplayToPhysicalLine,
@@ -236,6 +335,7 @@ export function useTxtStreamPipeline(deps: {
     } else if (typeof restore === "number") {
       await restoreViewportAfterDisplayChange(restore);
     }
+    await Promise.resolve(deps.afterFullTextInstalled());
     return true;
   }
 
@@ -271,20 +371,44 @@ export function useTxtStreamPipeline(deps: {
     return physicalLineContents[idx] ?? "";
   }
 
+  /** 当前展示层单行文本（优先 Monaco，与装饰/选区一致；回退 `lastFormattedDisplayLines`） */
+  function getDisplayLineContent(displayLine: number): string {
+    const reader = deps.readerRef.value;
+    const ln = Math.max(1, Math.floor(displayLine));
+    if (reader && typeof reader.getEditorLineContent === "function") {
+      const lineCount =
+        typeof reader.getModelLineCount === "function"
+          ? reader.getModelLineCount()
+          : 0;
+      if (lineCount > 0 && ln <= lineCount) {
+        return reader.getEditorLineContent(ln);
+      }
+    }
+    if (deps.readerEditMode.value) return "";
+    const idx = ln - 1;
+    return lastFormattedDisplayLines[idx] ?? "";
+  }
+
   /** 侧栏搜索等在物理行上的匹配 → Monaco 展示行列号 */
   function physicalSearchRangeToDisplayColumns(
     physicalLine: number,
     range: { start: number; end: number },
   ): { startColumn: number; endColumn: number } {
     const raw = getPhysicalLineContent(physicalLine);
-    // 编辑态 Monaco 为磁盘原文，无压缩空行/行首缩进展示处理
-    if (deps.readerEditMode.value || !deps.leadIndentFullWidth.value) {
-      return {
-        startColumn: range.start + 1,
-        endColumn: Math.max(range.start + 2, range.end + 1),
-      };
-    }
-    return physicalRangeToDisplayColumns(raw, range);
+    const columnMap = annotationColumnMapOptions({
+      readerEditMode: deps.readerEditMode.value,
+      leadIndentFullWidth: deps.leadIndentFullWidth.value,
+    });
+    const startColumn = physicalColumnToDisplayColumn(
+      raw,
+      range.start + 1,
+      columnMap,
+    );
+    const endColumn = Math.max(
+      physicalColumnToDisplayColumn(raw, range.start + 2, columnMap),
+      physicalColumnToDisplayColumn(raw, range.end + 1, columnMap),
+    );
+    return { startColumn, endColumn };
   }
 
   function getPhysicalFilePlainText(): string {
@@ -296,10 +420,16 @@ export function useTxtStreamPipeline(deps: {
     syncMirrorFromReaderModel();
   }
 
+  /** 插图删行后：用当前 Monaco 展示文刷新行缓存（format 结果在删行前） */
+  function resyncFormattedDisplayLinesFromReader() {
+    const text = deps.readerRef.value?.getAllText() ?? "";
+    lastFormattedDisplayLines = text.length > 0 ? text.split("\n") : [];
+  }
+
   function removeFilteredDisplayLinesAtOriginalIndices(
     deletedOriginalLineNumbersDesc: readonly number[],
   ) {
-    if (!deps.compressBlankLines.value || deletedOriginalLineNumbersDesc.length === 0) {
+    if (deletedOriginalLineNumbersDesc.length === 0) {
       return;
     }
     for (const lineNum of deletedOriginalLineNumbersDesc) {
@@ -308,6 +438,10 @@ export function useTxtStreamPipeline(deps: {
         filteredDisplayToPhysicalLine.splice(idx, 1);
       }
     }
+    shiftChapterTitleDisplayLineMap(
+      chapterTitleDisplayLineByPhysical,
+      deletedOriginalLineNumbersDesc,
+    );
     lineCount = filteredDisplayToPhysicalLine.length;
     deps.totalLineCount.value = lineCount;
   }
@@ -325,9 +459,11 @@ export function useTxtStreamPipeline(deps: {
     getLineCount,
     getDisplayLineToPhysicalLine,
     getPhysicalLineContent,
+    getDisplayLineContent,
     physicalSearchRangeToDisplayColumns,
     getPhysicalFilePlainText,
     resyncMirrorFromReader,
+    resyncFormattedDisplayLinesFromReader,
     removeFilteredDisplayLinesAtOriginalIndices,
     applyReaderDisplayFromPhysicalLines,
   };

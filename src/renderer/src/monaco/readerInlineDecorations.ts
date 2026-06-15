@@ -80,6 +80,10 @@ function readerChromeThemeColors(
     /** 概览尺 Canvas 透明底，仅绘制光标/装饰标记 */
     "editorOverviewRuler.background": EDITOR_BACKGROUND_TRANSPARENT,
     "editorOverviewRuler.border": READER_OVERVIEW_RULER_BORDER,
+    "menu.background": surfaceBg,
+    "menu.foreground": palette.bodyText,
+    /** 笔记/装饰 hover 时不高亮原文 range（Monaco `.hoverHighlight`） */
+    "editor.hoverHighlightBackground": "#00000000",
     ...readerEditorHighlightColors(variant),
   };
   if (variant === "dark") {
@@ -210,26 +214,47 @@ export function setReaderSyntaxHighlightEnabled(
   });
 }
 
+/** Monaco 装饰 endColumn（exclusive）：整行 trimEnd 后的末尾 */
+function trimmedLineEndColumn(lineText: string): number {
+  const len = lineText.trimEnd().length;
+  return len > 0 ? len + 1 : 1;
+}
+
+/**
+ * 章节标题行内样式 endColumn。
+ * 章节标题独占展示行；行内 MD 文字链接保留完整 label（非图标 `\u3000` 单字占位），
+ * 侧栏/匹配用 {@link plainTextForEbookTitleMatch} 会剥链接语法且不含 label，勿用 `want.length` 推算列范围。
+ */
+function chapterTitleStyleEndColumn(
+  model: monaco.editor.ITextModel,
+  lineNumber: number,
+): number {
+  return trimmedLineEndColumn(model.getLineContent(lineNumber));
+}
+
 /**
  * 构建章节标题的 Monaco 模型装饰（仅 `inlineClassName` 着色）。
- * 标题前后留白由阅读器 `changeViewZones` 管理，勿在此处设置 `lineHeight`。
+ * 标题前后留白由 {@link formatPhysicalLinesForReader} 在开启「压缩空行」时插入空行实现。
  */
 export function buildChapterTitleDecorations(
   monacoApi: typeof import("monaco-editor"),
   model: monaco.editor.ITextModel,
   chapters: ChapterStickyLine[],
 ): monaco.editor.IModelDeltaDecoration[] {
-  const sorted = chapters.slice().sort((a, b) => a.lineNumber - b.lineNumber);
   const maxLine = model.getLineCount();
-  return sorted
-    .map((ch) => ch.lineNumber)
-    .filter((lineNumber) => lineNumber >= 1 && lineNumber <= maxLine)
-    .map((lineNumber) => ({
+  return chapters
+    .filter(
+      (ch) =>
+        ch.title.trim().length > 0 &&
+        ch.lineNumber >= 1 &&
+        ch.lineNumber <= maxLine,
+    )
+    .map((ch) => ({
       range: new monacoApi.Range(
-        lineNumber,
+        ch.lineNumber,
         1,
-        lineNumber,
-        model.getLineMaxColumn(lineNumber),
+        ch.lineNumber,
+        chapterTitleStyleEndColumn(model, ch.lineNumber),
       ),
       options: {
         inlineClassName: CHAPTER_TITLE_LINE_CLASS,

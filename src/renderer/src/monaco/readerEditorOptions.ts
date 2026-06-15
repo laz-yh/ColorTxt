@@ -104,6 +104,12 @@ export function buildReaderEditorSharedCoreOptions(
   | "find"
   | "unusualLineTerminators"
   | "renderControlCharacters"
+  | "fixedOverflowWidgets"
+  | "useShadowDOM"
+  | "hover"
+  | "maxTokenizationLineLength"
+  | "stopRenderingLineAfter"
+  | "largeFileOptimizations"
 > {
   const {
     fontSize,
@@ -122,7 +128,7 @@ export function buildReaderEditorSharedCoreOptions(
     automaticLayout: true,
     smoothScrolling,
     wrappingStrategy: wrappingStrategyAdvanced ? "advanced" : "simple",
-    stickyScroll: { enabled: true },
+    stickyScroll: { enabled: true, defaultModel: "outlineModel" },
     lineNumbers: "off",
     lineNumbersMinChars: 0,
     glyphMargin: false,
@@ -134,6 +140,26 @@ export function buildReaderEditorSharedCoreOptions(
     unusualLineTerminators: "off",
     /** 默认 true 会对控制字符做特殊绘制；纯文本阅读/编辑关闭 */
     renderControlCharacters: false,
+    /** 悬停/补全等内容挂件用视口 fixed 定位，避免被阅读区 overflow:hidden 裁切 */
+    fixedOverflowWidgets: true,
+    /** 关闭 Shadow DOM，便于统一 context menu 等挂件样式；右键菜单由应用层接管 */
+    useShadowDOM: false,
+    /** 长脚注悬停：可移入面板滚动阅读（Monaco 内建 sticky + 按需滚动条） */
+    hover: {
+      enabled: true,
+      sticky: true,
+      hidingDelay: 800,
+    },
+    /** 默认 20000 超长行不解析且 hover 提示配置项；小说段落可能超阈值 */
+    maxTokenizationLineLength: 1_000_000,
+    /** 默认 10000 后停止渲染且 hover 提示；`-1` 为不截断 */
+    stopRenderingLineAfter: -1,
+    /**
+     * Monaco 默认 true：>30 万行或 >20MB 时 `isTooLargeForTokenization()`，
+     * 会改用 ViewModelLinesFromModelAsIs（彻底关闭 viewport 换行）并跳过 sticky scroll。
+     * 网文转载 txt 常一行一句，行数易超 30 万；关闭此项以换取正确排版（更慢、更占内存）。
+     */
+    largeFileOptimizations: false,
   };
 }
 
@@ -142,7 +168,8 @@ export function buildReaderEditorSharedCoreOptions(
  */
 export function buildReaderEditorReadOnlyModeChromeOptions(): ReaderMonacoConfigurableOptions {
   return {
-    folding: true,
+    /** 阅读器不用代码折叠；章节粘性条走 DocumentSymbolProvider（outlineModel） */
+    folding: false,
     showFoldingControls: "never",
     scrollbar: {
       horizontal: "hidden",
@@ -161,7 +188,7 @@ export function buildReaderEditorReadOnlyModeChromeOptions(): ReaderMonacoConfig
     wordBasedSuggestions: "off",
     wordWrap: "on",
     contextmenu: false,
-    links: false,
+    links: true,
     padding: {
       top: READER_EDITOR_PADDING.top,
       bottom: READER_EDITOR_PADDING.bottom,
@@ -170,12 +197,12 @@ export function buildReaderEditorReadOnlyModeChromeOptions(): ReaderMonacoConfig
 }
 
 /**
- * 编辑模式：恢复接近 VS Code / Monaco 默认的编辑体验（与 {@link buildReaderEditorReadOnlyModeChromeOptions} 对偶）。
+ * 编辑模式：保留光标、选区、缩进参考线等书写体验；关闭代码补全/行内建议（纯文本小说编辑不需要）。
  * 字体、字号、行号列、minimap、主题仍由 {@link buildReaderEditorSharedCoreOptions} 与配色管线统一控制。
  */
 export function buildReaderEditorEditModeNativeChromeOptions(): ReaderMonacoConfigurableOptions {
   return {
-    folding: true,
+    folding: false,
     showFoldingControls: "never",
     scrollbar: {
       horizontal: "auto",
@@ -190,12 +217,14 @@ export function buildReaderEditorEditModeNativeChromeOptions(): ReaderMonacoConf
     occurrencesHighlight: "singleFile",
     selectionHighlight: true,
     unicodeHighlight: { ...READER_UNICODE_HIGHLIGHT_DISABLED },
-    quickSuggestions: { other: true, comments: true, strings: true },
-    suggestOnTriggerCharacters: true,
-    parameterHints: { enabled: true },
-    wordBasedSuggestions: "currentDocument",
+    quickSuggestions: false,
+    suggestOnTriggerCharacters: false,
+    parameterHints: { enabled: false },
+    wordBasedSuggestions: "off",
+    inlineSuggest: { enabled: false },
+    tabCompletion: "off",
     wordWrap: "on",
-    contextmenu: true,
+    contextmenu: false,
     links: true,
     padding: { top: 0, bottom: 0 },
   } satisfies ReaderMonacoConfigurableOptions;

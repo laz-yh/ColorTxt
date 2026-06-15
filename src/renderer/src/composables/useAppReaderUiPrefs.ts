@@ -1,4 +1,4 @@
-import type { Ref } from "vue";
+import { nextTick, type Ref } from "vue";
 import type ReaderMain from "../components/ReaderMain.vue";
 import {
   lineHeightMultipleStep,
@@ -9,6 +9,10 @@ import {
   normalizeLineHeightMultiple,
 } from "../constants/appUi";
 import type { useTxtStreamPipeline } from "./useTxtStreamPipeline";
+import type {
+  TextConvertWidthMode,
+  TextConvertZhMode,
+} from "@shared/textConvertTypes";
 
 type Stream = ReturnType<typeof useTxtStreamPipeline>;
 
@@ -17,10 +21,14 @@ export function useAppReaderUiPrefs(deps: {
   readerFontSize: Ref<number>;
   readerLineHeightMultiple: Ref<number>;
   monacoFontFamily: Ref<string>;
+  pinnedOtherFonts: Ref<string[]>;
   monacoCustomHighlight: Ref<boolean>;
   monacoAdvancedWrapping: Ref<boolean>;
   compressBlankLines: Ref<boolean>;
   leadIndentFullWidth: Ref<boolean>;
+  textConvertZh: Ref<TextConvertZhMode>;
+  textConvertLetter: Ref<TextConvertWidthMode>;
+  textConvertDigit: Ref<TextConvertWidthMode>;
   withChapterListScrollSuppressed: <T>(fn: () => Promise<T> | T) => Promise<T>;
   currentFile: Ref<string | null>;
   stream: Stream;
@@ -99,6 +107,19 @@ export function useAppReaderUiPrefs(deps: {
     deps.persistSettings();
   }
 
+  function togglePinnedOtherFont(fontName: string) {
+    const normalized = fontName.trim();
+    if (!normalized) return;
+    const list = deps.pinnedOtherFonts.value;
+    const idx = list.findIndex((f) => f.trim() === normalized);
+    if (idx >= 0) {
+      deps.pinnedOtherFonts.value = list.filter((_, i) => i !== idx);
+    } else {
+      deps.pinnedOtherFonts.value = [...list, normalized];
+    }
+    deps.persistSettings();
+  }
+
   function toggleMonacoCustomHighlight() {
     deps.monacoCustomHighlight.value = !deps.monacoCustomHighlight.value;
     deps.persistSettings();
@@ -143,6 +164,8 @@ export function useAppReaderUiPrefs(deps: {
         deps.persistSettings();
         return;
       }
+      await nextTick();
+      deps.readerRef.value?.emitProbeLine?.();
       await deps.syncChaptersAfterViewportSettled();
     });
   }
@@ -171,6 +194,45 @@ export function useAppReaderUiPrefs(deps: {
     );
   }
 
+  async function setTextConvertZhRead(mode: TextConvertZhMode) {
+    const prev = deps.textConvertZh.value;
+    if (prev === mode) return;
+    await applyDisplayToggleFromPhysical(
+      () => {
+        deps.textConvertZh.value = mode;
+      },
+      () => {
+        deps.textConvertZh.value = prev;
+      },
+    );
+  }
+
+  async function setTextConvertLetterRead(mode: TextConvertWidthMode) {
+    const prev = deps.textConvertLetter.value;
+    if (prev === mode) return;
+    await applyDisplayToggleFromPhysical(
+      () => {
+        deps.textConvertLetter.value = mode;
+      },
+      () => {
+        deps.textConvertLetter.value = prev;
+      },
+    );
+  }
+
+  async function setTextConvertDigitRead(mode: TextConvertWidthMode) {
+    const prev = deps.textConvertDigit.value;
+    if (prev === mode) return;
+    await applyDisplayToggleFromPhysical(
+      () => {
+        deps.textConvertDigit.value = mode;
+      },
+      () => {
+        deps.textConvertDigit.value = prev;
+      },
+    );
+  }
+
   function toggleReaderFind() {
     if (deps.isVoiceReadBlocksFind?.value) return;
     deps.readerRef.value?.toggleFindWidget?.();
@@ -189,10 +251,14 @@ export function useAppReaderUiPrefs(deps: {
     increaseLineHeight,
     decreaseLineHeight,
     setMonacoFontFamily,
+    togglePinnedOtherFont,
     toggleMonacoCustomHighlight,
     toggleMonacoAdvancedWrapping,
     toggleCompressBlankLines,
     toggleLeadIndentFullWidth,
+    setTextConvertZhRead,
+    setTextConvertLetterRead,
+    setTextConvertDigitRead,
     toggleReaderFind,
     onToggleFind,
   };

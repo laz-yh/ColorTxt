@@ -26,9 +26,15 @@ import type {
   CharacterRosterEntry,
 } from "@shared/characterTypes";
 import {
+  formatCharacterAliasesList,
+  mergeCharacterAliases,
+} from "@shared/characterAliases";
+import {
   characterPortraitImageAbs,
   characterPortraitSessionDraftImageAbs,
   characterPortraitTmpImageAbs,
+  isPortraitUploadImagePath,
+  PORTRAIT_UPLOAD_OPEN_DIALOG_FILTERS,
   sanitizeBookFolderSegment,
 } from "@shared/characterPortraitPaths";
 import { runAiBookVectorIndexBuild } from "../ai/buildBookVectorIndex";
@@ -45,9 +51,15 @@ import type { CharacterCardTextureEffectId } from "@shared/characterCardTextureE
 import { DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT } from "@shared/characterCardTextureEffects";
 import CharacterRosterCard from "./CharacterRosterCard.vue";
 import { pushEscBeforeModal } from "../utils/modalStack";
+import {
+  collectFsPathsFromDataTransfer,
+  dataTransferLikelyHasExternalFiles,
+  DROP_ZONE_CHARACTER_PORTRAIT,
+} from "../utils/dragDropFsPaths";
 import IconButton from "./IconButton.vue";
 import ReaderImageLightbox from "./ReaderImageLightbox.vue";
 import type ReaderMain from "./ReaderMain.vue";
+import { useCharacterRosterReorder } from "../composables/useCharacterRosterReorder";
 import { appConfirm } from "../services/appDialog";
 
 const props = withDefaults(
@@ -119,6 +131,7 @@ watch(
 );
 
 const draftDisplayName = ref("");
+const draftAliases = ref("");
 const draftGender = ref<CharacterGender>("unknown");
 const draftAgeText = ref("");
 const draftIdentity = ref("");
@@ -197,6 +210,7 @@ const genTempReadableUrl = ref<string | null>(null);
 const genTmpAbsPath = ref<string | null>(null);
 const genApplying = ref(false);
 const drawerPortraitPreviewUrl = ref<string | null>(null);
+const drawerPortraitDragOverlayVisible = ref(false);
 /** 编辑抽屉内待保存立绘会话键：编辑时为角色 id，添加时为 uuid */
 const portraitEditSessionKey = ref("");
 
@@ -260,6 +274,37 @@ function ensureCardGridResizeObserver() {
   });
   cardGridResizeObserver.observe(grid);
 }
+
+const rosterReorderCan = computed(
+  () =>
+    hasOpenFile.value &&
+    !slideOpen.value &&
+    !generateOpen.value &&
+    !popoverCardId.value &&
+    !extracting.value &&
+    props.characterRoster.length > 1,
+);
+
+const rosterReorder = useCharacterRosterReorder({
+  roster: computed(() => props.characterRoster),
+  gridRef: cardGridRef,
+  canReorder: rosterReorderCan,
+  onCommit: (next) => {
+    emit("characterFileMetaPatch", { characterRoster: next });
+  },
+});
+
+const {
+  isDragging: rosterIsDragging,
+  draggingEntryId: rosterDraggingEntryId,
+  tiltEnabledFor: rosterTiltEnabledFor,
+  shouldSuppressFlip: rosterShouldSuppressFlip,
+  cancelActive: cancelRosterReorder,
+} = rosterReorder;
+
+watch([slideOpen, generateOpen, popoverCardId, extracting], () => {
+  cancelRosterReorder();
+});
 
 function onCardGridLayoutContextChange() {
   const ok =
@@ -651,7 +696,19 @@ watch(generateOpen, async (open, wasOpen) => {
   }
 });
 
-async function refreshPortraitUrlForEntry(e: CharacterRosterEntry) {
+function rosterPortraitFingerprint(
+  roster: readonly CharacterRosterEntry[],
+): string {
+  return roster
+    .map((e) => `${e.id}\0${e.displayName.trim()}`)
+    .sort()
+    .join("\n");
+}
+
+async function refreshPortraitUrlForEntry(
+  e: CharacterRosterEntry,
+  options?: { force?: boolean },
+) {
   const name = e.displayName.trim();
   if (!name) {
     delete portraitUrlById[e.id];
@@ -662,8 +719,17 @@ async function refreshPortraitUrlForEntry(e: CharacterRosterEntry) {
     const st = await window.colorTxt.stat(p);
     if (st.isFile) {
       const url = await window.colorTxt.pathToReadableLocalUrl(p);
-      if (url) portraitUrlById[e.id] = withUrlCacheBust(url);
-      else delete portraitUrlById[e.id];
+      if (url) {
+        const existing = portraitUrlById[e.id];
+        if (
+          !options?.force &&
+          existing &&
+          existing.split(/[?#]/)[0] === url.split(/[?#]/)[0]
+        ) {
+          return;
+        }
+        portraitUrlById[e.id] = withUrlCacheBust(url);
+      } else delete portraitUrlById[e.id];
     } else {
       delete portraitUrlById[e.id];
     }
@@ -684,13 +750,12 @@ watch(
       props.sessionFilePath,
       props.physicalReaderPath,
       props.characterPortraitCacheDir,
-      props.characterRoster,
+      rosterPortraitFingerprint(props.characterRoster),
     ] as const,
   () => {
     void refreshBookHash().then(() => refreshIndexReady());
     void refreshAllPortraitUrls();
   },
-  { deep: true },
 );
 
 watch(
@@ -738,6 +803,7 @@ function openAddSlide() {
   portraitEditSessionKey.value = crypto.randomUUID();
   editingId.value = null;
   draftDisplayName.value = "";
+  draftAliases.value = "";
   draftGender.value = "unknown";
   draftAgeText.value = "";
   draftIdentity.value = "";
@@ -765,6 +831,7 @@ function openEditSlide(entry: CharacterRosterEntry) {
   }
   editingId.value = entry.id;
   draftDisplayName.value = entry.displayName;
+  draftAliases.value = entry.aliases ?? "";
   draftGender.value = entry.gender;
   draftAgeText.value = entry.ageText;
   draftIdentity.value = entry.identity;
@@ -812,6 +879,7 @@ function closeSlide() {
   slideError.value = "";
   retrieveNoticeBanner.value = "";
   retrieveEverThisDrawer.value = false;
+  hideDrawerPortraitDragOverlay();
 }
 
 function abortRetrieveIndexBuild() {
@@ -899,6 +967,7 @@ function resetCharacterEditDrawerOnBookChange() {
   retrieveNoticeBanner.value = "";
   editingId.value = null;
   draftDisplayName.value = "";
+  draftAliases.value = "";
   draftGender.value = "unknown";
   draftAgeText.value = "";
   draftIdentity.value = "";
@@ -958,6 +1027,9 @@ function genderFromExtract(
 
 function buildRetrieveThinking(ex: PortraitExtractResult): string {
   const parts: string[] = [];
+  if (ex.aliases?.length) {
+    parts.push(`【别名】\n${formatCharacterAliasesList(ex.aliases)}`);
+  }
   if (ex.confidence_note?.trim()) {
     parts.push(`【可信度】\n${ex.confidence_note.trim()}`);
   }
@@ -986,6 +1058,14 @@ function getRetrieveBlockMessage(): string {
     return "向量模型未启用：无法从书籍中检索角色描写。";
   }
   return "";
+}
+
+/** 全书通用画风：已有内容则不再在 AI 检索时重复推断（用户清空后可再次生成） */
+function hasBookStyleForRetrieve(): boolean {
+  return Boolean(
+    props.characterBookStyle?.stylePrefixZh?.trim() ||
+      draftStylePrefix.value.trim(),
+  );
 }
 
 async function onRetrieve() {
@@ -1037,6 +1117,7 @@ async function onRetrieve() {
     const res = await window.colorTxt.ai.portraitExtract({
       bookHash: bookHash.value,
       characterName: draftDisplayName.value.trim(),
+      characterAliases: draftAliases.value.trim(),
       spoilerSafe: spoilerSafe.value,
       activeChapterIdx: props.activeChapterIdx,
       retrieveSessionId,
@@ -1056,29 +1137,33 @@ async function onRetrieve() {
     draftIdentity.value = ok.identity_zh.trim();
     draftBio.value = ok.bio_zh.trim();
     draftRelations.value = ok.relations_zh.trim();
+    draftAliases.value = formatCharacterAliasesList(ok.aliases ?? []);
     draftRetrieveThinking.value = buildRetrieveThinking(ok);
     absorbRetrieveTokenUsage(ok);
     retrieveTokenUsageShown.value = true;
 
-    const title = sessionBookTitle.value.trim();
-    const inf = await window.colorTxt.ai.portraitInferBookStyle({
-      bookHash: bookHash.value,
-      ...(title ? { fileTitle: title } : {}),
-      spoilerSafe: spoilerSafe.value,
-      activeChapterIdx: props.activeChapterIdx,
-      retrieveSessionId,
-    });
-    if (!("error" in inf)) {
-      absorbRetrieveTokenUsage(inf);
-      const nextStyle: CharacterBookStylePersisted = {
-        stylePrefixZh: inf.style_sd_prefix_zh.trim(),
-        styleNoteZh: inf.note_zh.trim(),
-        updatedAt: Date.now(),
-      };
-      draftStylePrefix.value = nextStyle.stylePrefixZh;
-      draftStyleNote.value = nextStyle.styleNoteZh ?? "";
-      emit("characterFileMetaPatch", { characterBookStyle: nextStyle });
+    if (!hasBookStyleForRetrieve()) {
+      const title = sessionBookTitle.value.trim();
+      const inf = await window.colorTxt.ai.portraitInferBookStyle({
+        bookHash: bookHash.value,
+        ...(title ? { fileTitle: title } : {}),
+        spoilerSafe: spoilerSafe.value,
+        activeChapterIdx: props.activeChapterIdx,
+        retrieveSessionId,
+      });
+      if (!("error" in inf)) {
+        absorbRetrieveTokenUsage(inf);
+        const nextStyle: CharacterBookStylePersisted = {
+          stylePrefixZh: inf.style_sd_prefix_zh.trim(),
+          styleNoteZh: inf.note_zh.trim(),
+          updatedAt: Date.now(),
+        };
+        draftStylePrefix.value = nextStyle.stylePrefixZh;
+        draftStyleNote.value = nextStyle.styleNoteZh ?? "";
+        emit("characterFileMetaPatch", { characterBookStyle: nextStyle });
+      }
     }
+
     retrieveNoticeBanner.value = "";
   } catch (e) {
     if (!isPortraitRetrieveAbortError(e)) {
@@ -1101,9 +1186,16 @@ function onStopPortraitRetrieve() {
 }
 
 function buildEntryFromDraft(id: string): CharacterRosterEntry {
+  const displayName = draftDisplayName.value.trim();
   return {
     id,
-    displayName: draftDisplayName.value.trim(),
+    displayName,
+    aliases: formatCharacterAliasesList(
+      mergeCharacterAliases({
+        displayName,
+        userInput: draftAliases.value,
+      }),
+    ),
     gender: draftGender.value,
     ageText: draftAgeText.value.trim(),
     identity: draftIdentity.value.trim(),
@@ -1150,6 +1242,7 @@ async function onSaveSlide() {
     );
   }
 
+  let portraitCommitted = false;
   const sk = portraitEditSessionKey.value.trim();
   if (sk) {
     try {
@@ -1165,6 +1258,7 @@ async function onSaveSlide() {
           slideError.value = cp.error ?? "立绘保存失败";
           return;
         }
+        portraitCommitted = true;
         try {
           await window.colorTxt.removePath(draftPath);
         } catch {
@@ -1180,6 +1274,18 @@ async function onSaveSlide() {
     characterBookStyle: stylePatch,
     characterRoster: nextRoster,
   });
+
+  if (portraitCommitted) {
+    const savedId =
+      editingId.value ?? nextRoster[nextRoster.length - 1]?.id ?? "";
+    const savedEntry = savedId
+      ? nextRoster.find((r) => r.id === savedId)
+      : undefined;
+    if (savedEntry) {
+      await refreshPortraitUrlForEntry(savedEntry, { force: true });
+    }
+  }
+
   closeSlide();
 }
 
@@ -1324,19 +1430,15 @@ async function onGenApply() {
   }
 }
 
-async function onDrawerUploadPortrait() {
+async function applyPortraitFromFilePath(fromPath: string) {
   const sk = portraitEditSessionKey.value.trim();
   if (!sk) {
     await window.colorTxt.alert("请关闭并重新打开编辑面板后再试。");
     return;
   }
-  const r = await window.colorTxt.showOpenDialog({ properties: ["openFile"] });
-  const picked =
-    r.canceled || r.filePaths.length === 0 ? "" : (r.filePaths[0] ?? "");
-  if (!picked.trim()) return;
   const dest = await portraitSessionDraftAbs(sk);
   const cp = await window.colorTxt.characterPortrait.copyFileTo({
-    from: picked.trim(),
+    from: fromPath.trim(),
     to: dest,
   });
   if (!cp.ok) {
@@ -1344,6 +1446,72 @@ async function onDrawerUploadPortrait() {
     return;
   }
   await refreshDrawerPortraitPreview();
+}
+
+async function onDrawerUploadPortrait() {
+  const r = await window.colorTxt.showOpenDialog({
+    properties: ["openFile"],
+    filters: PORTRAIT_UPLOAD_OPEN_DIALOG_FILTERS,
+  });
+  const picked =
+    r.canceled || r.filePaths.length === 0 ? "" : (r.filePaths[0] ?? "");
+  if (!picked.trim()) return;
+  await applyPortraitFromFilePath(picked);
+}
+
+function canAcceptPortraitDrop(): boolean {
+  return !extracting.value && Boolean(draftDisplayName.value.trim());
+}
+
+function showDrawerPortraitDragOverlay() {
+  drawerPortraitDragOverlayVisible.value = canAcceptPortraitDrop();
+}
+
+function hideDrawerPortraitDragOverlay() {
+  drawerPortraitDragOverlayVisible.value = false;
+}
+
+function onDrawerPortraitDragEnter(ev: DragEvent) {
+  if (!canAcceptPortraitDrop()) return;
+  if (!dataTransferLikelyHasExternalFiles(ev.dataTransfer)) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  showDrawerPortraitDragOverlay();
+}
+
+function onDrawerPortraitDragOver(ev: DragEvent) {
+  if (!canAcceptPortraitDrop()) {
+    hideDrawerPortraitDragOverlay();
+    return;
+  }
+  if (!dataTransferLikelyHasExternalFiles(ev.dataTransfer)) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  showDrawerPortraitDragOverlay();
+  try {
+    ev.dataTransfer!.dropEffect = "copy";
+  } catch {
+    /* ignore */
+  }
+}
+
+function onDrawerPortraitDragLeave(ev: DragEvent) {
+  const root = ev.currentTarget;
+  if (!(root instanceof HTMLElement)) return;
+  const related = ev.relatedTarget;
+  if (related instanceof Node && root.contains(related)) return;
+  hideDrawerPortraitDragOverlay();
+}
+
+async function onDrawerPortraitDrop(ev: DragEvent) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  hideDrawerPortraitDragOverlay();
+  if (extracting.value || !draftDisplayName.value.trim()) return;
+  const paths = collectFsPathsFromDataTransfer(ev.dataTransfer);
+  const picked = paths.find((p) => isPortraitUploadImagePath(p));
+  if (!picked) return;
+  await applyPortraitFromFilePath(picked);
 }
 
 async function onClearAllCharacters() {
@@ -1393,21 +1561,37 @@ onBeforeUnmount(() => {
           <div v-if="characterRoster.length === 0" class="emptySlot">
             <div class="empty">当前文件暂无角色</div>
           </div>
-          <div v-else class="characterMainScroll">
-            <div ref="cardGridRef" class="cardGrid">
-              <CharacterRosterCard
-                v-for="row in characterRoster"
-                :key="row.id"
-                :entry="row"
-                :portrait-url="portraitUrlById[row.id] ?? null"
-                :flipped="!!flipped[row.id]"
-                :name-zoom="rosterNameZoom"
-                :texture-effect="characterCardTextureEffect"
-                :popover-open="popoverCardId === row.id"
-                @toggle-flip="toggleFlip(row.id)"
-                @edit="openEditSlide(row)"
-                @view-portrait="toggleCharacterCardPopover(row)"
-              />
+          <div
+            v-else
+            class="characterMainScroll"
+            :class="{ 'characterMainScroll--reorderLock': rosterIsDragging }"
+          >
+            <div
+              ref="cardGridRef"
+              class="cardGrid"
+              :class="{ 'cardGrid--reordering': rosterIsDragging }"
+            >
+              <div
+                v-for="entry in characterRoster"
+                :key="entry.id"
+                class="cardGridSlot"
+                :data-entry-id="entry.id"
+              >
+                <CharacterRosterCard
+                  :entry="entry"
+                  :portrait-url="portraitUrlById[entry.id] ?? null"
+                  :flipped="!!flipped[entry.id]"
+                  :name-zoom="rosterNameZoom"
+                  :texture-effect="characterCardTextureEffect"
+                  :popover-open="popoverCardId === entry.id"
+                  :tilt-enabled="rosterTiltEnabledFor(entry.id)"
+                  :reorder-dragging="rosterDraggingEntryId === entry.id"
+                  :suppress-flip-check="() => rosterShouldSuppressFlip(entry.id)"
+                  @toggle-flip="toggleFlip(entry.id)"
+                  @edit="openEditSlide(entry)"
+                  @view-portrait="toggleCharacterCardPopover(entry)"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1419,7 +1603,7 @@ onBeforeUnmount(() => {
         <div class="sidebarTabFooterEnd">
           <button
             type="button"
-            class="link primary hoverMode sidebarTabFooterAction"
+            class="link hoverMode sidebarTabFooterAction"
             @click="openAddSlide"
           >
             添加角色
@@ -1564,12 +1748,27 @@ onBeforeUnmount(() => {
             <span>{{ retrieveNoticeBanner }}</span>
           </div>
 
+          <div class="field">
+            <span class="label">别名</span>
+            <div :inert="extracting">
+              <input
+                v-model="draftAliases"
+                type="text"
+                class="drawerNameInput"
+                placeholder="逗号分隔"
+                spellcheck="false"
+                :disabled="extracting"
+              />
+            </div>
+          </div>
+
           <div class="drawerMainFields" :inert="extracting">
             <div class="field">
               <span class="label">立绘</span>
               <div class="drawerPortraitBlock">
                 <div
                   class="drawerPortraitFrame"
+                  :data-drop-zone="DROP_ZONE_CHARACTER_PORTRAIT"
                   :class="{
                     portraitPreviewClickable: Boolean(drawerPortraitPreviewUrl),
                   }"
@@ -1578,6 +1777,10 @@ onBeforeUnmount(() => {
                   "
                   role="presentation"
                   @click="openPortraitLightboxFromUrl(drawerPortraitPreviewUrl)"
+                  @dragenter="onDrawerPortraitDragEnter"
+                  @dragover="onDrawerPortraitDragOver"
+                  @dragleave="onDrawerPortraitDragLeave"
+                  @drop="onDrawerPortraitDrop"
                 >
                   <img
                     v-if="drawerPortraitPreviewUrl"
@@ -1586,6 +1789,15 @@ onBeforeUnmount(() => {
                     class="drawerPortraitImg"
                   />
                   <span v-else class="drawerPortraitPlaceholder">暂无立绘</span>
+                  <Transition name="drawerPortraitDropOverlay">
+                    <div
+                      v-if="drawerPortraitDragOverlayVisible"
+                      class="drawerPortraitDropOverlay"
+                      aria-hidden="true"
+                    >
+                      <p class="drawerPortraitDropOverlayText">拖放图片</p>
+                    </div>
+                  </Transition>
                 </div>
                 <div class="drawerPortraitBtns">
                   <button
@@ -1693,7 +1905,7 @@ onBeforeUnmount(() => {
           <div class="drawerFootEnd">
             <button
               type="button"
-              class="link danger hoverMode drawerFootAction"
+              class="link hoverMode drawerFootAction"
               :disabled="extracting"
               @click="closeSlide"
             >
@@ -1701,7 +1913,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              class="link primary hoverMode drawerFootAction"
+              class="link success drawerFootAction"
               :disabled="extracting || !draftDisplayName.trim()"
               @click="onSaveSlide"
             >
@@ -1895,6 +2107,48 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
   align-items: start;
+}
+
+.cardGridSlot {
+  min-width: 0;
+  touch-action: pan-y;
+}
+
+.cardGrid--reordering .cardGridSlot:not(.cardGridSlot--ghost):not(.cardGridSlot--drag) {
+  transition: none;
+}
+
+.cardGrid--reordering .cardGridSlot {
+  touch-action: none;
+}
+
+.cardGridSlot--ghost,
+.cardGridSlot--drag {
+  transition: none;
+}
+
+.cardGridSlot--ghost {
+  box-sizing: border-box;
+  align-self: start;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  transform: none !important;
+  border-radius: 8px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.cardGridSlot--ghost > * {
+  display: none;
+}
+
+.cardGrid--reordering .cardShellWrap:hover,
+.cardGrid--reordering .cardShellWrap:focus-within {
+  z-index: 0;
+}
+
+.characterMainScroll--reorderLock {
+  user-select: none;
 }
 
 .cardGrid:has(.cardShell--popover) .cardShell:not(.cardShell--popover) {
@@ -2122,6 +2376,7 @@ onBeforeUnmount(() => {
 }
 
 .drawerPortraitFrame {
+  position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
   max-height: 200px;
@@ -2133,6 +2388,39 @@ onBeforeUnmount(() => {
   justify-content: center;
   overflow: hidden;
   box-sizing: border-box;
+}
+
+.drawerPortraitDropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.drawerPortraitDropOverlayText {
+  margin: 0;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background-color: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  text-align: center;
+}
+
+.drawerPortraitDropOverlay-enter-active,
+.drawerPortraitDropOverlay-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.drawerPortraitDropOverlay-enter-from,
+.drawerPortraitDropOverlay-leave-to {
+  opacity: 0;
 }
 
 .portraitPreviewClickable {
@@ -2372,6 +2660,49 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
+/* 跟手拖动层由 Sortable 挂到 body，须全局样式 */
+.cardGridSlot--drag,
+.cardGridReleaseFlyer {
+  opacity: 1 !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.cardGridSlot--drag *,
+.cardGridReleaseFlyer * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.cardGridSlot--drag {
+  z-index: 10050;
+  pointer-events: none;
+  transition: none;
+}
+
+.cardGridSlot--drag > .cardShellWrap {
+  transform: scale(1);
+  transform-origin: center center;
+  filter: none;
+}
+
+.cardGridSlot--dropLanding {
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.cardGridSlot--dropLanding > .cardShellWrap {
+  visibility: hidden;
+}
+
+.cardGridReleaseTarget {
+  border-radius: 8px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .charCardPopoverBackdrop {
   position: fixed;
   inset: 0;

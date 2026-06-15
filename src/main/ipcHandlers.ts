@@ -33,7 +33,10 @@ import {
 } from "./dialogInvoke";
 import type { CreateMainWindow } from "./windowFactory";
 import { registerLocalFileForColortxtUrl } from "./colortxtLocalProtocol";
-import { registerWindowCloseGuardIpc } from "./windowCloseGuard";
+import {
+  markAppQuittingForClose,
+  registerWindowCloseGuardIpc,
+} from "./windowCloseGuard";
 import {
   getToggleVisibilityShortcut,
   resumeGlobalShortcutsAfterRecording,
@@ -43,10 +46,11 @@ import {
 } from "./globalShortcuts";
 import { registerAiIpcHandlers } from "./registerAiIpc";
 import { registerSecretsIpcHandlers } from "./registerSecretsIpc";
+import { registerTextConvertIpcHandlers } from "./registerTextConvertIpc";
 import {
   copyImageToAbsolutePath,
   migrateCharacterPortraitCacheRoot,
-} from "./characterPortraitFs";
+} from "./ai/tools/characterPortraitFs";
 import { synthesizeEdgeTtsMp3 } from "./voiceReadEdgeTts";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
 
@@ -316,6 +320,7 @@ export function registerMainIpcHandlers(
   );
 
   ipcMain.on("app:quit", () => {
+    markAppQuittingForClose();
     app.quit();
   });
 
@@ -870,4 +875,5 @@ export function registerMainIpcHandlers(
 
   registerAiIpcHandlers();
   registerSecretsIpcHandlers();
+  registerTextConvertIpcHandlers();
 }

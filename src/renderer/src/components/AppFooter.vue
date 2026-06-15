@@ -24,7 +24,10 @@ const props = withDefaults(
     /** 底栏路径菜单：「在文件管理器中显示」是否可用 */
     pathMenuRevealEnabled: boolean;
     pathMenuReloadEnabled: boolean;
+    pathMenuReconvertEnabled: boolean;
     pathMenuCloseEnabled: boolean;
+    /** 编辑态底栏光标/选区文案（空串不展示） */
+    editCursorLabel?: string;
   }>(),
   {
     loadingProgressPercent: null,
@@ -32,13 +35,16 @@ const props = withDefaults(
     encodingActionsEnabled: false,
     pathMenuRevealEnabled: true,
     pathMenuReloadEnabled: false,
+    pathMenuReconvertEnabled: false,
     pathMenuCloseEnabled: false,
+    editCursorLabel: "",
   },
 );
 
 const emit = defineEmits<{
   pathRevealInFolder: [];
   pathReload: [];
+  pathReconvert: [];
   pathClose: [];
   saveFileAsEncoding: [encoding: "utf8" | "gb2312"];
 }>();
@@ -59,24 +65,39 @@ const encodingMenuItems = [
   { id: "gb2312", label: "保存为 GB2312" },
 ] as const;
 
-const pathMenuItems = computed(() => [
-  {
-    id: "reveal",
-    label: "在文件管理器中显示",
-    disabled: !props.pathMenuRevealEnabled,
-  },
-  {
-    id: "reload",
-    label: "重新加载",
-    disabled: !props.pathMenuReloadEnabled,
-  },
-  {
+const pathMenuItems = computed(() => {
+  const items: {
+    id: string;
+    label: string;
+    type?: "warning" | "danger";
+    disabled?: boolean;
+  }[] = [
+    {
+      id: "reveal",
+      label: "在文件管理器中显示",
+      disabled: !props.pathMenuRevealEnabled,
+    },
+    {
+      id: "reload",
+      label: "重新加载",
+      disabled: !props.pathMenuReloadEnabled,
+    },
+  ];
+  if (props.pathMenuReconvertEnabled) {
+    items.push({
+      id: "reconvert",
+      label: "重新转换",
+      type: "warning",
+    });
+  }
+  items.push({
     id: "close",
     label: "关闭文件",
-    type: "danger" as const,
+    type: "danger",
     disabled: !props.pathMenuCloseEnabled,
-  },
-]);
+  });
+  return items;
+});
 
 function closePathMenu() {
   pathMenuOpen.value = false;
@@ -133,6 +154,7 @@ function onPathMenuSelect(id: string) {
   closePathMenu();
   if (id === "reveal") emit("pathRevealInFolder");
   else if (id === "reload") emit("pathReload");
+  else if (id === "reconvert") emit("pathReconvert");
   else if (id === "close") emit("pathClose");
 }
 </script>
@@ -167,19 +189,22 @@ function onPathMenuSelect(id: string) {
         </template>
         <template v-else>加载中...</template>
       </span>
-      <span v-else>
-        阅读进度：<span
-          class="footer-reading-progress-pct"
-          :class="{
-            'footer-reading-progress-pct--placeholder':
-              readingProgressPlaceholder,
-            'footer-reading-progress-pct--complete': readingProgressComplete,
-          }"
-          >{{ readingProgressPercentPart }}</span
-        >{{ readingProgressDetailPart }}
-      </span>
-      <template v-if="!ebookParsing">
-        <span v-if="!loading">总字数：{{ totalCharCountText }}</span>
+      <template v-else>
+        <span v-if="editCursorLabel" class="footerEditCursor">{{
+          editCursorLabel
+        }}</span>
+        <span>
+          阅读进度：<span
+            class="footer-reading-progress-pct"
+            :class="{
+              'footer-reading-progress-pct--placeholder':
+                readingProgressPlaceholder,
+              'footer-reading-progress-pct--complete': readingProgressComplete,
+            }"
+            >{{ readingProgressPercentPart }}</span
+          >{{ readingProgressDetailPart }}
+        </span>
+        <span>总字数：{{ totalCharCountText }}</span>
         <span>文件大小：{{ fileSizeText }}</span>
         <span class="footerEncodingWrap"
           >编码：<button
@@ -304,6 +329,10 @@ function onPathMenuSelect(id: string) {
 
 .footer-reading-progress-pct--complete {
   color: var(--success);
+}
+
+.footerEditCursor {
+  flex-shrink: 0;
 }
 
 .footerEncodingWrap {

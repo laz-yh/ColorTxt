@@ -21,11 +21,11 @@ export {
 } from "@shared/packageDerived";
 
 export const fileListEmptyHint = "无文件";
-export const fileListDropHint = "（拖放目录或 .txt 文件到这里）";
+export const fileListDropHint = "（拖放目录或文件到这里）";
 export const fileListNoMatchHint = "无匹配文件";
 
 export const defaultReaderIdleHint = "未打开文件";
-export const defaultReaderOpenHint = "（拖放 .txt 文件到窗口）";
+export const defaultReaderOpenHint = "（拖放文件到这里）";
 /** 已打开但解码后无正文的文件（如 0 字节） */
 export const emptyFileHintText = "文件已打开，但没有内容";
 
@@ -93,6 +93,11 @@ export const defaultCompressBlankLines = false;
 export const defaultCompressBlankKeepOneBlank = false;
 /** 为 true 时正文行统一行首两个全角空格（章节标题行与空行除外） */
 export const defaultLeadIndentFullWidth = false;
+export {
+  defaultTextConvertDigitMode,
+  defaultTextConvertLetterMode,
+  defaultTextConvertZhMode,
+} from "@shared/textConvertTypes";
 export const defaultShowChapterCounts = true;
 /** 少于该字数的片段不作为章节（作用于章节列表/导航） */
 export const defaultChapterMinCharCount = 1;
@@ -114,6 +119,8 @@ export const defaultReaderEditMinimap = false;
 export const defaultEditAutoRefreshChapterList = true;
 /** 自动刷新章节列表的最大行数（含） */
 export const editAutoRefreshChapterListMaxLines = 300_000;
+
+export { defaultAiSmartFormatSettings } from "@shared/aiSmartFormatTypes";
 
 /** 默认「最近打开」条数上限（可被设置覆盖） */
 export const defaultRecentFilesHistoryLimit = 20;

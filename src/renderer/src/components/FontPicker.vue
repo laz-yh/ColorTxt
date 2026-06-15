@@ -23,13 +23,16 @@ import {
 const props = withDefaults(
   defineProps<{
     monacoFontFamily: string;
+    /** 已钉在外层列表的「其他字体」名称 */
+    pinnedOtherFonts?: string[];
     disabled?: boolean;
   }>(),
-  { disabled: false },
+  { pinnedOtherFonts: () => [], disabled: false },
 );
 
 const emit = defineEmits<{
   setMonacoFont: [fontFamily: string];
+  togglePinOtherFont: [fontName: string];
 }>();
 
 const fontMenuOpen = ref(false);
@@ -80,6 +83,26 @@ const selectedOtherFontNormalized = computed(() => {
   return (selectedFont.value.otherName ?? "").trim();
 });
 
+function normalizeOtherFontName(name: string): string {
+  return name.trim();
+}
+
+const outerOtherFontItems = computed(() => {
+  const seen = new Set<string>();
+  const items: { name: string; pinned: boolean }[] = [];
+  for (const raw of props.pinnedOtherFonts) {
+    const name = normalizeOtherFontName(raw);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    items.push({ name, pinned: true });
+  }
+  const selected = selectedOtherFontNormalized.value;
+  if (selected && !seen.has(selected)) {
+    items.push({ name: selected, pinned: false });
+  }
+  return items;
+});
+
 function setFontAndClose(fontFamily: string) {
   // 切换字体后保持面板打开，便于连续预览与比较
   emit("setMonacoFont", fontFamily);
@@ -127,9 +150,23 @@ function chooseOtherFont(fontName: string) {
   setFontAndClose(cssFontFamilyStack([fontName]));
 }
 
+function onOtherFontRowClick(fontName: string) {
+  if (isOtherFontSelected(fontName)) {
+    void openOtherFonts();
+    return;
+  }
+  chooseOtherFont(fontName);
+}
+
+function onPinOtherFontClick(fontName: string, ev: MouseEvent) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  emit("togglePinOtherFont", fontName);
+}
+
 function isOtherFontSelected(fontName: string) {
   if (selectedFont.value.key !== "other") return false;
-  return fontName.trim() === (selectedFont.value.otherName ?? "").trim();
+  return normalizeOtherFontName(fontName) === selectedOtherFontNormalized.value;
 }
 
 function closeFontMenu() {
@@ -207,34 +244,61 @@ onBeforeUnmount(() => {
       @click.stop="toggleFontMenu"
     />
 
-    <div v-if="fontMenuOpen" class="fontMenu" @click.stop>
+    <div
+      v-if="fontMenuOpen"
+      class="fontMenu"
+      :class="{ 'fontMenu--other': showOtherFontsPanel }"
+      @click.stop
+    >
       <div v-if="!showOtherFontsPanel" class="fontMenuList">
-        <button
-          v-for="item in presetFontMenuItems"
-          :key="item.key"
-          class="fontMenuItem"
-          :class="{ active: selectedFont.key === item.key }"
-          :style="{ fontFamily: cssFontFamilyStack(item.stack) }"
-          @click="choosePreset(item.key)"
-        >
-          {{ item.label }}
-        </button>
+        <div class="fontMenuListBody">
+          <button
+            v-for="item in presetFontMenuItems"
+            :key="item.key"
+            class="fontMenuItem"
+            :class="{ active: selectedFont.key === item.key }"
+            :style="{ fontFamily: cssFontFamilyStack(item.stack) }"
+            @click="choosePreset(item.key)"
+          >
+            {{ item.label }}
+          </button>
 
-        <button
-          v-if="selectedFont.key === 'other' && selectedFont.otherName"
-          class="fontMenuItem"
-          :class="{ active: selectedFont.key === 'other' }"
-          :style="{
-            fontFamily: cssFontFamilyStack([selectedFont.otherName]),
-          }"
-          @click="void openOtherFonts()"
-        >
-          {{ selectedFont.otherName }}
-        </button>
+          <div
+            v-for="item in outerOtherFontItems"
+            :key="item.name"
+            class="fontMenuItemRow"
+            :class="{ active: isOtherFontSelected(item.name) }"
+          >
+            <button
+              type="button"
+              class="fontMenuItem fontMenuItem--other"
+              :style="{ fontFamily: cssFontFamilyStack([item.name]) }"
+              @click="onOtherFontRowClick(item.name)"
+            >
+              {{ item.name }}
+            </button>
+            <button
+              type="button"
+              class="fontMenuPinBtn"
+              :class="{ 'fontMenuPinBtn--active': item.pinned }"
+              :title="item.pinned ? '取消固定' : '固定到列表'"
+              :aria-label="item.pinned ? '取消固定' : '固定到列表'"
+              :aria-pressed="item.pinned"
+              @click="onPinOtherFontClick(item.name, $event)"
+            >
+              <span
+                class="fontMenuPinIcon"
+                v-html="item.pinned ? icons.pinActive : icons.pin"
+              ></span>
+            </button>
+          </div>
+        </div>
 
-        <div class="fontMenuDivider"></div>
+        <div class="fontMenuListFooter">
+          <div class="fontMenuDivider"></div>
 
-        <button class="fontMenuItem" @click="openOtherFonts">其他字体</button>
+          <button class="fontMenuItem" @click="openOtherFonts">其他字体</button>
+        </div>
       </div>
 
       <div v-else class="fontOtherPanel">
@@ -311,11 +375,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .fontPicker {
   position: relative;
+  display: inline-flex;
 }
 
 .fontMenu {
   position: absolute;
-  top: 38px;
+  top: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 1001;
@@ -326,6 +391,10 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   padding: 6px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.fontMenu--other {
+  min-width: 220px;
 }
 
 .fontMenu::before,
@@ -363,6 +432,25 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: 70vh;
+  min-height: 0;
+}
+
+.fontMenuListBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.fontMenuListFooter {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .fontMenuItem {
@@ -397,6 +485,95 @@ onBeforeUnmount(() => {
   background: var(--list-item-bg-active);
 }
 
+.fontMenuItemRow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 36px;
+  border-radius: 4px;
+}
+
+.fontMenuItemRow:hover {
+  background: var(--list-item-bg-hover);
+}
+
+.fontMenuItemRow.active {
+  background: var(--list-item-bg-active);
+}
+
+.fontMenuItemRow.active .fontMenuItem--other {
+  color: var(--list-item-fg-active);
+}
+
+.fontMenuItem--other {
+  flex: 1;
+  min-width: 0;
+}
+
+.fontMenuItemRow:hover .fontMenuItem--other,
+.fontMenuItemRow.active .fontMenuItem--other {
+  background: transparent;
+}
+
+.fontMenuItem--other:hover {
+  background: transparent;
+}
+
+.fontMenuPinBtn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+  transition: color 0.15s ease;
+  padding: 0;
+}
+
+.fontMenuPinBtn:not(.fontMenuPinBtn--active) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fontMenuItemRow:hover .fontMenuPinBtn:not(.fontMenuPinBtn--active),
+.fontMenuItemRow:focus-within .fontMenuPinBtn:not(.fontMenuPinBtn--active) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.fontMenuPinBtn--active {
+  color: var(--primary);
+}
+
+.fontMenuPinBtn--active:hover {
+  color: var(--muted);
+}
+
+.fontMenuPinBtn:hover:not(.fontMenuPinBtn--active) {
+  color: var(--primary);
+}
+
+.fontMenuPinIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fontMenuPinIcon :deep(svg) {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.fontMenuPinIcon :deep(path) {
+  fill: currentColor;
+}
+
 .fontOtherPanel {
   display: flex;
   flex-direction: column;
@@ -425,6 +602,12 @@ onBeforeUnmount(() => {
 .fontOtherTitle {
   font-size: 12px;
   color: var(--fg);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.fontOtherHeader .btn {
+  flex-shrink: 0;
 }
 
 .fontOtherLoading,

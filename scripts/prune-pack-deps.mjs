@@ -6,17 +6,22 @@
  * 裁剪同时作用于将打入 app.asar 与 app.asar.unpacked 的依赖树。
  * 打包后若需恢复完整依赖：npm ci
  *
- * 用法：node scripts/prune-pack-deps.mjs [--platform win32|darwin|linux] [--arch x64|arm64]
+ * 用法：node scripts/prune-pack-deps.mjs [--platform win32|darwin|linux] [--arch x64|arm64] [--node-modules <path>]
  */
 import fs from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
-const nm = path.join(root, "node_modules");
 
 /** @param {string} abs */
 function rm(abs) {
-  if (fs.existsSync(abs)) fs.rmSync(abs, { recursive: true, force: true });
+  if (!fs.existsSync(abs)) return;
+  fs.rmSync(abs, {
+    recursive: true,
+    force: true,
+    maxRetries: 3,
+    retryDelay: 100,
+  });
 }
 
 /**
@@ -36,11 +41,20 @@ function parseArgs() {
   const argv = process.argv.slice(2);
   let platform = process.env.npm_config_platform || process.platform;
   let arch = process.env.npm_config_arch || process.arch;
+  let nodeModulesRoot = null;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--platform" && argv[i + 1]) platform = argv[++i];
     if (argv[i] === "--arch" && argv[i + 1]) arch = argv[++i];
+    if (argv[i] === "--node-modules" && argv[i + 1]) {
+      nodeModulesRoot = path.resolve(argv[++i]);
+    }
   }
-  return resolveOnnxPlatformArch(platform, arch);
+  const { plat, arch: archName } = resolveOnnxPlatformArch(platform, arch);
+  return {
+    plat,
+    arch: archName,
+    nm: nodeModulesRoot ?? path.join(root, "node_modules"),
+  };
 }
 
 /**
@@ -67,11 +81,20 @@ function sqliteVecPlatformPackageName(plat, arch) {
   return `sqlite-vec-${os}-${arch}`;
 }
 
+/** Linux AppImage / electron-builder 常用 x86_64 目录名，与 prune 入参 x64 对齐 */
+function onnxRuntimeArchDirsToKeep(plat, archName) {
+  const keep = new Set([archName]);
+  if (plat === "linux" && archName === "x64") keep.add("x86_64");
+  return keep;
+}
+
 /** @param {string} nodeModulesRoot */
 function pruneOnnxRuntimeNode(nodeModulesRoot, plat, archName) {
   const ortRoot = path.join(nodeModulesRoot, "onnxruntime-node");
   const napiRoot = path.join(ortRoot, "bin", "napi-v3");
   if (!fs.existsSync(napiRoot)) return;
+
+  const keepArchs = onnxRuntimeArchDirsToKeep(plat, archName);
 
   for (const platformDir of fs.readdirSync(napiRoot, { withFileTypes: true })) {
     if (!platformDir.isDirectory()) continue;
@@ -82,7 +105,7 @@ function pruneOnnxRuntimeNode(nodeModulesRoot, plat, archName) {
     }
     for (const archDir of fs.readdirSync(platformPath, { withFileTypes: true })) {
       if (!archDir.isDirectory()) continue;
-      if (archDir.name !== archName) {
+      if (!keepArchs.has(archDir.name)) {
         rm(path.join(platformPath, archDir.name));
       }
     }
@@ -102,6 +125,26 @@ function pruneOnnxDirectMl(nodeModulesRoot, plat, arch) {
     "DirectML.dll",
   );
   rm(dml);
+}
+
+/** Linux x64 postinstall 可能已拉取 CUDA/TensorRT EP（约 300MB+）；内置向量仅用 CPU */
+function pruneOnnxLinuxGpuProviders(nodeModulesRoot, plat, arch) {
+  if (plat !== "linux" || arch !== "x64") return;
+  const dir = path.join(
+    nodeModulesRoot,
+    "onnxruntime-node",
+    "bin",
+    "napi-v3",
+    "linux",
+    "x64",
+  );
+  if (!fs.existsSync(dir)) return;
+  for (const name of [
+    "libonnxruntime_providers_cuda.so",
+    "libonnxruntime_providers_tensorrt.so",
+  ]) {
+    rm(path.join(dir, name));
+  }
 }
 
 /** @param {string} nodeModulesRoot */
@@ -341,13 +384,104 @@ function ensureSharpPackStub(nodeModulesRoot) {
   fs.cpSync(SHARP_STUB_SRC, dest, { recursive: true });
 }
 
-function main() {
-  if (!fs.existsSync(nm)) {
-    console.warn("[prune-pack-deps] skip: node_modules not found");
+/** 仅保留当前平台的 @node-rs/jieba-* 原生扩展包 */
+function pruneJiebaPlatformPackages(nodeModulesRoot, plat, arch) {
+  const jiebaRoot = path.join(nodeModulesRoot, "@node-rs", "jieba");
+  if (fs.existsSync(jiebaRoot)) {
+    rm(path.join(jiebaRoot, "README.md"));
+  }
+  const scope = path.join(nodeModulesRoot, "@node-rs");
+  if (!fs.existsSync(scope)) return;
+  const platToken =
+    plat === "darwin"
+      ? arch === "arm64"
+        ? "darwin-arm64"
+        : "darwin-x64"
+      : plat === "linux"
+        ? arch === "arm64"
+          ? "linux-arm64-gnu"
+          : "linux-x64-gnu"
+        : arch === "arm64"
+          ? "win32-arm64-msvc"
+          : "win32-x64-msvc";
+  const keep = `jieba-${platToken}`;
+  for (const ent of fs.readdirSync(scope, { withFileTypes: true })) {
+    if (!ent.isDirectory()) continue;
+    if (ent.name.startsWith("jieba-") && ent.name !== keep) {
+      rm(path.join(scope, ent.name));
+    }
+  }
+}
+
+/**
+ * OpenCC：运行时需 node/opencc.js、prebuilds/assets 词典，以及 **electron-rebuild** 的
+ * build/Release/opencc.node。npm 自带 prebuilds/*.node 面向 Node ABI，在 Electron 下会报
+ *「not a valid Win32 application」，故 postinstall 重建后优先保留 build/Release。
+ * @param {string} nodeModulesRoot
+ * @param {string} plat
+ * @param {string} arch
+ */
+function pruneOpencc(nodeModulesRoot, plat, arch) {
+  const pkgRoot = path.join(nodeModulesRoot, "opencc");
+  if (!fs.existsSync(pkgRoot)) return;
+
+  for (const name of ["deps", "src", "data", "scripts", "binding.gyp", "bin"]) {
+    rm(path.join(pkgRoot, name));
+  }
+
+  const nodeDir = path.join(pkgRoot, "node");
+  if (fs.existsSync(nodeDir)) {
+    rm(path.join(nodeDir, "cli.js"));
+  }
+
+  const prebuildsRoot = path.join(pkgRoot, "prebuilds");
+  const dropPrebuildPlatformDirs = () => {
+    if (!fs.existsSync(prebuildsRoot)) return;
+    for (const ent of fs.readdirSync(prebuildsRoot, { withFileTypes: true })) {
+      if (ent.isDirectory() && ent.name !== "assets") {
+        rm(path.join(prebuildsRoot, ent.name));
+      }
+    }
+  };
+
+  const buildRoot = path.join(pkgRoot, "build");
+  const releaseNode = path.join(buildRoot, "Release", "opencc.node");
+
+  if (fs.existsSync(releaseNode)) {
+    const nodeBytes = fs.readFileSync(releaseNode);
+    try {
+      rm(buildRoot);
+    } catch (err) {
+      const code = err && typeof err === "object" && "code" in err ? err.code : "";
+      if (code === "EPERM" || code === "EBUSY") {
+        console.warn(
+          "[prune-pack-deps] opencc: build/ locked (stop dev server); keeping electron-rebuilt .node in place",
+        );
+        dropPrebuildPlatformDirs();
+        return;
+      }
+      throw err;
+    }
+    const releaseDir = path.join(buildRoot, "Release");
+    fs.mkdirSync(releaseDir, { recursive: true });
+    fs.writeFileSync(path.join(releaseDir, "opencc.node"), nodeBytes);
+    dropPrebuildPlatformDirs();
     return;
   }
 
-  const { plat, arch } = parseArgs();
+  console.error(
+    "[prune-pack-deps] opencc: missing build/Release/opencc.node — run `npm run postinstall` or `electron-rebuild -f -w opencc` before packaging. npm prebuilds/*.node target Node ABI and crash in Electron (not a valid Win32 application).",
+  );
+  process.exit(1);
+}
+
+function main() {
+  const { plat, arch, nm } = parseArgs();
+  if (!fs.existsSync(nm)) {
+    console.warn(`[prune-pack-deps] skip: node_modules not found (${nm})`);
+    return;
+  }
+
   const beforeMb = dirSizeMb(nm);
 
   rm(path.join(nm, "onnxruntime-web"));
@@ -358,12 +492,15 @@ function main() {
   pruneBetterSqlite3(nm);
   pruneFontList(nm, plat);
   pruneSqliteVec(nm, plat, arch);
+  pruneJiebaPlatformPackages(nm, plat, arch);
+  pruneOpencc(nm, plat, arch);
   pruneInstallOnlyPackages(nm);
   patchBetterSqlite3Manifest(nm);
 
   pruneOnnxRuntimeNode(nm, plat, arch);
   pruneOnnxRuntimeNodePackage(nm);
   pruneOnnxDirectMl(nm, plat, arch);
+  pruneOnnxLinuxGpuProviders(nm, plat, arch);
   pruneOnnxRuntimeCommon(nm);
 
   pruneTransformersPackage(nm);
@@ -378,8 +515,9 @@ function main() {
   const ortMb = dirSizeMb(path.join(nm, "onnxruntime-node"));
   const hfMb = dirSizeMb(path.join(nm, "@huggingface"));
   const sqliteMb = dirSizeMb(path.join(nm, "better-sqlite3"));
+  const openccMb = dirSizeMb(path.join(nm, "opencc"));
   console.log(
-    `[prune-pack-deps] ${plat}/${arch} done; node_modules ${beforeMb}MB → ${afterMb}MB (−${saved.toFixed(1)}MB); better-sqlite3≈${sqliteMb}MB onnxruntime-node≈${ortMb}MB @huggingface≈${hfMb}MB`,
+    `[prune-pack-deps] ${plat}/${arch} done; node_modules ${beforeMb}MB → ${afterMb}MB (−${saved.toFixed(1)}MB); better-sqlite3≈${sqliteMb}MB opencc≈${openccMb}MB onnxruntime-node≈${ortMb}MB @huggingface≈${hfMb}MB`,
   );
 }
 
