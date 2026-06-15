@@ -138,17 +138,11 @@
       "icon": "resources/icon.ico",
       "artifactName": "${name}-${version}.${ext}",
       "target": [
-        "nsis",
         "portable"
       ]
     },
     "portable": {
       "artifactName": "${name}-${version}-Portable.${ext}"
-    },
-    "nsis": {
-      "artifactName": "${name}-${version}-Setup.${ext}",
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
     },
     "linux": {
       "icon": "resources/icon.png",
