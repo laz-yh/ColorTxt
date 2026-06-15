@@ -107,14 +107,14 @@ const emptyMessage = computed(() => {
           <span class="highlightText" :style="{ color: item.color }">
             {{ item.text }}
           </span>
+          <span
+            v-if="item.matchCount > 0"
+            class="highlightMatchCount"
+            :title="`${item.matchCount} 处匹配`"
+          >
+            {{ item.matchCount }}
+          </span>
           <div class="highlightItemActions">
-            <span
-              v-if="item.matchCount > 0"
-              class="highlightMatchCount"
-              :title="`${item.matchCount} 处匹配`"
-            >
-              {{ item.matchCount }}
-            </span>
             <button
               type="button"
               class="highlightFavoriteBtn"

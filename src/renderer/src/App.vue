@@ -102,7 +102,6 @@ import {
   mergeHighlightWordsByIndex,
   removeHighlightTermFromMap,
   termExistsInHighlightMap,
-  type HighlightListTerm,
 } from "./utils/highlightWords";
 import {
   applyReaderSurfaceToDocument,
@@ -2649,9 +2648,11 @@ watch(currentFile, (next, prev) => {
   if (next === prev) return;
   clearSidebarSearchState();
   /** 打开文件时从 meta 恢复侧栏标签页 */
-  const meta = findFileMetaRecord(fileMetaRecords.value, next);
-  if (meta?.sidebarTab) {
-    sidebarTab.value = meta.sidebarTab;
+  if (next) {
+    const meta = findFileMetaRecord(fileMetaRecords.value, next);
+    if (meta?.sidebarTab) {
+      sidebarTab.value = meta.sidebarTab;
+    }
   }
 });
 
