@@ -760,6 +760,8 @@ async function refreshReaderHighlightDisplayLayer() {
 const currentFileHighlightTerms = computed(() => {
   /** 依赖 loading：文件加载完成（loading 变 false）时 computed 自动重新计算 */
   void loading.value;
+  /** 依赖 editorContentChangeEpoch：编辑模式内容变化时重新统计匹配数 */
+  void editorContentChangeEpoch.value;
   const colors = highlightColorsForReader.value;
   const bodyText =
     currentTheme.value === "vs"
@@ -831,6 +833,7 @@ const readingProgressSynced = ref(true);
 
 const readerEditMode = ref(false);
 const readerEditorDirty = ref(false);
+const editorContentChangeEpoch = ref(0);
 
 watch(
   [
@@ -1897,6 +1900,7 @@ function scheduleChapterListRefreshFromEdit() {
 function onReaderEditContentChange() {
   stream.resyncMirrorFromReader();
   scheduleChapterListRefreshFromEdit();
+  editorContentChangeEpoch.value++;
   if (readerEditMode.value && searchQuery.value.trim()) {
     scheduleSidebarSearch();
   }
