@@ -928,6 +928,8 @@ defineExpose({
 
 .voiceReadPreviewDownloadBtn {
   flex-shrink: 0;
+  width: 26px;
+  height: 26px;
 }
 
 .voiceReadPreviewBtn {
