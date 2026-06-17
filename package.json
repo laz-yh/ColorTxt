@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist/main/index.js",
   "author": "kainanhong@gmail.com",
-  "homepage": "https://github.com/ssnangua/ColorTxt",
+  "homepage": "https://github.com/laz-yh/ColorTxt",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build && electron-rebuild -f -w better-sqlite3,opencc && node scripts/prune-pack-deps.mjs && electron-builder --publish never",
@@ -67,7 +67,7 @@
     "vue-tsc": "^2.2.8"
   },
   "build": {
-    "appId": "com.ssnangua.colortxt",
+    "appId": "com.laz-yh.colortxt",
     "productName": "彩读",
     "beforePack": "scripts/electron-before-pack.mjs",
     "onNodeModuleFile": "scripts/electron-on-node-module-file.mjs",
