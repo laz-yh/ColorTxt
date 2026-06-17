@@ -68,6 +68,14 @@ export function registerUpdaterIpc() {
 export function setupAutoUpdater() {
   if (!app.isPackaged) return;
 
+  // 确保 tmp 目录存在，electron-updater 需要此目录缓存更新描述文件
+  const tmpDir = require("node:path").join(app.getPath("userData"), "tmp");
+  try {
+    require("node:fs").mkdirSync(tmpDir, { recursive: true });
+  } catch {
+    // ignore
+  }
+
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
