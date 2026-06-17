@@ -1,5 +1,5 @@
 import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
-import type { AIConfig, AITxt2ImgBackend, AITxt2ImgConfig } from "@shared/aiTypes";
+import type { AIConfig, AITxt2ImgBackend } from "@shared/aiTypes";
 import { getTxt2ImgPromptFamily } from "@shared/txt2ImgBackend";
 import { chatCompletionOnce } from "../chat/chat";
 import {

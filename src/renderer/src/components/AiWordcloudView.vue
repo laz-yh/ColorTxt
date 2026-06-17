@@ -807,16 +807,6 @@ function toggleWordcloudPinnedOtherFont(fontName: string) {
 
 
 
-function closeToolbarMenus() {
-
-  angleMenuOpen.value = false;
-
-  paletteMenuOpen.value = false;
-
-}
-
-
-
 function closeAngleMenu() {
 
   angleMenuOpen.value = false;

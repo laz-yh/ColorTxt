@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { AIConfig } from "@shared/aiTypes";
 import {
-  DEFAULT_REMOTE_EMBEDDING_BATCH_SIZE,
   REMOTE_EMBEDDING_BATCH_SIZE_MAX,
   REMOTE_EMBEDDING_BATCH_SIZE_MIN,
 } from "@shared/aiTypes";
