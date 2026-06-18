@@ -10,11 +10,17 @@ import {
 } from "vue";
 import { OPENAI_COMPAT_API_ENDPOINT_PRESETS } from "@shared/apiEndpointPresets";
 
+export type ApiEndpointSuggestionItem = {
+  id: string;
+  description?: string;
+};
+
 const props = withDefaults(
   defineProps<{
     modelValue: string;
     placeholder?: string;
     suggestions?: readonly string[];
+    suggestionItems?: readonly ApiEndpointSuggestionItem[];
     /** 追加到内部 input，用于 settings 行内 flex 宽度 */
     inputClass?: string;
     disabled?: boolean;
@@ -56,8 +62,29 @@ const visibleSuggestions = computed(() => {
   return out;
 });
 
+const visibleSuggestionItems = computed((): ApiEndpointSuggestionItem[] => {
+  if (props.suggestionItems?.length) {
+    const seen = new Set<string>();
+    const out: ApiEndpointSuggestionItem[] = [];
+    for (const raw of props.suggestionItems) {
+      const id = raw.id.trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        id,
+        description: raw.description?.trim() || undefined,
+      });
+    }
+    return out;
+  }
+  return visibleSuggestions.value.map((id) => ({ id }));
+});
+
 const listOpen = computed(
-  () => focused.value && !props.disabled && visibleSuggestions.value.length > 0,
+  () =>
+    focused.value &&
+    !props.disabled &&
+    visibleSuggestionItems.value.length > 0,
 );
 
 /** 与 AppCustomSelect.applyPanelPosition 一致 */
@@ -192,20 +219,33 @@ onBeforeUnmount(() => {
       >
         <div class="customSelectScroll" :style="{ maxHeight: `${scrollMaxHeight}px` }">
           <button
-            v-for="url in visibleSuggestions"
-            :key="url"
+            v-for="item in visibleSuggestionItems"
+            :key="item.id"
             type="button"
             role="option"
             class="appShellMenuItem"
-            :class="{ 'is-active': url === modelValue }"
-            @click="pick(url)"
+            :class="{
+              'is-active': item.id === modelValue,
+              'appShellMenuItem--stacked': item.description,
+            }"
+            @click="pick(item.id)"
           >
             <span class="appShellMenuItemRowBody">
               <span class="appShellMenuItemLabelWithCount">
-                <span class="appShellMenuItemLabelBlock">
+                <span
+                  class="appShellMenuItemLabelBlock"
+                  :class="{
+                    'appShellMenuItemLabelBlock--stacked': item.description,
+                  }"
+                >
                   <span
                     class="appShellMenuItemLabelText apiEndpointInputMenuLabel"
-                    >{{ url }}</span
+                    >{{ item.id }}</span
+                  >
+                  <span
+                    v-if="item.description"
+                    class="appShellMenuItemDescription"
+                    >{{ item.description }}</span
                   >
                 </span>
               </span>

@@ -340,7 +340,6 @@ defineExpose({
     </section>
     <template v-if="modelValue.aiEnabled">
       <section class="aiSection aiSection--compact">
-        <h3 class="aiSectionTitle">配置方案</h3>
         <AiConfigProfileToolbar
           :profiles="chatProfileToolbarProfiles"
           :editing-id="chatProfileToolbarEditingId"

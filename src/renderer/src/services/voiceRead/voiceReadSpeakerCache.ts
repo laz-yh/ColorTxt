@@ -1,18 +1,23 @@
 import type { CharacterRosterEntry } from "@shared/characterTypes";
+import type { VoiceReadEmotionId } from "@shared/voiceReadEmotion";
+import { VOICE_READ_EMOTION_AUTO } from "@shared/voiceReadEmotion";
 import type { VoiceReadQuoteAttribution } from "@shared/voiceReadSpeakerIpc";
 import { parseCharacterAliasesInput } from "@shared/characterAliases";
 import { absorbVoiceReadAiSpeakerTokenUsage } from "./voiceReadAiSpeakerTokenUsage";
 
 export type VoiceReadSpeakerCacheKey = string;
 
-type CacheEntry = {
+export type VoiceReadSpeakerAttributionResult = {
   quotes: VoiceReadQuoteAttribution[];
+  narrationEmotion?: VoiceReadEmotionId;
 };
+
+type CacheEntry = VoiceReadSpeakerAttributionResult;
 
 const cache = new Map<VoiceReadSpeakerCacheKey, CacheEntry>();
 const inflight = new Map<
   VoiceReadSpeakerCacheKey,
-  Promise<VoiceReadQuoteAttribution[]>
+  Promise<VoiceReadSpeakerAttributionResult>
 >();
 /** 作废后：在途 AI 识别完成时不再写回缓存 */
 const skipCacheKeys = new Set<VoiceReadSpeakerCacheKey>();
@@ -48,6 +53,7 @@ export function voiceReadSpeakerCacheKey(
   lineText: string,
   dialogueTexts: string[],
   roster: readonly CharacterRosterEntry[],
+  includeEmotion = false,
 ): VoiceReadSpeakerCacheKey {
   return [
     bookPath,
@@ -56,20 +62,36 @@ export function voiceReadSpeakerCacheKey(
     dialogueTexts.join("\u0001"),
     String(rosterVersion),
     rosterVersionToken(roster),
+    includeEmotion ? "emo1" : "emo0",
   ].join("\u0003");
 }
 
+export function getCachedSpeakerAttribution(
+  key: VoiceReadSpeakerCacheKey,
+): VoiceReadSpeakerAttributionResult | null {
+  const hit = cache.get(key);
+  if (!hit) return null;
+  return {
+    quotes: hit.quotes.map((q) => ({ ...q })),
+    narrationEmotion: hit.narrationEmotion,
+  };
+}
+
+/** @deprecated 使用 getCachedSpeakerAttribution */
 export function getCachedQuoteAttributions(
   key: VoiceReadSpeakerCacheKey,
 ): VoiceReadQuoteAttribution[] | null {
-  return cache.get(key)?.quotes ?? null;
+  return getCachedSpeakerAttribution(key)?.quotes ?? null;
 }
 
-export function setCachedQuoteAttributions(
+export function setCachedSpeakerAttribution(
   key: VoiceReadSpeakerCacheKey,
-  quotes: VoiceReadQuoteAttribution[],
+  result: VoiceReadSpeakerAttributionResult,
 ): void {
-  cache.set(key, { quotes: quotes.map((q) => ({ ...q })) });
+  cache.set(key, {
+    quotes: result.quotes.map((q) => ({ ...q })),
+    narrationEmotion: result.narrationEmotion,
+  });
 }
 
 export function clearVoiceReadSpeakerCache(): void {
@@ -91,7 +113,15 @@ function unknownQuotes(count: number): VoiceReadQuoteAttribution[] {
   return Array.from({ length: count }, () => ({
     kind: "unknown" as const,
     speaker: null,
+    emotion: VOICE_READ_EMOTION_AUTO,
   }));
+}
+
+function unknownAttribution(count: number): VoiceReadSpeakerAttributionResult {
+  return {
+    quotes: unknownQuotes(count),
+    narrationEmotion: VOICE_READ_EMOTION_AUTO,
+  };
 }
 
 export async function attributeDialogueQuotes(
@@ -99,10 +129,13 @@ export async function attributeDialogueQuotes(
   quoteTexts: string[],
   roster: readonly CharacterRosterEntry[],
   cacheKey: VoiceReadSpeakerCacheKey,
-): Promise<VoiceReadQuoteAttribution[]> {
-  if (quoteTexts.length === 0) return [];
-  const hit = getCachedQuoteAttributions(cacheKey);
-  if (hit && hit.length === quoteTexts.length) return hit;
+  includeEmotion = false,
+): Promise<VoiceReadSpeakerAttributionResult> {
+  if (quoteTexts.length === 0) {
+    return { quotes: [], narrationEmotion: VOICE_READ_EMOTION_AUTO };
+  }
+  const hit = getCachedSpeakerAttribution(cacheKey);
+  if (hit && hit.quotes.length === quoteTexts.length) return hit;
 
   const pending = inflight.get(cacheKey);
   if (pending) return pending;
@@ -117,6 +150,7 @@ export async function attributeDialogueQuotes(
       line,
       dialogueTexts: quoteTexts,
       roster: rosterPayload,
+      includeEmotion,
     })
     .then((r) => {
       if (r.ok) {
@@ -126,18 +160,26 @@ export async function attributeDialogueQuotes(
         });
       }
       if (!r.ok) {
-        return unknownQuotes(quoteTexts.length);
+        return unknownAttribution(quoteTexts.length);
       }
       const quotes = r.quotes.slice(0, quoteTexts.length);
       while (quotes.length < quoteTexts.length) {
-        quotes.push({ kind: "unknown", speaker: null });
+        quotes.push({
+          kind: "unknown",
+          speaker: null,
+          emotion: VOICE_READ_EMOTION_AUTO,
+        });
       }
+      const result: VoiceReadSpeakerAttributionResult = {
+        quotes,
+        narrationEmotion: r.narrationEmotion ?? VOICE_READ_EMOTION_AUTO,
+      };
       if (!skipCacheKeys.delete(cacheKey)) {
-        setCachedQuoteAttributions(cacheKey, quotes);
+        setCachedSpeakerAttribution(cacheKey, result);
       }
-      return quotes;
+      return result;
     })
-    .catch(() => unknownQuotes(quoteTexts.length))
+    .catch(() => unknownAttribution(quoteTexts.length))
     .finally(() => {
       inflight.delete(cacheKey);
     });
@@ -153,5 +195,11 @@ export async function attributeDialogueSpeakers(
   roster: readonly CharacterRosterEntry[],
   cacheKey: VoiceReadSpeakerCacheKey,
 ): Promise<VoiceReadQuoteAttribution[]> {
-  return attributeDialogueQuotes(line, quoteTexts, roster, cacheKey);
+  const r = await attributeDialogueQuotes(
+    line,
+    quoteTexts,
+    roster,
+    cacheKey,
+  );
+  return r.quotes;
 }

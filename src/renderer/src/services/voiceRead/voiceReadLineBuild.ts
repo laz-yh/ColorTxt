@@ -1,11 +1,12 @@
 import type { CharacterRosterEntry } from "@shared/characterTypes";
+import type { VoiceReadEmotionId } from "@shared/voiceReadEmotion";
 import type { VoiceReadQuoteAttribution } from "@shared/voiceReadSpeakerIpc";
 import type { VoiceReadSettings } from "../../constants/voiceRead";
+import { voiceReadSingleVoiceId } from "../../constants/voiceRead";
+import { voiceReadChunkUnitsForEngine } from "./voiceReadEngineRouting";
 import {
   hasVoiceReadSpeakableText,
   splitVoiceReadChunks,
-  VOICE_READ_CHUNK_UNITS_DEFAULT,
-  VOICE_READ_CHUNK_UNITS_EDGE,
 } from "./voiceReadTextChunks";
 import {
   parseVoiceSegments,
@@ -69,9 +70,7 @@ function mergeAiNarrationQuotes(
 }
 
 function chunkUnitsForEngine(engine: VoiceReadSettings["engine"]): number {
-  return engine === "edge"
-    ? VOICE_READ_CHUNK_UNITS_EDGE
-    : VOICE_READ_CHUNK_UNITS_DEFAULT;
+  return voiceReadChunkUnitsForEngine(engine);
 }
 
 function splitSegmentToSpeakChunks(
@@ -80,6 +79,7 @@ function splitSegmentToSpeakChunks(
   roster: readonly CharacterRosterEntry[],
   quoteAttr: VoiceReadQuoteAttribution | undefined,
   aiFeaturesEnabled: boolean,
+  narrationEmotion?: VoiceReadEmotionId,
 ): VoiceReadSpeakChunk[] {
   const resolved = resolveSpeakChunk(
     settings,
@@ -87,17 +87,23 @@ function splitSegmentToSpeakChunks(
     roster,
     quoteAttr,
     aiFeaturesEnabled,
+    narrationEmotion,
   );
   const units = chunkUnitsForEngine(settings.engine);
   const parts = splitVoiceReadChunks(resolved.text, units);
   const texts = parts.length > 0 ? parts : [resolved.text];
-  return texts.map((text) => ({ text, voiceId: resolved.voiceId }));
+  return texts.map((text) => ({
+    text,
+    voiceId: resolved.voiceId,
+    emotion: resolved.emotion,
+  }));
 }
 
 export type BuildLineSpeakChunksResult = {
   chunks: VoiceReadSpeakChunk[];
   carry: VoiceReadQuoteCarry;
   dialogueSegments: { segmentIndex: number; text: string }[];
+  narrationEmotion?: VoiceReadEmotionId;
 };
 
 /** 将一行编辑器文本转为可合成的 speak chunks（含 multi 旁白/对白与切段） */
@@ -108,6 +114,7 @@ export function buildLineSpeakChunks(
   opts: {
     carry?: VoiceReadQuoteCarry;
     quoteAttributions?: VoiceReadQuoteAttribution[];
+    narrationEmotion?: VoiceReadEmotionId;
     aiFeaturesEnabled?: boolean;
   } = {},
 ): BuildLineSpeakChunksResult {
@@ -124,7 +131,7 @@ export function buildLineSpeakChunks(
     return {
       chunks: texts.map((text) => ({
         text,
-        voiceId: settings.voiceId,
+        voiceId: voiceReadSingleVoiceId(settings),
       })),
       carry: null,
       dialogueSegments: [],
@@ -132,7 +139,7 @@ export function buildLineSpeakChunks(
   }
 
   const { segments, carry } = parseVoiceSegments(raw, {
-    quoteStyles: settings.dialogueQuoteStyles,
+    quoteStyles: settings.multi.dialogueQuoteStyles,
     carry: opts.carry,
   });
 
@@ -164,9 +171,10 @@ export function buildLineSpeakChunks(
         roster,
         seg.kind === "dialogue" ? seg.quoteAttr : undefined,
         aiFeaturesEnabled,
+        opts.narrationEmotion,
       ),
     );
   }
 
-  return { chunks, carry, dialogueSegments };
+  return { chunks, carry, dialogueSegments, narrationEmotion: opts.narrationEmotion };
 }

@@ -1,4 +1,8 @@
 import type { AITxt2ImgConfig } from "@shared/aiTypes";
+import {
+  MINIMAX_API_BASE_URL,
+  normalizeChatPresetBaseUrl,
+} from "@shared/apiEndpointPresets";
 import { fetchOpenAiCompatModelIds } from "../infra/openAiCompatModelList";
 import {
   errorFromTxt2ImgCatch,
@@ -131,6 +135,28 @@ async function testStability(txt2img: AITxt2ImgConfig): Promise<TestResult> {
   }
 }
 
+async function testMinimax(txt2img: AITxt2ImgConfig): Promise<TestResult> {
+  const keyR = requireTxt2ImgApiKey(txt2img.apiKey, "MiniMax");
+  if (!keyR.ok) return keyR;
+  const modelsBase =
+    normalizeChatPresetBaseUrl(txt2img.apiBaseUrl.trim()) ||
+    MINIMAX_API_BASE_URL;
+  const url = `${modelsBase}/models`;
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${keyR.key}` },
+    });
+    const raw = await res.text().catch(() => "");
+    if (res.ok) return { ok: true };
+    return {
+      ok: false,
+      error: `MiniMax HTTP ${res.status}: ${raw.slice(0, 300)}`,
+    };
+  } catch (e) {
+    return { ok: false, error: errorFromTxt2ImgCatch(e) };
+  }
+}
+
 /**
  * 探测文生图连接（不发起真实出图，云端一般不消耗按张计费额度）。
  */
@@ -151,6 +177,8 @@ export async function testTxt2ImgConnection(
       return testOpenAiModels(txt2img, "文生图");
     case "dashscope_wanx":
       return testDashScope(txt2img);
+    case "minimax_images":
+      return testMinimax(txt2img);
     case "stability":
       return testStability(txt2img);
     default:

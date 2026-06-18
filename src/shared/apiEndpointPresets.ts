@@ -18,6 +18,19 @@ export const AGNES_API_BASE_URL = "https://apihub.agnes-ai.com/v1";
 export const AGNES_API_KEY_CONSOLE_URL =
   "https://platform.agnes-ai.com/settings/apiKeys";
 
+/** MiniMax 平台统一品牌名（对话、文生图等；语音朗读 TTS 单独密钥） */
+export const MINIMAX_PLATFORM_LABEL = "MiniMax";
+
+/** MiniMax OpenAI 兼容 API Base URL（中国大陆） */
+export const MINIMAX_API_BASE_URL = "https://api.minimaxi.com/v1";
+
+/** MiniMax 文生图 API 根地址（不含 `/v1/image_generation`） */
+export const MINIMAX_IMAGE_API_ROOT = "https://api.minimaxi.com";
+
+/** MiniMax 控制台 API 密钥页 */
+export const MINIMAX_API_KEY_CONSOLE_URL =
+  "https://platform.minimaxi.com/user-center/basic-information/interface-key";
+
 /** 对话 API 推荐服务商（OpenAI 兼容 /chat/completions） */
 export type ChatApiProviderPreset = {
   id: string;
@@ -94,6 +107,12 @@ const CHAT_API_PROVIDER_KNOWN_PRESETS: readonly ChatApiProviderPreset[] = [
     deepThinkingAdapted: true,
   },
   {
+    id: "minimax",
+    label: MINIMAX_PLATFORM_LABEL,
+    baseUrl: MINIMAX_API_BASE_URL,
+    deepThinkingAdapted: true,
+  },
+  {
     id: "openai",
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
@@ -126,6 +145,12 @@ export function normalizeChatPresetBaseUrl(url: string): string {
 export function agnesApiLikely(baseUrl: string): boolean {
   const u = normalizeChatPresetBaseUrl(baseUrl).toLowerCase();
   return u.includes("agnes-ai.com") || u.includes("apihub.agnes");
+}
+
+/** 接口地址是否为 MiniMax 官方 API */
+export function minimaxApiLikely(baseUrl: string): boolean {
+  const u = normalizeChatPresetBaseUrl(baseUrl).toLowerCase();
+  return u.includes("minimaxi.com") || u.includes("minimax.io");
 }
 
 export function findChatProviderPresetByBaseUrl(
@@ -177,6 +202,7 @@ export type Txt2ImgBackendPresetId =
   | "openai_images"
   | "agnes_images"
   | "dashscope_wanx"
+  | "minimax_images"
   | "stability"
   | "openai_compat_images";
 
@@ -217,6 +243,11 @@ export const TXT2IMG_BACKEND_PRESETS: readonly Txt2ImgBackendPreset[] = [
     id: "dashscope_wanx",
     label: DASHSCOPE_WANX_PLATFORM_LABEL,
     baseUrl: "https://dashscope.aliyuncs.com",
+  },
+  {
+    id: "minimax_images",
+    label: MINIMAX_PLATFORM_LABEL,
+    baseUrl: MINIMAX_IMAGE_API_ROOT,
   },
   {
     id: "stability",

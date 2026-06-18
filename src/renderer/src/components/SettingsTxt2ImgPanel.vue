@@ -613,7 +613,6 @@ defineExpose({
 
     <template v-if="modelValue.txt2img.enabled">
       <section class="aiSection aiSection--compact">
-        <h3 class="aiSectionTitle">配置方案</h3>
         <AiConfigProfileToolbar
           :profiles="txt2imgProfileToolbarProfiles"
           :editing-id="txt2imgProfileToolbarEditingId"

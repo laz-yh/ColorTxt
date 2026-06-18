@@ -130,6 +130,7 @@ export type AITxt2ImgBackend =
   | "openai_images"
   | "agnes_images"
   | "dashscope_wanx"
+  | "minimax_images"
   | "stability"
   | "openai_compat_images";
 

@@ -1,12 +1,22 @@
 import type { CharacterRosterEntry } from "@shared/characterTypes";
 import { parseCharacterAliasesInput } from "@shared/characterAliases";
+import type { VoiceReadEmotionId } from "@shared/voiceReadEmotion";
+import { VOICE_READ_EMOTION_AUTO } from "@shared/voiceReadEmotion";
 import type { VoiceReadQuoteAttribution } from "@shared/voiceReadSpeakerIpc";
 import type { VoiceReadSettings } from "../../constants/voiceRead";
+import {
+  voiceReadMultiDialogueFemaleVoiceId,
+  voiceReadMultiDialogueMaleVoiceId,
+  voiceReadMultiDialogueVoiceId,
+  voiceReadMultiNarrationVoiceId,
+  voiceReadSingleVoiceId,
+} from "../../constants/voiceRead";
 import type { VoiceReadTextSegment } from "./voiceReadSegments";
 
 export type VoiceReadSpeakChunk = {
   text: string;
   voiceId: string;
+  emotion?: VoiceReadEmotionId;
 };
 
 function aliasDedupeKey(s: string): string {
@@ -30,17 +40,15 @@ function findCharacterBySpeaker(
 }
 
 function dialogueFallbackVoiceId(settings: VoiceReadSettings): string {
-  return settings.dialogueVoiceId.trim() || settings.voiceId;
+  return voiceReadMultiDialogueVoiceId(settings);
 }
 
 function maleDialogueVoiceId(settings: VoiceReadSettings): string {
-  return settings.dialogueMaleVoiceId.trim() || dialogueFallbackVoiceId(settings);
+  return voiceReadMultiDialogueMaleVoiceId(settings);
 }
 
 function femaleDialogueVoiceId(settings: VoiceReadSettings): string {
-  return (
-    settings.dialogueFemaleVoiceId.trim() || dialogueFallbackVoiceId(settings)
-  );
+  return voiceReadMultiDialogueFemaleVoiceId(settings);
 }
 
 export function resolveSegmentVoiceId(
@@ -51,15 +59,15 @@ export function resolveSegmentVoiceId(
   aiFeaturesEnabled = false,
 ): string {
   if (settings.scheme === "single") {
-    return settings.voiceId.trim() || settings.narrationVoiceId;
+    return voiceReadSingleVoiceId(settings);
   }
   if (segment.kind === "narration") {
-    return settings.narrationVoiceId.trim() || settings.voiceId;
+    return voiceReadMultiNarrationVoiceId(settings);
   }
 
   const aiOn = aiFeaturesEnabled && quoteAttr != null;
   if (aiOn && quoteAttr.kind === "narration") {
-    return settings.narrationVoiceId.trim() || settings.voiceId;
+    return voiceReadMultiNarrationVoiceId(settings);
   }
 
   if (!aiOn) {
@@ -76,12 +84,28 @@ export function resolveSegmentVoiceId(
   return dialogueFallbackVoiceId(settings);
 }
 
+function resolveChunkEmotion(
+  segment: Pick<VoiceReadTextSegment, "kind">,
+  quoteEmotion: VoiceReadEmotionId | undefined,
+  narrationEmotion: VoiceReadEmotionId | undefined,
+  aiFeaturesEnabled: boolean,
+): VoiceReadEmotionId | undefined {
+  if (!aiFeaturesEnabled) return undefined;
+  if (segment.kind === "narration") {
+    const e = narrationEmotion ?? VOICE_READ_EMOTION_AUTO;
+    return e === VOICE_READ_EMOTION_AUTO ? undefined : e;
+  }
+  const e = quoteEmotion ?? VOICE_READ_EMOTION_AUTO;
+  return e === VOICE_READ_EMOTION_AUTO ? undefined : e;
+}
+
 export function resolveSpeakChunk(
   settings: VoiceReadSettings,
   segment: VoiceReadTextSegment,
   roster: readonly CharacterRosterEntry[],
   quoteAttr?: VoiceReadQuoteAttribution | null,
   aiFeaturesEnabled = false,
+  narrationEmotion?: VoiceReadEmotionId,
 ): VoiceReadSpeakChunk {
   return {
     text: segment.text,
@@ -90,6 +114,12 @@ export function resolveSpeakChunk(
       segment,
       roster,
       quoteAttr,
+      aiFeaturesEnabled,
+    ),
+    emotion: resolveChunkEmotion(
+      segment,
+      quoteAttr?.emotion,
+      narrationEmotion,
       aiFeaturesEnabled,
     ),
   };

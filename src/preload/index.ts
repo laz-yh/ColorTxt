@@ -40,6 +40,19 @@ import type {
 } from "@shared/aiTxt2ImgIpc";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
 import type {
+  VoiceReadHealthCheckIpcResult,
+  VoiceReadHealthCheckPayload,
+  VoiceReadListVoicesIpcResult,
+  VoiceReadListVoicesPayload,
+  VoiceReadSynthesizeIpcResult,
+  VoiceReadSynthesizePayload,
+} from "@shared/voiceReadSynthesisIpc";
+import {
+  VOICE_READ_IPC_HEALTH_CHECK,
+  VOICE_READ_IPC_LIST_VOICES,
+  VOICE_READ_IPC_SYNTHESIZE,
+} from "@shared/voiceReadSynthesisIpc";
+import type {
   VoiceReadAttributeSpeakersRequest,
   VoiceReadAttributeSpeakersResult,
 } from "@shared/voiceReadSpeakerIpc";
@@ -164,6 +177,21 @@ const api = {
     ipcRenderer.invoke("voiceRead:edgeTts", payload) as Promise<
       { ok: true; mp3: ArrayBuffer } | { ok: false; error: string }
     >,
+  voiceReadSynthesize: (payload: VoiceReadSynthesizePayload) =>
+    ipcRenderer.invoke(
+      VOICE_READ_IPC_SYNTHESIZE,
+      payload,
+    ) as Promise<VoiceReadSynthesizeIpcResult>,
+  voiceReadListVoices: (payload: VoiceReadListVoicesPayload) =>
+    ipcRenderer.invoke(
+      VOICE_READ_IPC_LIST_VOICES,
+      payload,
+    ) as Promise<VoiceReadListVoicesIpcResult>,
+  voiceReadHealthCheck: (payload: VoiceReadHealthCheckPayload) =>
+    ipcRenderer.invoke(
+      VOICE_READ_IPC_HEALTH_CHECK,
+      payload,
+    ) as Promise<VoiceReadHealthCheckIpcResult>,
   voiceReadAttributeSpeakers: (payload: VoiceReadAttributeSpeakersRequest) =>
     ipcRenderer.invoke(
       "voiceRead:attributeSpeakers",

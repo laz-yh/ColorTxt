@@ -117,10 +117,11 @@ import {
 import {
   collectVoiceReadProfileApiKeys,
   hydrateVoiceReadProfilesApiKeys,
+  serializeVoiceReadProfileSecrets,
   stripVoiceReadProfileApiKeysForDisk,
   type VoiceReadProfile,
 } from "@shared/voiceReadProfiles";
-import { parseProfileKeysBlob, serializeProfileKeysBlob } from "@shared/aiEndpointProfiles";
+import { parseProfileKeysBlob } from "@shared/aiEndpointProfiles";
 import {
   migrateVoiceReadFromPersisted,
   normalizeVoiceReadProfilesForSave,
@@ -647,31 +648,36 @@ export function useAppPersistence(deps: {
     try {
       const profileKeysRes =
         await window.colorTxt.secrets.getVoiceReadProfileKeys();
-      const profileKeys = parseProfileKeysBlob(profileKeysRes.keys ?? "");
-      hydrateVoiceReadProfilesApiKeys(deps.voiceReadProfiles.value, profileKeys);
+      const profileKeysBlob = profileKeysRes.keys ?? "";
+      const profileKeys = parseProfileKeysBlob(profileKeysBlob);
+      hydrateVoiceReadProfilesApiKeys(
+        deps.voiceReadProfiles.value,
+        profileKeys,
+        profileKeysBlob,
+      );
 
       const legacyRes = await window.colorTxt.secrets.getVoiceReadDashScopeApiKey();
       const legacyKey = legacyRes.apiKey.trim();
       const activeId = deps.activeVoiceReadProfileId.value.trim();
-      const activeProfile = deps.voiceReadProfiles.value.find(
-        (p) => p.id === activeId,
-      );
+      const activeProfile =
+        deps.voiceReadProfiles.value.find((p) => p.id === activeId) ??
+        deps.voiceReadProfiles.value[0];
       if (
         legacyKey &&
         activeProfile &&
         !activeProfile.settings.dashscopeApiKey.trim()
       ) {
         activeProfile.settings.dashscopeApiKey = legacyKey;
+        if (!activeProfile.settings.engineConfig.dashscopeApiKey?.trim()) {
+          activeProfile.settings.engineConfig.dashscopeApiKey = legacyKey;
+        }
         migrated = true;
       }
 
-      const activeKey =
-        activeProfile?.settings.dashscopeApiKey.trim() ?? legacyKey;
-      if (activeKey) {
-        deps.voiceReadSettings.value = mergeVoiceReadSettings({
-          ...deps.voiceReadSettings.value,
-          dashscopeApiKey: activeKey,
-        });
+      if (activeProfile) {
+        deps.voiceReadSettings.value = mergeVoiceReadSettings(
+          activeProfile.settings,
+        );
       }
 
       const flatLegacyKey = deps.voiceReadSettings.value.dashscopeApiKey.trim();
@@ -679,13 +685,13 @@ export function useAppPersistence(deps: {
         await window.colorTxt.secrets.setVoiceReadDashScopeApiKey(flatLegacyKey);
         migrated = true;
       }
-      if (Object.keys(profileKeys).length === 0 && deps.voiceReadProfiles.value.length > 0) {
+      if (!profileKeysBlob.trim() && deps.voiceReadProfiles.value.length > 0) {
         const collected = collectVoiceReadProfileApiKeys(
           deps.voiceReadProfiles.value,
         );
         if (Object.keys(collected).length > 0) {
           await window.colorTxt.secrets.setVoiceReadProfileKeys(
-            serializeProfileKeysBlob(collected),
+            serializeVoiceReadProfileSecrets(deps.voiceReadProfiles.value),
           );
           migrated = true;
         }
@@ -700,12 +706,13 @@ export function useAppPersistence(deps: {
     const profiles = normalizeVoiceReadProfilesForSave(
       deps.voiceReadProfiles.value,
     );
-    const profileKeys = collectVoiceReadProfileApiKeys(profiles);
-    const activeId = deps.activeVoiceReadProfileId.value.trim();
-    const activeKey = profileKeys[activeId]?.trim() ?? "";
     await window.colorTxt.secrets.setVoiceReadProfileKeys(
-      serializeProfileKeysBlob(profileKeys),
+      serializeVoiceReadProfileSecrets(profiles),
     );
+    const activeId = deps.activeVoiceReadProfileId.value.trim();
+    const activeKey =
+      profiles.find((p) => p.id === activeId)?.settings.engineConfig
+        .dashscopeApiKey?.trim() ?? "";
     await window.colorTxt.secrets.setVoiceReadDashScopeApiKey(activeKey);
   }
 

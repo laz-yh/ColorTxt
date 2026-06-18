@@ -174,7 +174,10 @@ function toggleToolbarLayer() {
           :class="{
             'playPauseBtn--play': !synthesizing && mode !== 'playing',
             'playPauseBtn--pause': !synthesizing && mode === 'playing',
-            'playPauseBtn--synth': synthesizing,
+            'playPauseBtn--synth-ai':
+              synthesizing && synthesizingPhase === 'ai',
+            'playPauseBtn--synth-tts':
+              synthesizing && synthesizingPhase !== 'ai',
           }"
           :icon-html="playIcon"
           :title="playLabel"
@@ -372,8 +375,9 @@ function toggleToolbarLayer() {
   height: 48px;
   border-radius: 50%;
   box-shadow: 0 2px 10px color-mix(in srgb, #000 14%, transparent);
-  /* transition: transform 0.16s ease;
-  transform-origin: center center; */
+  transition:
+    background 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.42s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* .playPauseBtn.iconBtn:hover {
@@ -407,31 +411,47 @@ function toggleToolbarLayer() {
   background: var(--primary-hover);
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth {
-  background: var(--warning);
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai,
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts {
   cursor: default;
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth:not(:disabled):hover {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai {
   background: var(--warning);
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth:disabled {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai:not(:disabled):hover {
+  background: var(--warning);
+}
+
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts {
+  background: var(--primary);
+}
+
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts:not(:disabled):hover {
+  background: var(--primary-hover);
+}
+
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai:disabled,
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts:disabled {
   opacity: 1;
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth :deep(.icon) {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai :deep(.icon),
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts :deep(.icon) {
   color: #ffffff;
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth :deep(.aiThinkingPulse) {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai :deep(.aiThinkingPulse),
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts :deep(.aiThinkingPulse) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   animation: aiThinkingPulseBreathe 1.25s ease-in-out infinite;
 }
 
-.playPauseBtn.iconBtn.playPauseBtn--synth :deep(.aiThinkingPulse svg) {
+.playPauseBtn.iconBtn.playPauseBtn--synth-ai :deep(.aiThinkingPulse svg),
+.playPauseBtn.iconBtn.playPauseBtn--synth-tts :deep(.aiThinkingPulse svg) {
   color: #ffffff;
 }
 

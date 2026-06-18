@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
+import { getVoiceReadEngineMeta } from "@shared/voiceReadEngines";
 
 const EDGE_SPEECH_URL =
   "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
@@ -149,7 +150,8 @@ async function synthesizeEdgeTtsMp3Once(
   if (!hasSpeakableTtsContent(text)) {
     throw new Error("Edge TTS：无可朗读内容");
   }
-  const voice = req.voice?.trim() || "zh-CN-XiaoxiaoNeural";
+  const voice =
+    req.voice?.trim() || getVoiceReadEngineMeta("edge").defaultVoiceId;
   const lang = req.lang?.trim() || "zh-CN";
   const rate = Number.isFinite(req.rate) ? req.rate : 1;
   const pitch = Number.isFinite(req.pitch) ? req.pitch : 1;

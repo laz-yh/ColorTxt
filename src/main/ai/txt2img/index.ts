@@ -4,6 +4,7 @@ import { fetchA1111ImageBuffer } from "./a1111";
 import { fetchAgnesImagesBuffer } from "./agnes";
 import { fetchComfyUIImageBuffer } from "./comfy";
 import { fetchDashScopeWanxImageBuffer } from "./dashScope";
+import { fetchMinimaxImagesBuffer } from "./minimax";
 import { fetchOpenAiImagesBuffer } from "./openAI";
 import { fetchStabilityImageBuffer } from "./stability";
 import { requireTxt2ImgApiKey } from "./shared";
@@ -24,7 +25,9 @@ export async function fetchTxt2ImgImageBuffer(
         : backend === "stability"
           ? "Stability"
           : backend === "agnes_images"
-            ? "Agnes"
+          ? "Agnes"
+          : backend === "minimax_images"
+            ? "MiniMax"
           : backend === "openai_compat_images"
             ? "文生图"
             : "OpenAI";
@@ -45,6 +48,8 @@ export async function fetchTxt2ImgImageBuffer(
       return fetchAgnesImagesBuffer(txt2img, p, signal);
     case "dashscope_wanx":
       return fetchDashScopeWanxImageBuffer(txt2img, p, signal);
+    case "minimax_images":
+      return fetchMinimaxImagesBuffer(txt2img, p, signal);
     case "stability":
       return fetchStabilityImageBuffer(txt2img, p, neg, signal);
     case "a1111":

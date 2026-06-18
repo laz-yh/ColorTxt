@@ -260,7 +260,6 @@ async function syncAiFromMain() {
   await nextTick();
   aiPanelRef.value?.initChatProfiles?.();
   txt2imgPanelRef.value?.initTxt2ImgProfiles?.();
-  voiceReadPanelRef.value?.initVoiceReadProfiles?.();
 }
 
 watch(modelValue, (open) => {
@@ -271,6 +270,9 @@ watch(modelValue, (open) => {
   draftAi.value.embedding = normalizeEmbeddingEndpoint(draftAi.value.embedding);
   applyAllActiveProfilesToConfig(draftAi.value);
   syncDraftFromProps();
+  void nextTick(() => {
+    voiceReadPanelRef.value?.initVoiceReadProfiles?.();
+  });
   void syncAiFromMain();
 });
 

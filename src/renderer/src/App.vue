@@ -1640,9 +1640,9 @@ const {
   isVoiceReadScrollLocked,
   isVoiceReadBlocksFind,
   isVoiceReadHeaderLocked,
+  isVoiceReadNavigationBlocked,
   toggleVoiceReadToolbar,
   togglePlayPause: voiceReadTogglePlayPause,
-  restartFromViewportTopAfterNavigation: voiceReadRestartFromViewportTop,
   exitVoiceRead,
   playPrevLine: voiceReadPlayPrevLine,
   playNextLine: voiceReadPlayNextLine,
@@ -1660,33 +1660,25 @@ const {
   characterRoster: currentFileCharacterRoster,
 });
 
-function scheduleVoiceReadResumeAfterJump() {
-  if (voiceReadMode.value !== "playing") return;
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      voiceReadRestartFromViewportTop();
-    });
-  });
+function guardReaderNavigation(action: () => void): void {
+  if (isVoiceReadNavigationBlocked.value) return;
+  action();
 }
 
 function onJumpToChapterFromSidebar(ch: Chapter) {
-  jumpToChapter(ch);
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => jumpToChapter(ch));
 }
 
 function jumpToBookmarkWithVoiceRead(line: number) {
-  jumpToBookmark(line);
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => jumpToBookmark(line));
 }
 
 function jumpToPrevChapterWithVoiceRead() {
-  jumpToPrevChapter();
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => jumpToPrevChapter());
 }
 
 function jumpToNextChapterWithVoiceRead() {
-  jumpToNextChapter();
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => jumpToNextChapter());
 }
 
 const canEnterReaderEditMode = computed(
@@ -1940,9 +1932,10 @@ async function handleWindowCloseRequest() {
 
 /** AI 助手跳转章节：未激活书钉时先记住当前滚动位置（与查找打开前一致），再跳转 */
 function jumpToChapterFromAiAssistant(ch: Chapter) {
-  ensurePinBeforeRevealFindWidget();
-  jumpToChapter(ch);
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => {
+    ensurePinBeforeRevealFindWidget();
+    jumpToChapter(ch);
+  });
 }
 
 const readerUi = useAppReaderUiPrefs({
@@ -2207,6 +2200,7 @@ async function clearCurrentFileHighlightTerms() {
 
 function onFindHighlightTermFromSidebar(text: string) {
   if (!currentFile.value || loading.value || totalLineCount.value <= 0) return;
+  if (isVoiceReadNavigationBlocked.value) return;
   ensurePinBeforeRevealFindWidget();
   const found = readerRef.value?.jumpToNextInlineSearchMatch?.(text, {
     caseSensitive: false,
@@ -2215,7 +2209,6 @@ function onFindHighlightTermFromSidebar(text: string) {
     smooth: true,
   });
   hasInlineSearchHighlight.value = found === true;
-  scheduleVoiceReadResumeAfterJump();
 }
 
 function onUpsertReaderAnnotation(annotation: ReaderAnnotationRecord) {
@@ -2278,8 +2271,9 @@ function onClearReaderAnnotations() {
 }
 
 function onJumpToReaderAnnotation(ann: ReaderAnnotationRecord) {
-  readerRef.value?.jumpToAnnotationRange?.(ann, { smooth: true });
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => {
+    readerRef.value?.jumpToAnnotationRange?.(ann, { smooth: true });
+  });
 }
 
 async function onClearReaderAnnotationsWithConfirm() {
@@ -2670,6 +2664,7 @@ watch(currentFile, (next, prev) => {
 
 function onJumpToSearchResult(item: SidebarSearchResult) {
   if (!currentFile.value || loading.value || totalLineCount.value <= 0) return;
+  if (isVoiceReadNavigationBlocked.value) return;
   activeSearchResult.value = {
     displayLine: item.displayLine,
     rangeStart: item.range.start,
@@ -2698,7 +2693,6 @@ function onJumpToSearchResult(item: SidebarSearchResult) {
     endColumn,
   );
   queueMicrotask(() => readerRef.value?.emitProbeLine?.());
-  scheduleVoiceReadResumeAfterJump();
 }
 
 onBeforeUnmount(() => {

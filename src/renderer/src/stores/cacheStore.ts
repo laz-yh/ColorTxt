@@ -1,3 +1,4 @@
+import { isVoiceReadEngineId } from "@shared/voiceReadEngines";
 import type { ChapterMatchRule } from "../chapter";
 import type {
   FileCategoryDefinition,
@@ -438,36 +439,23 @@ export function loadPersistedSettingsData(
     data.voiceRead = {
       scheme:
         vr.scheme === "single" || vr.scheme === "multi" ? vr.scheme : undefined,
-      engine:
-        vr.engine === "edge" || vr.engine === "dashscope" || vr.engine === "system"
-          ? vr.engine
+      engine: isVoiceReadEngineId(vr.engine) ? vr.engine : undefined,
+      single:
+        vr.single && typeof vr.single === "object"
+          ? (vr.single as VoiceReadSettings["single"])
           : undefined,
-      voiceId: typeof vr.voiceId === "string" ? vr.voiceId : undefined,
-      narrationVoiceId:
-        typeof vr.narrationVoiceId === "string"
-          ? vr.narrationVoiceId
-          : undefined,
-      dialogueVoiceId:
-        typeof vr.dialogueVoiceId === "string" ? vr.dialogueVoiceId : undefined,
-      dialogueMaleVoiceId:
-        typeof vr.dialogueMaleVoiceId === "string"
-          ? vr.dialogueMaleVoiceId
-          : undefined,
-      dialogueFemaleVoiceId:
-        typeof vr.dialogueFemaleVoiceId === "string"
-          ? vr.dialogueFemaleVoiceId
-          : undefined,
-      dialogueQuoteStyles: Array.isArray(vr.dialogueQuoteStyles)
-        ? vr.dialogueQuoteStyles
-        : undefined,
-      aiSpeakerRecognitionEnabled:
-        typeof vr.aiSpeakerRecognitionEnabled === "boolean"
-          ? vr.aiSpeakerRecognitionEnabled
+      multi:
+        vr.multi && typeof vr.multi === "object"
+          ? (vr.multi as VoiceReadSettings["multi"])
           : undefined,
       rate: typeof vr.rate === "number" ? vr.rate : undefined,
       pitch: typeof vr.pitch === "number" ? vr.pitch : undefined,
       dashscopeApiKey:
         typeof vr.dashscopeApiKey === "string" ? vr.dashscopeApiKey : undefined,
+      engineConfig:
+        vr.engineConfig && typeof vr.engineConfig === "object"
+          ? (vr.engineConfig as Record<string, unknown>)
+          : undefined,
       profiles: Array.isArray(vr.profiles) ? vr.profiles : undefined,
       activeProfileId:
         typeof vr.activeProfileId === "string" ? vr.activeProfileId : undefined,
