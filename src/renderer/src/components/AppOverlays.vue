@@ -23,6 +23,7 @@ import SettingsPanel, { type SettingsApplyPayload } from "./SettingsPanel.vue";
 import ShortcutPanel from "./ShortcutPanel.vue";
 import type { ShortcutBindingMap } from "../services/shortcutRegistry";
 import type { ReaderSurfacePalette } from "../constants/appUi";
+import type { ReaderSurfaceColorEnabled } from "../constants/readerPalette";
 import { readerEbookConvertingHintText } from "../constants/appUi";
 
 const bookmarkNoteInputRef = inject(bookmarkNoteInputRefKey)!;
@@ -62,6 +63,8 @@ const props = defineProps<{
   currentTheme: string;
   readerSurfaceLight: ReaderSurfacePalette;
   readerSurfaceDark: ReaderSurfacePalette;
+  readerPaletteColorEnabledLight: ReaderSurfaceColorEnabled;
+  readerPaletteColorEnabledDark: ReaderSurfaceColorEnabled;
   monacoFontFamily: string;
   highlightColorsLight: string[];
   highlightColorsDark: string[];
@@ -86,7 +89,12 @@ const emit = defineEmits<{
   confirmRemoveActiveBookmark: [];
   applyShortcutBindings: [payload: ShortcutBindingMap];
   applyReaderPalettes: [
-    payload: { light: ReaderSurfacePalette; dark: ReaderSurfacePalette },
+    payload: {
+      light: ReaderSurfacePalette;
+      dark: ReaderSurfacePalette;
+      colorEnabledLight: ReaderSurfaceColorEnabled;
+      colorEnabledDark: ReaderSurfaceColorEnabled;
+    },
   ];
   applyHighlightColors: [payload: { light: string[]; dark: string[] }];
   applyLineationColors: [payload: { light: string[]; dark: string[] }];
@@ -223,6 +231,8 @@ onBeforeUnmount(() => {
     :current-theme="currentTheme"
     :reader-surface-light="readerSurfaceLight"
     :reader-surface-dark="readerSurfaceDark"
+    :reader-palette-color-enabled-light="readerPaletteColorEnabledLight"
+    :reader-palette-color-enabled-dark="readerPaletteColorEnabledDark"
     :monaco-font-family="monacoFontFamily"
     :highlight-colors-light="highlightColorsLight"
     :highlight-colors-dark="highlightColorsDark"

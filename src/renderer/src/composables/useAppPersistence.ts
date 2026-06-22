@@ -209,6 +209,12 @@ export function useAppPersistence(deps: {
   defaultShortcutBindings: ShortcutBindingMap;
   readerPaletteOverridesLight: Ref<Partial<ReaderSurfacePalette>>;
   readerPaletteOverridesDark: Ref<Partial<ReaderSurfacePalette>>;
+  readerPaletteColorEnabledOverridesLight: Ref<
+    Partial<import("../constants/readerPalette").ReaderSurfaceColorEnabled>
+  >;
+  readerPaletteColorEnabledOverridesDark: Ref<
+    Partial<import("../constants/readerPalette").ReaderSurfaceColorEnabled>
+  >;
   highlightColorsLight: Ref<string[]>;
   highlightColorsDark: Ref<string[]>;
   lineationColorsLight: Ref<string[]>;
@@ -886,6 +892,14 @@ export function useAppPersistence(deps: {
     deps.readerPaletteOverridesDark.value = data.readerPaletteOverridesDark
       ? { ...data.readerPaletteOverridesDark }
       : {};
+    deps.readerPaletteColorEnabledOverridesLight.value =
+      data.readerPaletteColorEnabledOverridesLight
+        ? { ...data.readerPaletteColorEnabledOverridesLight }
+        : {};
+    deps.readerPaletteColorEnabledOverridesDark.value =
+      data.readerPaletteColorEnabledOverridesDark
+        ? { ...data.readerPaletteColorEnabledOverridesDark }
+        : {};
 
     const parsedHL = parseHighlightColorsArray(data.highlightColorsLight);
     deps.highlightColorsLight.value = mergeHighlightColors(
@@ -1069,6 +1083,16 @@ export function useAppPersistence(deps: {
       readerPaletteOverridesDark:
         Object.keys(deps.readerPaletteOverridesDark.value).length > 0
           ? deps.readerPaletteOverridesDark.value
+          : undefined,
+      readerPaletteColorEnabledOverridesLight:
+        Object.keys(deps.readerPaletteColorEnabledOverridesLight.value).length >
+        0
+          ? deps.readerPaletteColorEnabledOverridesLight.value
+          : undefined,
+      readerPaletteColorEnabledOverridesDark:
+        Object.keys(deps.readerPaletteColorEnabledOverridesDark.value).length >
+        0
+          ? deps.readerPaletteColorEnabledOverridesDark.value
           : undefined,
       highlightColorsLight: highlightColorsPersistPayload(
         deps.highlightColorsLight.value,

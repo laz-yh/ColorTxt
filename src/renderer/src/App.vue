@@ -129,8 +129,11 @@ import {
   defaultReaderPaletteLight,
   defaultReaderTheme,
   defaultRecentFilesHistoryLimit,
+  mergeReaderPaletteColorEnabled,
   mergeReaderSurfacePalette,
+  overridesFromColorEnabled,
   overridesFromFullPalette,
+  resolveEffectiveReaderPalette,
   defaultRestoreSessionOnStartup,
   defaultSyncCurrentFile,
   defaultTxtrDelimitedMatchCrossLine,
@@ -151,6 +154,7 @@ import {
   minChapterMinCharCount,
   minLineHeightMultiple,
   SIDEBAR_ACTIVITY_BAR_WIDTH,
+  type ReaderSurfaceColorEnabled,
   type ReaderSurfacePalette,
 } from "./constants/appUi";
 import {
@@ -546,18 +550,12 @@ const ebookConversionSourcePath = ref<string | null>(null);
 
 const readerPaletteOverridesLight = ref<Partial<ReaderSurfacePalette>>({});
 const readerPaletteOverridesDark = ref<Partial<ReaderSurfacePalette>>({});
-
-const highlightColorsLight = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_LIGHT]);
-const highlightColorsDark = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_DARK]);
-const lineationColorsLight = ref<string[]>([...DEFAULT_LINEATION_COLORS_LIGHT]);
-const lineationColorsDark = ref<string[]>([...DEFAULT_LINEATION_COLORS_DARK]);
-/** 已收藏（全书通用）高亮词 */
-const highlightWordsByIndexGlobal = ref<HighlightWordsByIndex | undefined>(
-  undefined,
-);
-const lineationLastColors = ref<LineationLastColorPrefs>({
-  ...DEFAULT_LINEATION_LAST_COLORS,
-});
+const readerPaletteColorEnabledOverridesLight = ref<
+  Partial<ReaderSurfaceColorEnabled>
+>({});
+const readerPaletteColorEnabledOverridesDark = ref<
+  Partial<ReaderSurfaceColorEnabled>
+>({});
 
 const readerSurfaceLight = computed(() =>
   mergeReaderSurfacePalette(
@@ -571,6 +569,38 @@ const readerSurfaceDark = computed(() =>
     readerPaletteOverridesDark.value,
   ),
 );
+
+const readerPaletteColorEnabledLight = computed(() =>
+  mergeReaderPaletteColorEnabled(readerPaletteColorEnabledOverridesLight.value),
+);
+const readerPaletteColorEnabledDark = computed(() =>
+  mergeReaderPaletteColorEnabled(readerPaletteColorEnabledOverridesDark.value),
+);
+
+const effectiveReaderSurfaceLight = computed(() =>
+  resolveEffectiveReaderPalette(
+    readerSurfaceLight.value,
+    readerPaletteColorEnabledLight.value,
+  ),
+);
+const effectiveReaderSurfaceDark = computed(() =>
+  resolveEffectiveReaderPalette(
+    readerSurfaceDark.value,
+    readerPaletteColorEnabledDark.value,
+  ),
+);
+
+const highlightColorsLight = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_LIGHT]);
+const highlightColorsDark = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_DARK]);
+const lineationColorsLight = ref<string[]>([...DEFAULT_LINEATION_COLORS_LIGHT]);
+const lineationColorsDark = ref<string[]>([...DEFAULT_LINEATION_COLORS_DARK]);
+/** 已收藏（全书通用）高亮词 */
+const highlightWordsByIndexGlobal = ref<HighlightWordsByIndex | undefined>(
+  undefined,
+);
+const lineationLastColors = ref<LineationLastColorPrefs>({
+  ...DEFAULT_LINEATION_LAST_COLORS,
+});
 
 const highlightColorsForReader = computed(() =>
   currentTheme.value === "vs"
@@ -1080,6 +1110,8 @@ const persistence = useAppPersistence({
   defaultShortcutBindings,
   readerPaletteOverridesLight,
   readerPaletteOverridesDark,
+  readerPaletteColorEnabledOverridesLight,
+  readerPaletteColorEnabledOverridesDark,
   highlightColorsLight,
   highlightColorsDark,
   lineationColorsLight,
@@ -2060,6 +2092,8 @@ function refreshReaderSurfaceAfterPaletteChange() {
 function onApplyReaderPalettes(payload: {
   light: ReaderSurfacePalette;
   dark: ReaderSurfacePalette;
+  colorEnabledLight: ReaderSurfaceColorEnabled;
+  colorEnabledDark: ReaderSurfaceColorEnabled;
 }) {
   readerPaletteOverridesLight.value = overridesFromFullPalette(
     payload.light,
@@ -2068,6 +2102,12 @@ function onApplyReaderPalettes(payload: {
   readerPaletteOverridesDark.value = overridesFromFullPalette(
     payload.dark,
     defaultReaderPaletteDark,
+  );
+  readerPaletteColorEnabledOverridesLight.value = overridesFromColorEnabled(
+    payload.colorEnabledLight,
+  );
+  readerPaletteColorEnabledOverridesDark.value = overridesFromColorEnabled(
+    payload.colorEnabledDark,
   );
   persistSettings();
   refreshReaderSurfaceAfterPaletteChange();
@@ -3221,8 +3261,8 @@ useAppShellThemeWatch({
           :reader-edit-show-line-numbers="readerEditShowLineNumbers"
           :reader-edit-minimap="readerEditMinimap"
           :stream-loading="loading"
-          :reader-surface-light="readerSurfaceLight"
-          :reader-surface-dark="readerSurfaceDark"
+          :reader-surface-light="effectiveReaderSurfaceLight"
+          :reader-surface-dark="effectiveReaderSurfaceDark"
           :highlight-colors="highlightColorsForReader"
           :lineation-colors="lineationColorsForReader"
           :highlight-words-by-index="readerDisplayHighlightWordsByIndex"
@@ -3405,6 +3445,8 @@ useAppShellThemeWatch({
       :current-theme="currentTheme"
       :reader-surface-light="readerSurfaceLight"
       :reader-surface-dark="readerSurfaceDark"
+      :reader-palette-color-enabled-light="readerPaletteColorEnabledLight"
+      :reader-palette-color-enabled-dark="readerPaletteColorEnabledDark"
       :monaco-font-family="monacoFontFamily"
       :highlight-colors-light="highlightColorsLight"
       :highlight-colors-dark="highlightColorsDark"

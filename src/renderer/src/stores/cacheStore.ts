@@ -23,6 +23,8 @@ import {
 } from "./fileMetaStore";
 import {
   parseReaderPaletteOverrides,
+  parseReaderPaletteColorEnabledOverrides,
+  type ReaderSurfaceColorEnabled,
   type ReaderSurfacePalette,
 } from "../constants/readerPalette";
 import type { ShortcutActionId } from "../services/shortcutRegistry";
@@ -92,6 +94,10 @@ export type PersistedSettingsData = {
   readerPaletteOverridesLight?: Partial<ReaderSurfacePalette>;
   /** 阅读器表面色用户覆盖（暗色侧） */
   readerPaletteOverridesDark?: Partial<ReaderSurfacePalette>;
+  /** 阅读器 token 独立配色开关覆盖（亮色侧，仅持久化 false） */
+  readerPaletteColorEnabledOverridesLight?: Partial<ReaderSurfaceColorEnabled>;
+  /** 阅读器 token 独立配色开关覆盖（暗色侧，仅持久化 false） */
+  readerPaletteColorEnabledOverridesDark?: Partial<ReaderSurfaceColorEnabled>;
   /** 自定义高亮色（亮色主题），与默认逐项相同可不写入 */
   highlightColorsLight?: string[];
   /** 自定义高亮色（暗色主题） */
@@ -338,6 +344,24 @@ export function loadPersistedSettingsData(
   ) {
     const p = parseReaderPaletteOverrides(obj.readerPaletteOverridesDark);
     if (Object.keys(p).length) data.readerPaletteOverridesDark = p;
+  }
+  if (
+    obj.readerPaletteColorEnabledOverridesLight &&
+    typeof obj.readerPaletteColorEnabledOverridesLight === "object"
+  ) {
+    const p = parseReaderPaletteColorEnabledOverrides(
+      obj.readerPaletteColorEnabledOverridesLight,
+    );
+    if (Object.keys(p).length) data.readerPaletteColorEnabledOverridesLight = p;
+  }
+  if (
+    obj.readerPaletteColorEnabledOverridesDark &&
+    typeof obj.readerPaletteColorEnabledOverridesDark === "object"
+  ) {
+    const p = parseReaderPaletteColorEnabledOverrides(
+      obj.readerPaletteColorEnabledOverridesDark,
+    );
+    if (Object.keys(p).length) data.readerPaletteColorEnabledOverridesDark = p;
   }
   if (Array.isArray(obj.highlightColorsLight)) {
     const h = parseHighlightColorsArray(obj.highlightColorsLight);

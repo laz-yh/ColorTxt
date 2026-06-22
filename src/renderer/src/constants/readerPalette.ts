@@ -27,6 +27,39 @@ export const READER_SURFACE_KEYS = [
   "txtrEnglish",
 ] as const satisfies readonly (keyof ReaderSurfacePalette)[];
 
+/** 可单独开关的 token 配色（关闭时回退为正文色） */
+export const READER_SURFACE_OPTIONAL_COLOR_KEYS = [
+  "txtrQuoteInner",
+  "txtrBracketInner",
+  "txtrPunctuation",
+  "txtrSpecialMarker",
+  "txtrNumber",
+  "txtrEnglish",
+] as const satisfies readonly (keyof ReaderSurfacePalette)[];
+
+export type ReaderSurfaceOptionalColorKey =
+  (typeof READER_SURFACE_OPTIONAL_COLOR_KEYS)[number];
+
+export type ReaderSurfaceColorEnabled = Record<
+  ReaderSurfaceOptionalColorKey,
+  boolean
+>;
+
+export const defaultReaderPaletteColorEnabled: ReaderSurfaceColorEnabled = {
+  txtrQuoteInner: true,
+  txtrBracketInner: true,
+  txtrPunctuation: true,
+  txtrSpecialMarker: true,
+  txtrNumber: true,
+  txtrEnglish: true,
+};
+
+export function isReaderSurfaceOptionalColorKey(
+  key: keyof ReaderSurfacePalette,
+): key is ReaderSurfaceOptionalColorKey {
+  return (READER_SURFACE_OPTIONAL_COLOR_KEYS as readonly string[]).includes(key);
+}
+
 /** 配色表一行：双列；「背景色」单独一行 */
 export type ReaderSurfaceTableRow =
   | readonly [keyof ReaderSurfacePalette, keyof ReaderSurfacePalette]
@@ -116,6 +149,56 @@ export function overridesFromFullPalette(
   for (const key of READER_SURFACE_KEYS) {
     if (draft[key].toLowerCase() !== defaults[key].toLowerCase()) {
       (out as Record<string, string>)[key] = draft[key];
+    }
+  }
+  return out;
+}
+
+export function mergeReaderPaletteColorEnabled(
+  partial?: Partial<ReaderSurfaceColorEnabled> | null,
+): ReaderSurfaceColorEnabled {
+  if (!partial) return { ...defaultReaderPaletteColorEnabled };
+  return { ...defaultReaderPaletteColorEnabled, ...partial };
+}
+
+/** 从持久化 JSON 解析开关覆盖；仅接受 `false`（默认全开） */
+export function parseReaderPaletteColorEnabledOverrides(
+  raw: unknown,
+): Partial<ReaderSurfaceColorEnabled> {
+  if (!raw || typeof raw !== "object") return {};
+  const o = raw as Record<string, unknown>;
+  const out: Partial<ReaderSurfaceColorEnabled> = {};
+  for (const key of READER_SURFACE_OPTIONAL_COLOR_KEYS) {
+    if (o[key] === false) {
+      out[key] = false;
+    }
+  }
+  return out;
+}
+
+/** 与默认比较，得到应持久化的开关覆盖（仅 `false` 写入） */
+export function overridesFromColorEnabled(
+  draft: ReaderSurfaceColorEnabled,
+  defaults: ReaderSurfaceColorEnabled = defaultReaderPaletteColorEnabled,
+): Partial<ReaderSurfaceColorEnabled> {
+  const out: Partial<ReaderSurfaceColorEnabled> = {};
+  for (const key of READER_SURFACE_OPTIONAL_COLOR_KEYS) {
+    if (draft[key] !== defaults[key]) {
+      out[key] = draft[key];
+    }
+  }
+  return out;
+}
+
+/** 将关闭的 token 色回退为正文色，供 Monaco 主题与预览使用 */
+export function resolveEffectiveReaderPalette(
+  palette: ReaderSurfacePalette,
+  enabled: ReaderSurfaceColorEnabled,
+): ReaderSurfacePalette {
+  const out = { ...palette };
+  for (const key of READER_SURFACE_OPTIONAL_COLOR_KEYS) {
+    if (!enabled[key]) {
+      out[key] = palette.bodyText;
     }
   }
   return out;

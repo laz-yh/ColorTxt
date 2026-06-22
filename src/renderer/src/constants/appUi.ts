@@ -1,17 +1,28 @@
 import { readerEditorLineHeight } from "../monaco/readerEditorOptions";
 
-export type { ReaderSurfacePalette } from "./readerPalette";
+export type {
+  ReaderSurfaceColorEnabled,
+  ReaderSurfaceOptionalColorKey,
+  ReaderSurfacePalette,
+} from "./readerPalette";
 export {
   applyReaderSurfaceToDocument,
+  defaultReaderPaletteColorEnabled,
   defaultReaderPaletteDark,
   defaultReaderPaletteLight,
+  isReaderSurfaceOptionalColorKey,
   isValidReaderSurfaceHex,
+  mergeReaderPaletteColorEnabled,
   mergeReaderSurfacePalette,
+  overridesFromColorEnabled,
   overridesFromFullPalette,
+  parseReaderPaletteColorEnabledOverrides,
   parseReaderPaletteOverrides,
   READER_SURFACE_KEYS,
   READER_SURFACE_LABELS,
+  READER_SURFACE_OPTIONAL_COLOR_KEYS,
   READER_SURFACE_TABLE_ROWS,
+  resolveEffectiveReaderPalette,
 } from "./readerPalette";
 
 export {
