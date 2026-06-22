@@ -123,6 +123,7 @@
 | 硅基流动                     | `https://api.siliconflow.cn/v1`                           |
 | Agnes AI                     | `https://apihub.agnes-ai.com/v1`                          |
 | MiniMax                      | `https://api.minimaxi.com/v1`                             |
+| 小米 MiMo                    | `https://api.xiaomimimo.com/v1`                           |
 | OpenAI                       | `https://api.openai.com/v1`                               |
 | OpenRouter                   | `https://openrouter.ai/api/v1`                            |
 | Google Gemini（OpenAI 兼容） | `https://generativelanguage.googleapis.com/v1beta/openai` |
