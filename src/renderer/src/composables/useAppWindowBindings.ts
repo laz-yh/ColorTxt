@@ -12,6 +12,7 @@ import { appAlert } from "../services/appDialog";
 import {
   bindAppShortcuts,
   EDIT_MODE_MONACO_DEFERRED_ACTIONS,
+  VOICE_READ_SCROLL_BLOCKED_ACTIONS,
 } from "../services/shortcutService";
 import { hasModalOrEscBeforeModalLayer } from "../utils/modalStack";
 import { useAppFileSession } from "./useAppFileSession";
@@ -131,7 +132,7 @@ export function useAppWindowBindings(deps: {
   handleWindowCloseRequest: () => Promise<void>;
   /** 编辑模式：焦点在 Monaco 内时，仅滚屏/查找等冲突快捷键交给编辑器，其余窗口快捷键仍生效 */
   readerEditMode: Ref<boolean>;
-  /** 语音朗读播放中：禁用窗口级滚动/翻页快捷键 */
+  /** 语音朗读播放中：禁用窗口级滚动/翻页/章节跳转/查找快捷键 */
   voiceReadScrollLocked?: Ref<boolean>;
 }) {
   const unsubscribers: Array<() => void> = [];
@@ -255,12 +256,14 @@ export function useAppWindowBindings(deps: {
         () => deps.shortcutBindings.value,
         (ev) =>
           !hasModalOrEscBeforeModalLayer() &&
-          !keyboardEventFromReaderSidebar(ev) &&
-          !deps.voiceReadScrollLocked?.value,
+          !keyboardEventFromReaderSidebar(ev),
         (action, ev) =>
           deps.readerEditMode.value &&
           keyboardTargetInsideReaderMonacoEditor(ev, deps.readerRef) &&
           EDIT_MODE_MONACO_DEFERRED_ACTIONS.has(action),
+        (action) =>
+          Boolean(deps.voiceReadScrollLocked?.value) &&
+          VOICE_READ_SCROLL_BLOCKED_ACTIONS.has(action),
       ),
     );
 

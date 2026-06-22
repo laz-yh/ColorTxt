@@ -59,11 +59,24 @@ export const EDIT_MODE_MONACO_DEFERRED_ACTIONS: ReadonlySet<ActionKey> =
     "toggleFind",
   ]);
 
+/** 语音朗读播放中：仅禁用阅读器滚动/章节跳转/查找，其余窗口快捷键仍可用 */
+export const VOICE_READ_SCROLL_BLOCKED_ACTIONS: ReadonlySet<ActionKey> =
+  new Set([
+    "scrollDownLine",
+    "scrollUpLine",
+    "scrollPageUp",
+    "scrollPageDown",
+    "jumpToPrevChapter",
+    "jumpToNextChapter",
+    "toggleFind",
+  ]);
+
 export function bindAppShortcuts(
   actions: AppShortcutActions,
   getBindings: () => ShortcutBindingMap,
   shouldHandleEvent?: (ev: KeyboardEvent) => boolean,
   shouldDeferAction?: (action: ActionKey, ev: KeyboardEvent) => boolean,
+  shouldConsumeAction?: (action: ActionKey, ev: KeyboardEvent) => boolean,
 ): () => void {
   const onShortcutKeyDown = (ev: KeyboardEvent) => {
     if (shouldHandleEvent && !shouldHandleEvent(ev)) return;
@@ -80,6 +93,11 @@ export function bindAppShortcuts(
       break;
     }
     if (!matchedAction) return;
+    if (shouldConsumeAction?.(matchedAction, ev)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
     if (shouldDeferAction?.(matchedAction, ev)) return;
     ev.preventDefault();
     ev.stopPropagation();
