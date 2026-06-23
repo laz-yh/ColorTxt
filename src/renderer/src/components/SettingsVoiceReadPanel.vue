@@ -55,6 +55,7 @@ import {
 import { useSecretStorageHint } from "../composables/useSecretStorageHint";
 import type { ConnectionTestResult } from "../composables/useConnectionTest";
 import { appAlert } from "../services/appDialog";
+import type { ColorTxtOpenDialogOptions } from "@shared/colorTxtOpenSaveDialog";
 import { buildLineSpeakChunks } from "../services/voiceRead/voiceReadLineBuild";
 import {
   buildDialogueAiPreviewSpeakChunks,
@@ -203,6 +204,10 @@ const showMimoReferenceAudio = computed(
     draft.value.engine === "mimo" &&
     isMimoTtsVoiceCloneModel(mimoTtsModel.value),
 );
+
+const mimoReferenceAudioOpenFilters: ColorTxtOpenDialogOptions["filters"] = [
+  { name: "音频文件", extensions: ["mp3", "wav"] },
+];
 
 const showMimoPresetVoicePicker = computed(() => {
   if (draft.value.engine !== "mimo") return true;
@@ -1020,6 +1025,7 @@ onUnmounted(() => {
               <PathPickerInput
                 v-model="mimoReferenceAudioPathModel"
                 :is-directory="false"
+                :filters="mimoReferenceAudioOpenFilters"
                 placeholder="选择 mp3 或 wav 参考音频"
                 aria-label="MiMo 参考音频"
               />
