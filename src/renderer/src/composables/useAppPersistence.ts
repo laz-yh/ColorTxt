@@ -31,7 +31,7 @@ import {
   persistTxtFileListSnapshot,
   type TxtFileItem,
 } from "../stores/cacheStore";
-import { defaultCharacterPortraitCacheRoot } from "@shared/characterPortraitPaths";
+import { resolveDefaultCharacterPortraitCacheDirSync } from "../utils/defaultCacheDirs";
 import type {
   FileCategoryDefinition,
   FileSortMode,
@@ -1242,14 +1242,9 @@ export function useAppPersistence(deps: {
       needDefaultSettingsPersist = true;
     }
     if (!characterPortraitCacheDirKeyPresent) {
-      try {
-        const ud = await window.colorTxt.getPath("userData");
-        if (ud) {
-          deps.characterPortraitCacheDir.value =
-            defaultCharacterPortraitCacheRoot(ud);
-        }
-      } catch {
-        // ignore
+      const portraitDir = resolveDefaultCharacterPortraitCacheDirSync();
+      if (portraitDir) {
+        deps.characterPortraitCacheDir.value = portraitDir;
       }
       needDefaultSettingsPersist = true;
     }

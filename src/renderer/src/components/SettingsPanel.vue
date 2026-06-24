@@ -61,6 +61,7 @@ import { getBuiltinEmbeddingBlockMessage } from "../ai/embeddingReady";
 import { icons } from "../icons";
 import {
   resolveDefaultBuiltinModelCacheDirSync,
+  resolveDefaultCharacterPortraitCacheDirSync,
   resolveDefaultEbookConvertOutputDirSync,
   resolveEffectiveAiDataCacheDir,
   resolveEffectiveBuiltinModelCacheDir,
@@ -85,6 +86,7 @@ type SettingsAIPanelExpose = {
   finalizeChatProfiles?: () => void;
   initChatProfiles?: () => void;
   resetCurrentChatProfile?: () => void;
+  resetAiPageDraft?: () => void;
 };
 
 type SettingsTxt2ImgPanelExpose = {
@@ -358,7 +360,7 @@ function resetEditDraft() {
 }
 
 function resetAiDraft() {
-  aiPanelRef.value?.resetCurrentChatProfile?.();
+  aiPanelRef.value?.resetAiPageDraft?.();
 }
 
 function resetVectorModelDraft() {
@@ -377,6 +379,8 @@ function resetVectorModelDraft() {
 
 function resetTxt2ImgDraft() {
   txt2imgPanelRef.value?.resetCurrentTxt2ImgProfile?.();
+  draftCharacterPortraitCacheDir.value =
+    resolveDefaultCharacterPortraitCacheDirSync();
 }
 
 function resetSkillsDraft() {

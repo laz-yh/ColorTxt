@@ -543,8 +543,16 @@ const ebookConvertOutputDir = ref(
     }
   })(),
 );
-/** 角色立绘缓存根目录（绝对路径）；启动后由持久化或默认 userData/CharacterPortrait 填充 */
-const characterPortraitCacheDir = ref("");
+/** 角色立绘缓存根目录（绝对路径）；出厂默认 userData/CharacterPortrait */
+const characterPortraitCacheDir = ref(
+  (() => {
+    try {
+      return window.colorTxt.getDefaultCharacterPortraitCacheDir();
+    } catch {
+      return "";
+    }
+  })(),
+);
 const characterCardTextureEffect = ref<CharacterCardTextureEffectId>(
   DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT,
 );

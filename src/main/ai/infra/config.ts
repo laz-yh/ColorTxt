@@ -43,10 +43,40 @@ import {
 } from "./dataFs";
 import { getDeprecatedSecret, getSecret, purgeDeprecatedSecretSlots, setSecretsBatch } from "../../secretStorage";
 
+/** 将空目录字段填为当前 userData 下的默认绝对路径 */
+function normalizeCacheDirPaths(cfg: AIConfig): void {
+  if (!cfg.aiDataCacheDir.trim()) {
+    cfg.aiDataCacheDir = getDefaultAiDataCacheDirSync();
+  }
+  if (!cfg.embedding.builtinModelCacheDir.trim()) {
+    cfg.embedding.builtinModelCacheDir = getDefaultBuiltinModelCacheDirSync();
+  }
+}
+
+function persistedCacheDirsWereEmpty(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return true;
+  const o = raw as Record<string, unknown>;
+  const aiDir =
+    typeof o.aiDataCacheDir === "string" ? o.aiDataCacheDir.trim() : "";
+  const emb = o.embedding;
+  const modelDir =
+    emb &&
+    typeof emb === "object" &&
+    typeof (emb as { builtinModelCacheDir?: string }).builtinModelCacheDir ===
+      "string"
+      ? (emb as { builtinModelCacheDir: string }).builtinModelCacheDir.trim()
+      : "";
+  return !aiDir || !modelDir;
+}
+
 /** IPC / 磁盘读取后的不完整对象也可合并为完整 AIConfig */
 export function mergeAiConfigWithDefaults(raw: unknown): AIConfig {
   const base = structuredClone(defaultAIConfig);
-  if (!raw || typeof raw !== "object") return ensureAiConfigProfiles(base);
+  if (!raw || typeof raw !== "object") {
+    const cfg = ensureAiConfigProfiles(base);
+    normalizeCacheDirPaths(cfg);
+    return cfg;
+  }
   const o = raw as Record<string, unknown>;
   if (typeof o.aiDataCacheDir === "string") {
     base.aiDataCacheDir = o.aiDataCacheDir;
@@ -93,7 +123,9 @@ export function mergeAiConfigWithDefaults(raw: unknown): AIConfig {
   if (typeof o.activeTxt2ImgProfileId === "string") {
     base.activeTxt2ImgProfileId = o.activeTxt2ImgProfileId;
   }
-  return ensureAiConfigProfiles(base);
+  const cfg = ensureAiConfigProfiles(base);
+  normalizeCacheDirPaths(cfg);
+  return cfg;
 }
 
 function stripApiKeysForDisk(cfg: AIConfig): AIConfig {
@@ -274,16 +306,19 @@ export async function loadAiConfig(): Promise<AIConfig> {
   try {
     const p = await resolveConfigPathForLoad();
     const buf = await readFile(p, "utf-8");
-    const merged = mergeAiConfigWithDefaults(JSON.parse(buf));
+    const parsed: unknown = JSON.parse(buf);
+    const dirsWereEmpty = persistedCacheDirsWereEmpty(parsed);
+    const merged = mergeAiConfigWithDefaults(parsed);
     const { cfg, migratedPlaintext, profileKeysMigrated } =
       await hydrateApiKeysFromVault(merged);
-    if (migratedPlaintext || profileKeysMigrated) {
+    if (migratedPlaintext || profileKeysMigrated || dirsWereEmpty) {
       await writeConfigJson(cfg);
     }
     return cfg;
   } catch {
-    const merged = structuredClone(defaultAIConfig);
+    const merged = mergeAiConfigWithDefaults(null);
     const { cfg } = await hydrateApiKeysFromVault(merged);
+    await writeConfigJson(cfg);
     return cfg;
   }
 }

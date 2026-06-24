@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { DEFAULT_AI_QUICK_QUESTIONS, type AIConfig } from "@shared/aiTypes";
 import {
+  DEFAULT_AI_QUICK_QUESTIONS,
   DEFAULT_WORDCLOUD_MAX_WORDS,
   MAX_TOOL_ROUNDS_MAX,
   MAX_TOOL_ROUNDS_MIN,
   WORDCLOUD_MAX_WORDS_MAX,
   WORDCLOUD_MAX_WORDS_MIN,
+  defaultAIConfig,
+  type AIConfig,
 } from "@shared/aiTypes";
 import {
   CHAT_API_PROVIDER_CUSTOM_ID,
@@ -220,6 +222,18 @@ function restoreDefaultQuickQuestions() {
   resetQuickQuestionRowIds(modelValue.value.quickQuestions.length);
 }
 
+/** 「重置当前页」：当前对话方案 + 本页全局项（Token、缓存目录、思维导图、词云、快速提问） */
+function resetAiPageDraft() {
+  chatProfileDraft.resetCurrentProfileChat();
+  const def = defaultAIConfig;
+  modelValue.value.showTokenUsage = def.showTokenUsage;
+  modelValue.value.aiDataCacheDir = resolveDefaultAiDataCacheDirSync();
+  modelValue.value.autoMindmapOnSummaryAndCharacters =
+    def.autoMindmapOnSummaryAndCharacters;
+  modelValue.value.wordcloudMaxWords = def.wordcloudMaxWords;
+  restoreDefaultQuickQuestions();
+}
+
 function removeQuickQuestion(i: number) {
   const q = modelValue.value.quickQuestions;
   if (q.length <= 1) return;
@@ -324,6 +338,7 @@ defineExpose({
   finalizeChatProfiles: chatProfileDraft.finalizeBeforeSave,
   initChatProfiles,
   resetCurrentChatProfile: chatProfileDraft.resetCurrentProfileChat,
+  resetAiPageDraft,
 });
 
 </script>
