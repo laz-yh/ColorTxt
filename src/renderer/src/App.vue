@@ -2326,10 +2326,12 @@ function onFindHighlightTermFromSidebar(text: string) {
   if (!currentFile.value || loading.value || totalLineCount.value <= 0) return;
   if (isVoiceReadNavigationBlocked.value) return;
   ensurePinBeforeRevealFindWidget();
-  const found = readerRef.value?.jumpToNextInlineSearchMatch?.(text, {
+  const useRegex = text.startsWith("regex:");
+  const pattern = useRegex ? text.slice(6) : text;
+  const found = readerRef.value?.jumpToNextInlineSearchMatch?.(pattern, {
     caseSensitive: false,
     wholeWord: false,
-    useRegex: false,
+    useRegex,
     smooth: true,
   });
   hasInlineSearchHighlight.value = found === true;

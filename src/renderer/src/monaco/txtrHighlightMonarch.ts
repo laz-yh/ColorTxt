@@ -9,12 +9,35 @@ export type TxtrMonarchHighlightOptions = {
   highlightWordsByIndex: HighlightWordsByIndex | undefined;
 };
 
+const REGEX_PREFIX = "regex:";
+
 function escapeRegExpLiteral(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function buildHighlightPattern(phrase: string): RegExp {
+  if (phrase.startsWith(REGEX_PREFIX)) {
+    const pattern = phrase.slice(REGEX_PREFIX.length);
+    if (!pattern) return /^$/;
+    try {
+      return new RegExp(pattern, "iu");
+    } catch {
+      return /^$/;
+    }
+  }
+  return new RegExp(escapeRegExpLiteral(phrase), "iu");
+}
+
+function highlightPatternLength(phrase: string): number {
+  if (phrase.startsWith(REGEX_PREFIX)) {
+    return phrase.slice(REGEX_PREFIX.length).length;
+  }
+  return phrase.length;
+}
+
 /**
  * 生成自定义高亮词的 Monarch 规则（每条一词一类 token：`txtr.customHighlight.{index}`）。
+ * 以 `regex:` 开头的高亮词采用正则匹配，其余走字面量匹配。
  * 与原先 `findMatches` 一致：大小写不敏感。
  */
 export function buildTxtrCustomHighlightMonarchRules(
@@ -28,7 +51,7 @@ export function buildTxtrCustomHighlightMonarchRules(
     return [];
   }
 
-  type Entry = { phrase: string; colorIndex: number; len: number };
+  type Entry = { pattern: RegExp; colorIndex: number; len: number };
   const entries: Entry[] = [];
 
   for (const [key, words] of Object.entries(opts.highlightWordsByIndex)) {
@@ -42,14 +65,16 @@ export function buildTxtrCustomHighlightMonarchRules(
     }
     for (const phrase of words) {
       if (!phrase) continue;
-      entries.push({ phrase, colorIndex: idx, len: phrase.length });
+      const pattern = buildHighlightPattern(phrase);
+      const len = highlightPatternLength(phrase);
+      entries.push({ pattern, colorIndex: idx, len });
     }
   }
 
   const seen = new Set<string>();
   const unique: Entry[] = [];
   for (const e of entries) {
-    const k = `${e.colorIndex}\0${e.phrase}`;
+    const k = `${e.colorIndex}\0${e.pattern.source}`;
     if (seen.has(k)) continue;
     seen.add(k);
     unique.push(e);
@@ -61,7 +86,7 @@ export function buildTxtrCustomHighlightMonarchRules(
   });
 
   return unique.map((e) => [
-    new RegExp(escapeRegExpLiteral(e.phrase), "iu"),
+    e.pattern,
     `txtr.customHighlight.${e.colorIndex}`,
   ]);
 }
