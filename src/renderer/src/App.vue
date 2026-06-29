@@ -2219,6 +2219,21 @@ function onAddHighlightTerm(payload: { text: string; colorIndex: number }) {
   persistFileMeta();
 }
 
+/** 从侧栏手动录入添加高亮词（随机颜色） */
+function onAddHighlightTermFromSidebar(text: string) {
+  const path = currentFile.value;
+  if (!path) return;
+  const colors = highlightColorsForReader.value;
+  const colorIndex = Math.floor(Math.random() * colors.length);
+  fileMetaRecords.value = assignHighlightTermToColorForFile(
+    fileMetaRecords.value,
+    path,
+    colorIndex,
+    text,
+  );
+  persistFileMeta();
+}
+
 function onRemoveHighlightTerm(payload: {
   text: string;
   scope?: "global" | "book";
@@ -3304,6 +3319,7 @@ useAppShellThemeWatch({
           @update:file-list-editing="fileListEditing = $event"
           @request-expand-panel="showSidebar = true"
           @request-collapse-panel="showSidebar = false"
+          @add-highlight-term="onAddHighlightTermFromSidebar"
           @open-color-scheme="showColorSchemePanel = true"
           @open-settings="showSettingsPanel = true"
         />
