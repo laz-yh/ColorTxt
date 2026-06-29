@@ -1,3 +1,4 @@
+import { isVoiceReadEngineId } from "@shared/voiceReadEngines";
 import type { ChapterMatchRule } from "../chapter";
 import type {
   FileCategoryDefinition,
@@ -22,6 +23,8 @@ import {
 } from "./fileMetaStore";
 import {
   parseReaderPaletteOverrides,
+  parseReaderPaletteColorEnabledOverrides,
+  type ReaderSurfaceColorEnabled,
   type ReaderSurfacePalette,
 } from "../constants/readerPalette";
 import type { ShortcutActionId } from "../services/shortcutRegistry";
@@ -32,6 +35,10 @@ import {
   mergeAiSkillsEnabled,
 } from "@shared/aiSkills";
 import type { VoiceReadSettings } from "../constants/voiceRead";
+import {
+  mergeTimedScrollSettings,
+  type TimedScrollSettings,
+} from "../constants/timedScroll";
 import { normalizeCharacterCardTextureEffect } from "@shared/characterCardTextureEffects";
 import { parseWordcloudAngleMode } from "../constants/wordcloudUi";
 import { parseWordcloudPaletteId } from "../constants/wordcloudPalettes";
@@ -73,6 +80,8 @@ export type PersistedSettingsData = {
   monacoAdvancedWrapping?: boolean;
   /** Monaco 阅读区平滑滚动（滚轮、程序性 setScrollTop/revealLine 等） */
   monacoSmoothScrolling?: boolean;
+  /** 阅读区顶部粘性章节标题（Monaco stickyScroll） */
+  stickyChapterTitleEnabled?: boolean;
   /** 编辑模式下是否显示行号 */
   readerEditShowLineNumbers?: boolean;
   /** 编辑模式下是否显示小地图 */
@@ -85,12 +94,18 @@ export type PersistedSettingsData = {
   >;
   /** 全屏时阅读区宽度（百分比） */
   fullscreenReaderWidthPercent?: number;
+  /** 定时滚动：范围与间隔 */
+  timedScroll?: Partial<TimedScrollSettings>;
   /** 用户自定义快捷键（动作ID -> accelerator） */
   shortcutBindings?: Partial<Record<ShortcutActionId, string>>;
   /** 阅读器表面色用户覆盖（亮色侧） */
   readerPaletteOverridesLight?: Partial<ReaderSurfacePalette>;
   /** 阅读器表面色用户覆盖（暗色侧） */
   readerPaletteOverridesDark?: Partial<ReaderSurfacePalette>;
+  /** 阅读器 token 独立配色开关覆盖（亮色侧，仅持久化 false） */
+  readerPaletteColorEnabledOverridesLight?: Partial<ReaderSurfaceColorEnabled>;
+  /** 阅读器 token 独立配色开关覆盖（暗色侧，仅持久化 false） */
+  readerPaletteColorEnabledOverridesDark?: Partial<ReaderSurfaceColorEnabled>;
   /** 自定义高亮色（亮色主题），与默认逐项相同可不写入 */
   highlightColorsLight?: string[];
   /** 自定义高亮色（暗色主题） */
@@ -298,6 +313,9 @@ export function loadPersistedSettingsData(
   if (typeof obj.monacoSmoothScrolling === "boolean") {
     data.monacoSmoothScrolling = obj.monacoSmoothScrolling;
   }
+  if (typeof obj.stickyChapterTitleEnabled === "boolean") {
+    data.stickyChapterTitleEnabled = obj.stickyChapterTitleEnabled;
+  }
   if (typeof obj.readerEditShowLineNumbers === "boolean") {
     data.readerEditShowLineNumbers = obj.readerEditShowLineNumbers;
   }
@@ -319,6 +337,11 @@ export function loadPersistedSettingsData(
       Math.min(100, Math.floor(obj.fullscreenReaderWidthPercent)),
     );
   }
+  if (obj.timedScroll && typeof obj.timedScroll === "object") {
+    data.timedScroll = mergeTimedScrollSettings(
+      obj.timedScroll as Partial<TimedScrollSettings>,
+    );
+  }
   if (obj.shortcutBindings && typeof obj.shortcutBindings === "object") {
     data.shortcutBindings = obj.shortcutBindings as Partial<
       Record<ShortcutActionId, string>
@@ -337,6 +360,24 @@ export function loadPersistedSettingsData(
   ) {
     const p = parseReaderPaletteOverrides(obj.readerPaletteOverridesDark);
     if (Object.keys(p).length) data.readerPaletteOverridesDark = p;
+  }
+  if (
+    obj.readerPaletteColorEnabledOverridesLight &&
+    typeof obj.readerPaletteColorEnabledOverridesLight === "object"
+  ) {
+    const p = parseReaderPaletteColorEnabledOverrides(
+      obj.readerPaletteColorEnabledOverridesLight,
+    );
+    if (Object.keys(p).length) data.readerPaletteColorEnabledOverridesLight = p;
+  }
+  if (
+    obj.readerPaletteColorEnabledOverridesDark &&
+    typeof obj.readerPaletteColorEnabledOverridesDark === "object"
+  ) {
+    const p = parseReaderPaletteColorEnabledOverrides(
+      obj.readerPaletteColorEnabledOverridesDark,
+    );
+    if (Object.keys(p).length) data.readerPaletteColorEnabledOverridesDark = p;
   }
   if (Array.isArray(obj.highlightColorsLight)) {
     const h = parseHighlightColorsArray(obj.highlightColorsLight);
@@ -438,36 +479,26 @@ export function loadPersistedSettingsData(
     data.voiceRead = {
       scheme:
         vr.scheme === "single" || vr.scheme === "multi" ? vr.scheme : undefined,
-      engine:
-        vr.engine === "edge" || vr.engine === "dashscope" || vr.engine === "system"
-          ? vr.engine
+      engine: isVoiceReadEngineId(vr.engine) ? vr.engine : undefined,
+      single:
+        vr.single && typeof vr.single === "object"
+          ? (vr.single as VoiceReadSettings["single"])
           : undefined,
-      voiceId: typeof vr.voiceId === "string" ? vr.voiceId : undefined,
-      narrationVoiceId:
-        typeof vr.narrationVoiceId === "string"
-          ? vr.narrationVoiceId
-          : undefined,
-      dialogueVoiceId:
-        typeof vr.dialogueVoiceId === "string" ? vr.dialogueVoiceId : undefined,
-      dialogueMaleVoiceId:
-        typeof vr.dialogueMaleVoiceId === "string"
-          ? vr.dialogueMaleVoiceId
-          : undefined,
-      dialogueFemaleVoiceId:
-        typeof vr.dialogueFemaleVoiceId === "string"
-          ? vr.dialogueFemaleVoiceId
-          : undefined,
-      dialogueQuoteStyles: Array.isArray(vr.dialogueQuoteStyles)
-        ? vr.dialogueQuoteStyles
-        : undefined,
-      aiSpeakerRecognitionEnabled:
-        typeof vr.aiSpeakerRecognitionEnabled === "boolean"
-          ? vr.aiSpeakerRecognitionEnabled
+      multi:
+        vr.multi && typeof vr.multi === "object"
+          ? (vr.multi as VoiceReadSettings["multi"])
           : undefined,
       rate: typeof vr.rate === "number" ? vr.rate : undefined,
       pitch: typeof vr.pitch === "number" ? vr.pitch : undefined,
+      volume: typeof vr.volume === "number" ? vr.volume : undefined,
+      emotionEnabled:
+        typeof vr.emotionEnabled === "boolean" ? vr.emotionEnabled : undefined,
       dashscopeApiKey:
         typeof vr.dashscopeApiKey === "string" ? vr.dashscopeApiKey : undefined,
+      engineConfig:
+        vr.engineConfig && typeof vr.engineConfig === "object"
+          ? (vr.engineConfig as Record<string, unknown>)
+          : undefined,
       profiles: Array.isArray(vr.profiles) ? vr.profiles : undefined,
       activeProfileId:
         typeof vr.activeProfileId === "string" ? vr.activeProfileId : undefined,

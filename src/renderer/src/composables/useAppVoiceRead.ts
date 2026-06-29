@@ -1,10 +1,13 @@
 import { computed, nextTick, ref, watch, type Ref } from "vue";
 import type { CharacterRosterEntry } from "@shared/characterTypes";
 import type ReaderMain from "../components/ReaderMain.vue";
+import type { VoiceReadProfile } from "@shared/voiceReadProfiles";
 import {
-  clampVoiceReadPitch,
   clampVoiceReadRate,
+  clampVoiceReadVolume,
   mergeVoiceReadSettings,
+  voiceReadSettingsSynthesisFingerprint,
+  voiceReadAiEmotionRecognitionActive,
   voiceReadAiSpeakerRecognitionActive,
   type VoiceReadSettings,
 } from "../constants/voiceRead";
@@ -12,6 +15,7 @@ import {
   VoiceReadLinePlayer,
   type VoiceReadSpeakChunk,
 } from "../services/voiceRead/voiceReadLinePlayer";
+import { voiceReadRequiresSerialChunkFetch } from "../services/voiceRead/voiceReadEngineRouting";
 import { hasVoiceReadSpeakableText } from "../services/voiceRead/voiceReadTextChunks";
 import { buildLineSpeakChunks } from "../services/voiceRead/voiceReadLineBuild";
 import type { VoiceReadQuoteCarry } from "../services/voiceRead/voiceReadSegments";
@@ -32,6 +36,8 @@ const VOICE_READ_BATCH_LINES = 28;
 export function useAppVoiceRead(deps: {
   readerRef: Ref<InstanceType<typeof ReaderMain> | null>;
   voiceReadSettings: Ref<VoiceReadSettings>;
+  voiceReadProfiles: Ref<VoiceReadProfile[]>;
+  activeVoiceReadProfileId: Ref<string>;
   currentFile: Ref<string | null>;
   loading: Ref<boolean>;
   readerEditMode: Ref<boolean>;
@@ -43,14 +49,17 @@ export function useAppVoiceRead(deps: {
   const isSynthesizing = ref(false);
   const synthesizingPhase = ref<VoiceReadSynthesizingPhase | null>(null);
   const toolbarRate = ref(1);
-  const toolbarPitch = ref(1);
+  const toolbarVolume = ref(1);
   const player = new VoiceReadLinePlayer();
   /** 批次构建（含 AI 引号分类）进行中的深度 */
   let prepareSynthesisDepth = 0;
   let playerSynthesisActive = false;
+  /** AI 识别结束到播放器接管合成 UI 之间的衔接，避免短暂显示「播放中」 */
+  let ttsBridgeActive = false;
 
   function syncSynthesizingState() {
-    const busy = prepareSynthesisDepth > 0 || playerSynthesisActive;
+    const busy =
+      prepareSynthesisDepth > 0 || playerSynthesisActive || ttsBridgeActive;
     isSynthesizing.value = busy;
     if (!busy) {
       synthesizingPhase.value = null;
@@ -65,14 +74,24 @@ export function useAppVoiceRead(deps: {
     syncSynthesizingState();
   }
 
-  function endPrepareSynthesis() {
+  function endPrepareSynthesis(handoffToTts = false) {
     prepareSynthesisDepth = Math.max(0, prepareSynthesisDepth - 1);
+    if (handoffToTts && prepareSynthesisDepth === 0 && mode.value !== "off") {
+      ttsBridgeActive = true;
+    }
+    syncSynthesizingState();
+  }
+
+  function endTtsBridge() {
+    if (!ttsBridgeActive) return;
+    ttsBridgeActive = false;
     syncSynthesizingState();
   }
 
   function resetSynthesizingState() {
     prepareSynthesisDepth = 0;
     playerSynthesisActive = false;
+    ttsBridgeActive = false;
     isSynthesizing.value = false;
     synthesizingPhase.value = null;
   }
@@ -93,7 +112,7 @@ export function useAppVoiceRead(deps: {
     return gen === playbackLoopGen && modeValue !== "off";
   }
 
-  /** 当前批次（供行内 jumpToChunk） */
+  /** 当前批次（供段高亮与行锚点） */
   let activeBatchEnd = 0;
   let activeChunks: VoiceReadSpeakChunk[] = [];
   let activeChunkToLine: number[] = [];
@@ -119,6 +138,8 @@ export function useAppVoiceRead(deps: {
   const isVoiceReadBlocksFind = computed(() => mode.value === "playing");
   /** 朗读模式中（含暂停）：顶栏排版/编辑相关控件不可用 */
   const isVoiceReadHeaderLocked = computed(() => mode.value !== "off");
+  /** 识别/合成/播放中：拦截侧栏跳转，避免与批次播放冲突 */
+  const isVoiceReadNavigationBlocked = computed(() => mode.value === "playing");
 
   async function buildLineSpeakChunksWithSpeakers(
     settings: VoiceReadSettings,
@@ -128,6 +149,10 @@ export function useAppVoiceRead(deps: {
   ) {
     const roster = deps.characterRoster.value;
     const aiOn = voiceReadAiSpeakerRecognitionActive(
+      settings,
+      deps.aiFeaturesEnabled.value,
+    );
+    const emotionOn = voiceReadAiEmotionRecognitionActive(
       settings,
       deps.aiFeaturesEnabled.value,
     );
@@ -146,16 +171,19 @@ export function useAppVoiceRead(deps: {
       rawLine,
       dialogueTexts,
       roster,
+      emotionOn,
     );
-    const quotes = await attributeDialogueQuotes(
+    const { quotes, narrationEmotion } = await attributeDialogueQuotes(
       rawLine,
       dialogueTexts,
       roster,
       cacheKey,
+      emotionOn,
     );
     return buildLineSpeakChunks(settings, rawLine, roster, {
       carry,
       quoteAttributions: quotes,
+      narrationEmotion,
       aiFeaturesEnabled: aiOn,
     });
   }
@@ -170,6 +198,10 @@ export function useAppVoiceRead(deps: {
     ) {
       return;
     }
+    const emotionOn = voiceReadAiEmotionRecognitionActive(
+      settings,
+      deps.aiFeaturesEnabled.value,
+    );
     const roster = deps.characterRoster.value;
     const first = buildLineSpeakChunks(settings, rawLine, roster, {
       aiFeaturesEnabled: true,
@@ -184,6 +216,7 @@ export function useAppVoiceRead(deps: {
         rawLine,
         dialogueTexts,
         roster,
+        emotionOn,
       ),
     );
   }
@@ -194,11 +227,13 @@ export function useAppVoiceRead(deps: {
     fromLine: number,
     toLine: number,
     initialCarry: VoiceReadQuoteCarry = null,
+    shouldAbort?: () => boolean,
   ) {
     const chunks: VoiceReadSpeakChunk[] = [];
     const chunkToModelLine: number[] = [];
     let carry = initialCarry;
     for (let L = fromLine; L <= toLine; L++) {
+      if (shouldAbort?.()) break;
       const rawL = reader.getEditorLineContent?.(L) ?? "";
       const t = rawL.replace(/\s+/g, " ").trim();
       if (!hasVoiceReadSpeakableText(t)) continue;
@@ -208,6 +243,7 @@ export function useAppVoiceRead(deps: {
         rawL,
         carry,
       );
+      if (shouldAbort?.()) break;
       carry = built.carry;
       for (const c of built.chunks) {
         chunks.push(c);
@@ -222,8 +258,34 @@ export function useAppVoiceRead(deps: {
     return mergeVoiceReadSettings({
       ...base,
       rate: clampVoiceReadRate(toolbarRate.value),
-      pitch: clampVoiceReadPitch(toolbarPitch.value),
+      volume: clampVoiceReadVolume(toolbarVolume.value),
     });
+  }
+
+  function syncVolumeToActiveProfile(volume: number) {
+    const profileId = deps.activeVoiceReadProfileId.value.trim();
+    const idx = deps.voiceReadProfiles.value.findIndex((p) => p.id === profileId);
+    if (idx < 0) return;
+    const current = deps.voiceReadProfiles.value[idx]!;
+    if (clampVoiceReadVolume(current.settings.volume) === volume) return;
+    const profiles = [...deps.voiceReadProfiles.value];
+    profiles[idx] = {
+      ...current,
+      settings: mergeVoiceReadSettings({ ...current.settings, volume }),
+    };
+    deps.voiceReadProfiles.value = profiles;
+  }
+
+  function setToolbarVolume(v: number) {
+    const volume = clampVoiceReadVolume(v);
+    toolbarVolume.value = volume;
+    player.setPlaybackVolume(volume);
+    if (deps.voiceReadSettings.value.volume === volume) return;
+    deps.voiceReadSettings.value = mergeVoiceReadSettings({
+      ...deps.voiceReadSettings.value,
+      volume,
+    });
+    syncVolumeToActiveProfile(volume);
   }
 
   function clearActiveBatch() {
@@ -275,7 +337,7 @@ export function useAppVoiceRead(deps: {
   function syncToolbarFromPersisted() {
     const s = deps.voiceReadSettings.value;
     toolbarRate.value = s.rate;
-    toolbarPitch.value = s.pitch;
+    toolbarVolume.value = s.volume;
   }
 
   function applyPlaybackLineHighlight(ln: number) {
@@ -307,10 +369,21 @@ export function useAppVoiceRead(deps: {
     fallbackLine: number,
     baseChunkIndex = 0,
   ) {
+    /** 已反映到 UI 的段索引；首段必须是 batch 第 0 段，其后只允许 +1 推进 */
+    let lastAppliedChunkIndex = -1;
     player.onChunkChange = (relIdx) => {
       if (!isPlaybackAlive(gen, mode.value)) return;
       const absIdx = baseChunkIndex + relIdx;
       if (absIdx < 0 || absIdx >= chunkToModelLine.length) return;
+      if (lastAppliedChunkIndex < 0) {
+        if (absIdx !== baseChunkIndex) return;
+        lastAppliedChunkIndex = absIdx;
+        endTtsBridge();
+        currentChunkIndex = absIdx;
+        return;
+      }
+      if (absIdx !== lastAppliedChunkIndex + 1) return;
+      lastAppliedChunkIndex = absIdx;
       currentChunkIndex = absIdx;
       const hl = chunkToModelLine[absIdx] ?? fallbackLine;
       if (hl === currentLine) return;
@@ -327,12 +400,15 @@ export function useAppVoiceRead(deps: {
     batchEnd: number,
     settings: VoiceReadSettings,
     quoteCarry: VoiceReadQuoteCarry,
+    gen: number,
   ) {
+    if (voiceReadRequiresSerialChunkFetch(settings)) return;
     const reader = deps.readerRef.value;
     const mCount = reader?.getModelLineCount?.() ?? 0;
     if (!reader || batchEnd >= mCount) return;
     void (async () => {
       for (let L = batchEnd + 1; L <= mCount; L++) {
+        if (!isPlaybackAlive(gen, mode.value)) return;
         const rawAfter = reader.getEditorLineContent?.(L) ?? "";
         const t = rawAfter.replace(/\s+/g, " ").trim();
         if (!hasVoiceReadSpeakableText(t)) continue;
@@ -342,6 +418,7 @@ export function useAppVoiceRead(deps: {
           rawAfter,
           quoteCarry,
         );
+        if (!isPlaybackAlive(gen, mode.value)) return;
         if (built.chunks.length > 0) {
           player.startPrefetch(settings, built.chunks);
           return;
@@ -358,6 +435,7 @@ export function useAppVoiceRead(deps: {
     if (!hasVoiceReadSpeakableText(t)) return;
     void buildLineSpeakChunksWithSpeakers(settings, line, raw, null).then(
       (built) => {
+        if (!isVoiceReadActive.value) return;
         if (built.chunks.length > 0) {
           player.warmSpeakChunks(settings, built.chunks);
         }
@@ -368,6 +446,8 @@ export function useAppVoiceRead(deps: {
   /** 预生成锚点行上下各一行，手动上一行/下一行命中缓存 */
   function warmAdjacentSpeakableLines(anchorLine: number) {
     const settings = effectiveSettingsForSpeak();
+    if (voiceReadRequiresSerialChunkFetch(settings)) return;
+    if (settings.engine === "dashscope") return;
     const prev = findAdjacentSpeakableLine(anchorLine, -1);
     const next = findAdjacentSpeakableLine(anchorLine, 1);
     const mCount = deps.readerRef.value?.getModelLineCount?.() ?? 0;
@@ -412,10 +492,17 @@ export function useAppVoiceRead(deps: {
           reader,
           ln,
           batchEnd,
+          null,
+          () => !isPlaybackAlive(gen, mode.value),
         );
       } finally {
-        endPrepareSynthesis();
+        endPrepareSynthesis(isPlaybackAlive(gen, mode.value));
       }
+      if (!isPlaybackAlive(gen, mode.value)) {
+        endTtsBridge();
+        break;
+      }
+
       const chunks = batchBuilt.chunks;
       const chunkToModelLine = batchBuilt.chunkToModelLine;
 
@@ -424,6 +511,7 @@ export function useAppVoiceRead(deps: {
       activeChunkToLine = chunkToModelLine;
 
       if (chunks.length === 0) {
+        endTtsBridge();
         lastCompletedBatchEndLine = Math.max(lastCompletedBatchEndLine, batchEnd);
         if (batchEnd >= mCount) {
           player.discardPrefetch();
@@ -437,7 +525,7 @@ export function useAppVoiceRead(deps: {
       const anchorLn = chunkToModelLine[0] ?? ln;
       currentLine = anchorLn;
       scrollAndHighlightLine(anchorLn);
-      prefetchLineAfterBatch(batchEnd, settings, batchBuilt.carry);
+      prefetchLineAfterBatch(batchEnd, settings, batchBuilt.carry, gen);
       syncPlaybackChunkAnchor(0, chunkToModelLine, anchorLn);
       warmAdjacentSpeakableLines(anchorLn);
       bindChunkHighlight(gen, chunkToModelLine, anchorLn, 0);
@@ -447,6 +535,8 @@ export function useAppVoiceRead(deps: {
         await player.waitForPlaybackSettled();
       } catch {
         // 错误提示由 App 层处理
+      } finally {
+        endTtsBridge();
       }
 
       if (!isPlaybackAlive(gen, mode.value)) break;
@@ -538,10 +628,6 @@ export function useAppVoiceRead(deps: {
     return Math.max(1, Math.min(currentLine, mCount));
   }
 
-  function firstChunkIndexForLine(line: number): number {
-    return activeChunkToLine.findIndex((l) => l === line);
-  }
-
   function lineHasSpeakableContent(line: number): boolean {
     const reader = deps.readerRef.value;
     if (!reader || line < 1) return false;
@@ -562,59 +648,7 @@ export function useAppVoiceRead(deps: {
     return Math.max(1, Math.min(L - delta, mCount));
   }
 
-  /**
-   * 批次内从指定段重播。
-   * 与自动连播不同：会 stop 当前 AudioContext 再开新段，但不再用「行号±1」推算段下标。
-   */
-  function navigateToChunkIndex(targetChunkIndex: number) {
-    if (mode.value === "off") return;
-    mode.value = "playing";
-
-    const reader = deps.readerRef.value;
-    const mCount = reader?.getModelLineCount?.() ?? 0;
-    if (!reader || mCount < 1) return;
-
-    if (
-      targetChunkIndex < 0 ||
-      targetChunkIndex >= activeChunks.length ||
-      activeChunks.length === 0
-    ) {
-      restartPlaybackFromLine(
-        activeChunkToLine[Math.max(0, currentChunkIndex)] ?? currentLine,
-      );
-      return;
-    }
-
-    const ln = activeChunkToLine[targetChunkIndex] ?? currentLine;
-    const batchEnd = activeBatchEnd;
-    const chunks = activeChunks;
-    const chunkToLine = activeChunkToLine;
-    const settings = effectiveSettingsForSpeak();
-
-    playbackLoopGen += 1;
-    const gen = playbackLoopGen;
-
-    player.onChunkChange = undefined;
-    player.stopForLineJump();
-
-    syncPlaybackChunkAnchor(targetChunkIndex, chunkToLine, ln);
-    warmAdjacentSpeakableLines(ln);
-    bindChunkHighlight(gen, chunkToLine, ln, targetChunkIndex);
-    prefetchLineAfterBatch(batchEnd, settings, null);
-
-    void player
-      .jumpToChunk(settings, chunks, targetChunkIndex)
-      .then(async () => {
-        if (!isPlaybackAlive(gen, mode.value)) return;
-        await player.waitForPlaybackSettled();
-        if (!isPlaybackAlive(gen, mode.value)) return;
-        await waitIfPaused();
-        if (!isPlaybackAlive(gen, mode.value)) return;
-        resumePlaybackAfterBatch(batchEnd, gen);
-      });
-  }
-
-  /** 从指定行重新播（新批次）；用于跨批或空行 */
+  /** 从指定行重新播（新批次）；用于跨行跳转、跨批或空行 */
   function restartPlaybackFromLine(line: number) {
     if (mode.value === "off") return;
     const reader = deps.readerRef.value;
@@ -627,6 +661,7 @@ export function useAppVoiceRead(deps: {
     playbackLoopGen += 1;
     player.onChunkChange = undefined;
     player.stopForLineJump();
+    resetSynthesizingState();
     clearActiveBatch();
     lastCompletedBatchEndLine = Math.max(0, ln - 1);
     scrollAndHighlightLine(ln);
@@ -643,7 +678,7 @@ export function useAppVoiceRead(deps: {
       for (let i = currentChunkIndex - 1; i >= 0; i--) {
         const line = activeChunkToLine[i]!;
         if (line < anchorLine) {
-          navigateToChunkIndex(firstChunkIndexForLine(line));
+          restartPlaybackFromLine(line);
           return;
         }
       }
@@ -664,7 +699,7 @@ export function useAppVoiceRead(deps: {
       for (let i = currentChunkIndex + 1; i < activeChunkToLine.length; i++) {
         const line = activeChunkToLine[i]!;
         if (line > anchorLine) {
-          navigateToChunkIndex(i);
+          restartPlaybackFromLine(line);
           return;
         }
       }
@@ -757,9 +792,19 @@ export function useAppVoiceRead(deps: {
     exitVoiceRead();
   });
 
+  let lastVoiceReadSynthesisFingerprint = "";
+
   watch(
     () => deps.voiceReadSettings.value,
-    () => {
+    (s) => {
+      const fingerprint = voiceReadSettingsSynthesisFingerprint(s);
+      if (fingerprint === lastVoiceReadSynthesisFingerprint) {
+        toolbarVolume.value = s.volume;
+        player.setPlaybackVolume(s.volume);
+        return;
+      }
+      lastVoiceReadSynthesisFingerprint = fingerprint;
+      syncToolbarFromPersisted();
       player.clearSynthesisCache();
       clearVoiceReadSpeakerCache();
     },
@@ -791,12 +836,14 @@ export function useAppVoiceRead(deps: {
     isSynthesizing,
     synthesizingPhase,
     toolbarRate,
-    toolbarPitch,
+    toolbarVolume,
+    setToolbarVolume,
     canStartVoiceRead,
     isVoiceReadActive,
     isVoiceReadScrollLocked,
     isVoiceReadBlocksFind,
     isVoiceReadHeaderLocked,
+    isVoiceReadNavigationBlocked,
     toggleVoiceReadToolbar,
     togglePlayPause,
     restartFromViewportTopAfterNavigation,

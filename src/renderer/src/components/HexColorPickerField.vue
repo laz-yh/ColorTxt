@@ -303,6 +303,13 @@ watch(
 );
 
 watch(
+  () => props.disabled,
+  (disabled) => {
+    if (disabled && popOpen.value) onCancel();
+  },
+);
+
+watch(
   () => draft.value,
   () => {
     if (!popOpen.value) return;

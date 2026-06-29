@@ -704,7 +704,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
                 :min="REMOTE_EMBEDDING_BATCH_SIZE_MIN"
                 :max="REMOTE_EMBEDDING_BATCH_SIZE_MAX"
                 integer
-                class="numCompact"
               />
             </div>
             <p class="settingsHint">
@@ -724,7 +723,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
                 :min="64"
                 :max="8192"
                 integer
-                class="numCompact"
               />
               <button
                 type="button"
@@ -763,7 +761,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
               :min="1"
               :max="20"
               integer
-              class="numCompact"
             />
           </div>
           <p class="settingsHint">
@@ -1014,11 +1011,6 @@ async function runEmbedConnectionTest(): Promise<ConnectionTestResult> {
 .aiModelSelect--full {
   flex: 1 1 100%;
 }
-
-.numCompact {
-  width: 120px;
-}
-
 .embedDimRow {
   display: flex;
   flex-wrap: wrap;

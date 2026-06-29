@@ -35,6 +35,7 @@ import {
   defaultCompressBlankKeepOneBlank,
   defaultFullscreenReaderWidthPercent,
   defaultMonacoSmoothScrolling,
+  defaultStickyChapterTitleEnabled,
   defaultReaderEditShowLineNumbers,
   defaultReaderEditMinimap,
   defaultEditAutoRefreshChapterList,
@@ -50,11 +51,18 @@ import {
   skipSettingsPersistenceSessionKey,
   APP_DISPLAY_NAME,
 } from "../constants/appUi";
+import {
+  defaultTimedScrollIntervalMs,
+  defaultTimedScrollRange,
+  mergeTimedScrollSettings,
+  type TimedScrollSettings,
+} from "../constants/timedScroll";
 import { appAlert } from "../services/appDialog";
 import { getBuiltinEmbeddingBlockMessage } from "../ai/embeddingReady";
 import { icons } from "../icons";
 import {
   resolveDefaultBuiltinModelCacheDirSync,
+  resolveDefaultCharacterPortraitCacheDirSync,
   resolveDefaultEbookConvertOutputDirSync,
   resolveEffectiveAiDataCacheDir,
   resolveEffectiveBuiltinModelCacheDir,
@@ -69,6 +77,7 @@ import type { VoiceReadProfile } from "@shared/voiceReadProfiles";
 import { migrateVoiceReadFromPersisted, cloneVoiceReadProfiles } from "../services/voiceRead/voiceReadProfileState";
 
 type SettingsVoiceReadPanelExpose = {
+  cancelPreview?: () => void;
   finalizeVoiceReadProfiles?: () => void;
   initVoiceReadProfiles?: () => void;
   resetCurrentVoiceReadProfile?: () => void;
@@ -78,6 +87,7 @@ type SettingsAIPanelExpose = {
   finalizeChatProfiles?: () => void;
   initChatProfiles?: () => void;
   resetCurrentChatProfile?: () => void;
+  resetAiPageDraft?: () => void;
 };
 
 type SettingsTxt2ImgPanelExpose = {
@@ -93,6 +103,7 @@ export type SettingsApplyPayload = {
   chapterMinCharCount: number;
   fullscreenReaderWidthPercent: number;
   monacoSmoothScrolling: boolean;
+  stickyChapterTitleEnabled: boolean;
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
@@ -101,6 +112,7 @@ export type SettingsApplyPayload = {
   lineHeightMultiple: number;
   compressBlankKeepOneBlank: boolean;
   txtrDelimitedMatchCrossLine: boolean;
+  timedScroll: TimedScrollSettings;
   ebookConvertOutputDir: string;
   characterPortraitCacheDir: string;
   aiSkillsEnabled: Record<string, boolean>;
@@ -122,6 +134,7 @@ const props = defineProps<{
   readerFontSize: number;
   readerLineHeightMultiple: number;
   monacoSmoothScrolling: boolean;
+  stickyChapterTitleEnabled: boolean;
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
@@ -129,6 +142,7 @@ const props = defineProps<{
   compressBlankKeepOneBlank: boolean;
   monacoCustomHighlight: boolean;
   txtrDelimitedMatchCrossLine: boolean;
+  timedScrollSettings: TimedScrollSettings;
   ebookConvertOutputDir: string;
   characterPortraitCacheDir: string;
   aiSkillsEnabled: Record<string, boolean>;
@@ -170,6 +184,7 @@ const draftFullscreenReaderWidthPercent = ref(50);
 const draftFontSize = ref(14);
 const draftLineHeightMultiple = ref(1.5);
 const draftMonacoSmoothScrolling = ref(true);
+const draftStickyChapterTitleEnabled = ref(defaultStickyChapterTitleEnabled);
 const draftReaderEditShowLineNumbers = ref(defaultReaderEditShowLineNumbers);
 const draftReaderEditMinimap = ref(defaultReaderEditMinimap);
 const draftEditAutoRefreshChapterList = ref(defaultEditAutoRefreshChapterList);
@@ -180,6 +195,8 @@ const draftCompressBlankKeepOneBlank = ref(false);
 const draftTxtrDelimitedMatchCrossLine = ref(
   defaultTxtrDelimitedMatchCrossLine,
 );
+const draftTimedScrollRange = ref(defaultTimedScrollRange);
+const draftTimedScrollIntervalMs = ref(defaultTimedScrollIntervalMs);
 const draftEbookConvertOutputDir = ref("");
 const draftCharacterPortraitCacheDir = ref("");
 
@@ -218,12 +235,16 @@ function syncDraftFromProps() {
     props.readerLineHeightMultiple,
   );
   draftMonacoSmoothScrolling.value = props.monacoSmoothScrolling;
+  draftStickyChapterTitleEnabled.value = props.stickyChapterTitleEnabled;
   draftReaderEditShowLineNumbers.value = props.readerEditShowLineNumbers;
   draftReaderEditMinimap.value = props.readerEditMinimap;
   draftEditAutoRefreshChapterList.value = props.editAutoRefreshChapterList;
   draftAiSmartFormat.value = mergeAiSmartFormatSettings(props.aiSmartFormat);
   draftCompressBlankKeepOneBlank.value = props.compressBlankKeepOneBlank;
   draftTxtrDelimitedMatchCrossLine.value = props.txtrDelimitedMatchCrossLine;
+  const timedScrollMerged = mergeTimedScrollSettings(props.timedScrollSettings);
+  draftTimedScrollRange.value = timedScrollMerged.range;
+  draftTimedScrollIntervalMs.value = timedScrollMerged.intervalMs;
   draftEbookConvertOutputDir.value = props.ebookConvertOutputDir;
   draftCharacterPortraitCacheDir.value = props.characterPortraitCacheDir;
   draftAiSkillOverrides.value = mergeAiSkillOverrides(props.aiSkillOverrides);
@@ -261,17 +282,20 @@ async function syncAiFromMain() {
   await nextTick();
   aiPanelRef.value?.initChatProfiles?.();
   txt2imgPanelRef.value?.initTxt2ImgProfiles?.();
-  voiceReadPanelRef.value?.initVoiceReadProfiles?.();
 }
 
 watch(modelValue, (open) => {
   if (!open) {
+    voiceReadPanelRef.value?.cancelPreview?.();
     activeTab.value = "general";
     return;
   }
   draftAi.value.embedding = normalizeEmbeddingEndpoint(draftAi.value.embedding);
   applyAllActiveProfilesToConfig(draftAi.value);
   syncDraftFromProps();
+  void nextTick(() => {
+    voiceReadPanelRef.value?.initVoiceReadProfiles?.();
+  });
   void syncAiFromMain();
 });
 
@@ -282,7 +306,10 @@ watch(draftFontSize, (fs) => {
   }
 });
 
-watch(activeTab, () => {
+watch(activeTab, (tab, prev) => {
+  if (prev === "voiceRead" && tab !== "voiceRead") {
+    voiceReadPanelRef.value?.cancelPreview?.();
+  }
   void nextTick(() => {
     const el = settingsTabScrollerEl.value;
     if (el) el.scrollTop = 0;
@@ -318,9 +345,12 @@ function resetReadingDraft() {
     defaultReaderLineHeightMultiple,
   );
   draftMonacoSmoothScrolling.value = defaultMonacoSmoothScrolling;
+  draftStickyChapterTitleEnabled.value = defaultStickyChapterTitleEnabled;
   draftCompressBlankKeepOneBlank.value = defaultCompressBlankKeepOneBlank;
   draftTxtrDelimitedMatchCrossLine.value = defaultTxtrDelimitedMatchCrossLine;
   draftFullscreenReaderWidthPercent.value = defaultFullscreenReaderWidthPercent;
+  draftTimedScrollRange.value = defaultTimedScrollRange;
+  draftTimedScrollIntervalMs.value = defaultTimedScrollIntervalMs;
 }
 
 function resetEditDraft() {
@@ -331,7 +361,7 @@ function resetEditDraft() {
 }
 
 function resetAiDraft() {
-  aiPanelRef.value?.resetCurrentChatProfile?.();
+  aiPanelRef.value?.resetAiPageDraft?.();
 }
 
 function resetVectorModelDraft() {
@@ -350,6 +380,8 @@ function resetVectorModelDraft() {
 
 function resetTxt2ImgDraft() {
   txt2imgPanelRef.value?.resetCurrentTxt2ImgProfile?.();
+  draftCharacterPortraitCacheDir.value =
+    resolveDefaultCharacterPortraitCacheDirSync();
 }
 
 function resetSkillsDraft() {
@@ -497,6 +529,7 @@ async function onConfirm() {
     chapterMinCharCount: draftChapterMinCharCount.value,
     fullscreenReaderWidthPercent: draftFullscreenReaderWidthPercent.value,
     monacoSmoothScrolling: draftMonacoSmoothScrolling.value,
+    stickyChapterTitleEnabled: draftStickyChapterTitleEnabled.value,
     readerEditShowLineNumbers: draftReaderEditShowLineNumbers.value,
     readerEditMinimap: draftReaderEditMinimap.value,
     editAutoRefreshChapterList: draftEditAutoRefreshChapterList.value,
@@ -505,6 +538,10 @@ async function onConfirm() {
     lineHeightMultiple: draftLineHeightMultiple.value,
     compressBlankKeepOneBlank: draftCompressBlankKeepOneBlank.value,
     txtrDelimitedMatchCrossLine: draftTxtrDelimitedMatchCrossLine.value,
+    timedScroll: mergeTimedScrollSettings({
+      range: draftTimedScrollRange.value,
+      intervalMs: draftTimedScrollIntervalMs.value,
+    }),
     ebookConvertOutputDir: draftEbookConvertOutputDir.value.trim(),
     characterPortraitCacheDir: draftCharacterPortraitCacheDir.value.trim(),
     aiSkillsEnabled: mergeAiSkillsEnabled(
@@ -685,6 +722,9 @@ async function onImportConfig(): Promise<void> {
               v-model:draft-font-size="draftFontSize"
               v-model:draft-line-height-multiple="draftLineHeightMultiple"
               v-model:draft-monaco-smooth-scrolling="draftMonacoSmoothScrolling"
+              v-model:draft-sticky-chapter-title-enabled="
+                draftStickyChapterTitleEnabled
+              "
               v-model:draft-compress-blank-keep-one-blank="
                 draftCompressBlankKeepOneBlank
               "
@@ -693,6 +733,10 @@ async function onImportConfig(): Promise<void> {
               "
               v-model:draft-fullscreen-reader-width-percent="
                 draftFullscreenReaderWidthPercent
+              "
+              v-model:draft-timed-scroll-range="draftTimedScrollRange"
+              v-model:draft-timed-scroll-interval-ms="
+                draftTimedScrollIntervalMs
               "
               :monaco-custom-highlight="monacoCustomHighlight"
             />

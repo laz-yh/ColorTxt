@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import RangeSlider from "./RangeSlider.vue";
 import SwitchToggle from "./SwitchToggle.vue";
+import NumericInput from "./NumericInput.vue";
+import RadioGroup from "./RadioGroup.vue";
 import {
   lineHeightMultipleStep,
   maxFontSize,
@@ -10,15 +12,24 @@ import {
   minFullscreenReaderWidthPercent,
   minLineHeightMultiple,
 } from "../constants/appUi";
+import {
+  TIMED_SCROLL_RANGE_OPTIONS,
+  maxTimedScrollIntervalMs,
+  minTimedScrollIntervalMs,
+  type TimedScrollRange,
+} from "../constants/timedScroll";
 import { computed } from "vue";
 
 const props = defineProps<{
   draftFontSize: number;
   draftLineHeightMultiple: number;
   draftMonacoSmoothScrolling: boolean;
+  draftStickyChapterTitleEnabled: boolean;
   draftCompressBlankKeepOneBlank: boolean;
   draftTxtrDelimitedMatchCrossLine: boolean;
   draftFullscreenReaderWidthPercent: number;
+  draftTimedScrollRange: TimedScrollRange;
+  draftTimedScrollIntervalMs: number;
   monacoCustomHighlight: boolean;
 }>();
 
@@ -26,9 +37,12 @@ defineEmits<{
   "update:draftFontSize": [v: number];
   "update:draftLineHeightMultiple": [v: number];
   "update:draftMonacoSmoothScrolling": [v: boolean];
+  "update:draftStickyChapterTitleEnabled": [v: boolean];
   "update:draftCompressBlankKeepOneBlank": [v: boolean];
   "update:draftTxtrDelimitedMatchCrossLine": [v: boolean];
   "update:draftFullscreenReaderWidthPercent": [v: number];
+  "update:draftTimedScrollRange": [v: TimedScrollRange];
+  "update:draftTimedScrollIntervalMs": [v: number];
 }>();
 
 const draftMaxLineHeightMultiple = computed(() =>
@@ -37,109 +51,165 @@ const draftMaxLineHeightMultiple = computed(() =>
 </script>
 
 <template>
-  <div class="settingsBody">
-    <div class="settingsRow">
-      <div class="settingsRowMain">
-        <span class="settingsLabel short">字号（{{ draftFontSize }} px）</span>
-        <RangeSlider
-          :model-value="draftFontSize"
-          :min="minFontSize"
-          :max="maxFontSize"
-          :step="1"
-          :show-percent="false"
-          aria-label="阅读字号"
-          @update:model-value="$emit('update:draftFontSize', $event)"
-        />
+  <div class="settingsReadingRoot">
+    <div class="settingsBody">
+      <div class="settingsRow">
+        <div class="settingsRowMain">
+          <span class="settingsLabel short">字号（{{ draftFontSize }} px）</span>
+          <RangeSlider
+            :model-value="draftFontSize"
+            :min="minFontSize"
+            :max="maxFontSize"
+            :step="1"
+            :show-percent="false"
+            aria-label="阅读字号"
+            @update:model-value="$emit('update:draftFontSize', $event)"
+          />
+        </div>
+      </div>
+
+      <div class="settingsRow">
+        <div class="settingsRowMain">
+          <span class="settingsLabel short"
+            >行高（{{ draftLineHeightMultiple.toFixed(1) }}）</span
+          >
+          <RangeSlider
+            :model-value="draftLineHeightMultiple"
+            :min="minLineHeightMultiple"
+            :max="draftMaxLineHeightMultiple"
+            :step="lineHeightMultipleStep"
+            :show-percent="false"
+            aria-label="行高倍数"
+            @update:model-value="$emit('update:draftLineHeightMultiple', $event)"
+          />
+        </div>
+      </div>
+
+      <div class="settingsRow">
+        <div class="settingsRowMain">
+          <span class="settingsLabel">压缩空行时保留一个空行</span>
+          <SwitchToggle
+            :model-value="draftCompressBlankKeepOneBlank"
+            aria-label="压缩空行时保留一个空行"
+            @update:model-value="
+              $emit('update:draftCompressBlankKeepOneBlank', $event)
+            "
+          />
+        </div>
+        <p class="settingsHint">
+          仅在开启「压缩空行」时生效，在每行下方保留一个空行。
+        </p>
+      </div>
+
+      <div class="settingsRow">
+        <div class="settingsRowMain">
+          <span class="settingsLabel">引号/括号匹配支持跨行</span>
+          <SwitchToggle
+            :model-value="draftTxtrDelimitedMatchCrossLine"
+            :disabled="!monacoCustomHighlight"
+            aria-label="引号/括号匹配支持跨行"
+            @update:model-value="
+              $emit('update:draftTxtrDelimitedMatchCrossLine', $event)
+            "
+          />
+        </div>
+        <p class="settingsHint">
+          仅在开启「内容上色」时生效，开启后引号和括号会跨行匹配；<br />如果出现大段非引号/括号内的文本被误上色，是因为原文没有正确关闭引号/括号，可禁用该选项以降低影响范围。
+        </p>
+      </div>
+
+      <div class="settingsRow">
+        <div class="settingsRowMain">
+          <span class="settingsLabel">启用粘性章节标题</span>
+          <SwitchToggle
+            :model-value="draftStickyChapterTitleEnabled"
+            aria-label="启用粘性章节标题"
+            @update:model-value="
+              $emit('update:draftStickyChapterTitleEnabled', $event)
+            "
+          />
+        </div>
+        <p class="settingsHint">
+          滚动时将章节标题粘在顶部；多层级标题会堆叠。
+        </p>
+      </div>
+
+      <div class="settingsRow">
+        <div class="settingsRowMain">
+          <span class="settingsLabel">平滑滚动</span>
+          <SwitchToggle
+            :model-value="draftMonacoSmoothScrolling"
+            aria-label="阅读区平滑滚动"
+            @update:model-value="
+              $emit('update:draftMonacoSmoothScrolling', $event)
+            "
+          />
+        </div>
+        <p class="settingsHint">关闭后，阅读区滚动不再使用平滑动画。</p>
+      </div>
+
+      <div class="settingsRow">
+        <div class="settingsRowMain">
+          <span class="settingsLabel short"
+            >全屏阅读区域宽度（{{ draftFullscreenReaderWidthPercent }}%）</span
+          >
+          <RangeSlider
+            :model-value="draftFullscreenReaderWidthPercent"
+            :min="minFullscreenReaderWidthPercent"
+            :max="maxFullscreenReaderWidthPercent"
+            :step="1"
+            :show-percent="false"
+            aria-label="全屏阅读区域宽度百分比"
+            @update:model-value="
+              $emit('update:draftFullscreenReaderWidthPercent', $event)
+            "
+          />
+        </div>
+        <p class="settingsHint">仅在全屏模式生效，用于控制阅读区域宽度。</p>
       </div>
     </div>
 
-    <div class="settingsRow">
-      <div class="settingsRowMain">
-        <span class="settingsLabel short"
-          >行高（{{ draftLineHeightMultiple.toFixed(1) }}）</span
-        >
-        <RangeSlider
-          :model-value="draftLineHeightMultiple"
-          :min="minLineHeightMultiple"
-          :max="draftMaxLineHeightMultiple"
-          :step="lineHeightMultipleStep"
-          :show-percent="false"
-          aria-label="行高倍数"
-          @update:model-value="$emit('update:draftLineHeightMultiple', $event)"
-        />
-      </div>
-    </div>
+    <div class="settingsBody settingsBody--timedScroll">
+      <h3 class="settingsSectionTitle settingsSectionTitle--timedScroll">定时滚动</h3>
 
-    <div class="settingsRow">
-      <div class="settingsRowMain">
-        <span class="settingsLabel">压缩空行时保留一个空行</span>
-        <SwitchToggle
-          :model-value="draftCompressBlankKeepOneBlank"
-          aria-label="压缩空行时保留一个空行"
-          @update:model-value="
-            $emit('update:draftCompressBlankKeepOneBlank', $event)
-          "
-        />
+      <div class="settingsRow">
+        <div class="settingsRowMain settingsRowMain--baseline">
+          <span class="settingsLabel">范围</span>
+          <RadioGroup
+            :model-value="draftTimedScrollRange"
+            :options="TIMED_SCROLL_RANGE_OPTIONS"
+            aria-label="定时滚动范围"
+            @update:model-value="
+              $emit('update:draftTimedScrollRange', $event as TimedScrollRange)
+            "
+          />
+        </div>
       </div>
-      <p class="settingsHint">
-        仅在开启「压缩空行」时生效，在每行下方保留一个空行。
-      </p>
-    </div>
 
-    <div class="settingsRow">
-      <div class="settingsRowMain">
-        <span class="settingsLabel">引号/括号匹配支持跨行</span>
-        <SwitchToggle
-          :model-value="draftTxtrDelimitedMatchCrossLine"
-          :disabled="!monacoCustomHighlight"
-          aria-label="引号/括号匹配支持跨行"
-          @update:model-value="
-            $emit('update:draftTxtrDelimitedMatchCrossLine', $event)
-          "
-        />
+      <div class="settingsRow">
+        <div class="settingsRowMain settingsRowMain--baseline">
+          <span class="settingsLabel">间隔（毫秒）</span>
+          <NumericInput
+            :model-value="draftTimedScrollIntervalMs"
+            :min="minTimedScrollIntervalMs"
+            :max="maxTimedScrollIntervalMs"
+            integer
+            aria-label="定时滚动间隔毫秒"
+            @update:model-value="$emit('update:draftTimedScrollIntervalMs', $event)"
+          />
+        </div>
       </div>
-      <p class="settingsHint">
-        仅在开启「内容上色」时生效，开启后引号和括号会跨行匹配；<br />如果出现大段非引号/括号内的文本被误上色，是因为原文没有正确关闭引号/括号，可禁用该选项以降低影响范围。
-      </p>
-    </div>
-
-    <div class="settingsRow">
-      <div class="settingsRowMain">
-        <span class="settingsLabel">平滑滚动</span>
-        <SwitchToggle
-          :model-value="draftMonacoSmoothScrolling"
-          aria-label="阅读区平滑滚动"
-          @update:model-value="
-            $emit('update:draftMonacoSmoothScrolling', $event)
-          "
-        />
-      </div>
-      <p class="settingsHint">关闭后，阅读区滚动不再使用平滑动画。</p>
-    </div>
-
-    <div class="settingsRow">
-      <div class="settingsRowMain">
-        <span class="settingsLabel short"
-          >全屏阅读区域宽度（{{ draftFullscreenReaderWidthPercent }}%）</span
-        >
-        <RangeSlider
-          :model-value="draftFullscreenReaderWidthPercent"
-          :min="minFullscreenReaderWidthPercent"
-          :max="maxFullscreenReaderWidthPercent"
-          :step="1"
-          :show-percent="false"
-          aria-label="全屏阅读区域宽度百分比"
-          @update:model-value="
-            $emit('update:draftFullscreenReaderWidthPercent', $event)
-          "
-        />
-      </div>
-      <p class="settingsHint">仅在全屏模式生效，用于控制阅读区域宽度。</p>
     </div>
   </div>
 </template>
 
 <style scoped>
+.settingsReadingRoot {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .settingsBody {
   padding: 8px 0 4px;
   display: flex;
@@ -148,7 +218,13 @@ const draftMaxLineHeightMultiple = computed(() =>
   padding: 16px;
   background-color: var(--bg);
   border-radius: 8px;
-  /* border: 1px solid var(--border); */
+}
+
+.settingsSectionTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
 }
 
 .settingsRow {
@@ -163,6 +239,10 @@ const draftMaxLineHeightMultiple = computed(() =>
   justify-content: space-between;
   gap: 16px;
   min-width: 0;
+}
+
+.settingsRowMain--baseline {
+  align-items: baseline;
 }
 
 .settingsLabel {
@@ -181,5 +261,13 @@ const draftMaxLineHeightMultiple = computed(() =>
   font-size: 12px;
   line-height: 1.45;
   color: var(--muted);
+}
+
+.settingsBody--timedScroll {
+  gap: 10px;
+}
+
+.settingsSectionTitle--timedScroll {
+  margin-bottom: 10px;
 }
 </style>

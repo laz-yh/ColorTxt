@@ -1,17 +1,28 @@
 import { readerEditorLineHeight } from "../monaco/readerEditorOptions";
 
-export type { ReaderSurfacePalette } from "./readerPalette";
+export type {
+  ReaderSurfaceColorEnabled,
+  ReaderSurfaceOptionalColorKey,
+  ReaderSurfacePalette,
+} from "./readerPalette";
 export {
   applyReaderSurfaceToDocument,
+  defaultReaderPaletteColorEnabled,
   defaultReaderPaletteDark,
   defaultReaderPaletteLight,
+  isReaderSurfaceOptionalColorKey,
   isValidReaderSurfaceHex,
+  mergeReaderPaletteColorEnabled,
   mergeReaderSurfacePalette,
+  overridesFromColorEnabled,
   overridesFromFullPalette,
+  parseReaderPaletteColorEnabledOverrides,
   parseReaderPaletteOverrides,
   READER_SURFACE_KEYS,
   READER_SURFACE_LABELS,
+  READER_SURFACE_OPTIONAL_COLOR_KEYS,
   READER_SURFACE_TABLE_ROWS,
+  resolveEffectiveReaderPalette,
 } from "./readerPalette";
 
 export {
@@ -111,6 +122,8 @@ export const defaultSyncCurrentFile = false;
 export const defaultMonacoAdvancedWrapping = false;
 /** Monaco 阅读区：滚轮/跳转等是否使用平滑滚动动画 */
 export const defaultMonacoSmoothScrolling = true;
+/** 阅读区顶部是否显示粘性章节标题（Monaco stickyScroll + outlineModel） */
+export const defaultStickyChapterTitleEnabled = true;
 /** 编辑模式下 Monaco 是否显示行号（只读模式始终关闭） */
 export const defaultReaderEditShowLineNumbers = false;
 /** 编辑模式下 Monaco 是否显示小地图（只读模式始终关闭） */

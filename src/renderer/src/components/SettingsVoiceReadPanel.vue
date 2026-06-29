@@ -1,30 +1,61 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import AppCheckbox from "./AppCheckbox.vue";
+import ApiEndpointInput from "./ApiEndpointInput.vue";
 import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
+import AppConnectionTestButton from "./AppConnectionTestButton.vue";
+import PathPickerInput from "./PathPickerInput.vue";
 import IconButton from "./IconButton.vue";
 import RangeSlider from "./RangeSlider.vue";
 import SwitchToggle from "./SwitchToggle.vue";
 import { icons } from "../icons";
 import {
-  DASHSCOPE_TTS_VOICES,
-  defaultVoiceReadSettings,
-  VOICE_READ_DIALOGUE_QUOTE_DEFAULTS,
+  clampVoiceReadVolume,
+  mergeVoiceReadSettings,
   VOICE_READ_DIALOGUE_QUOTE_OPTIONS,
   voiceReadAiSpeakerRecognitionActive,
-  voiceReadDashScopeRequiresApiKey,
+  voiceReadEngineRequiresCredentials,
+  voiceReadEngineSupportsEmotion,
+  voiceReadEngineSupportsMultiVoiceScheme,
   voiceReadEngineSupportsPitch,
   voiceReadEngineSupportsRate,
+  voiceReadSettingsSynthesisFingerprint,
   type VoiceReadDialogueQuoteStyle,
   type VoiceReadEngineId,
+  type VoiceReadMultiVoiceSettings,
   type VoiceReadScheme,
+  type VoiceReadSingleVoiceSettings,
   type VoiceReadSettings,
 } from "../constants/voiceRead";
 import {
-  DASHSCOPE_API_KEY_CONSOLE_URL,
-  DASHSCOPE_PLATFORM_LABEL,
-} from "@shared/apiEndpointPresets";
+  getVoiceReadEngineMeta,
+  VOICE_READ_ENGINE_REGISTRY,
+} from "@shared/voiceReadEngines";
+import {
+  DEFAULT_DASHSCOPE_TTS_MODEL,
+  getDashscopeTtsModelSuggestions,
+} from "@shared/voiceReadDashscopeModels";
+import {
+  DEFAULT_MINIMAX_TTS_MODEL,
+  getMinimaxTtsModelSuggestions,
+} from "@shared/voiceReadMinimaxModels";
+import {
+  DEFAULT_MIMO_TTS_MODEL,
+  getMimoTtsModelSuggestions,
+  isMimoTtsPresetModel,
+  isMimoTtsVoiceCloneModel,
+  isMimoTtsVoiceDesignModel,
+  normalizeMimoTtsModel,
+} from "@shared/voiceReadMimoModels";
+import { healthCheckVoiceReadViaIpc } from "../services/voiceRead/voiceReadSynthesisClient";
+import {
+  fetchMinimaxVoiceCatalog,
+  minimaxVoiceCatalogError,
+} from "../services/voiceRead/minimaxVoiceCatalog";
 import { useSecretStorageHint } from "../composables/useSecretStorageHint";
+import type { ConnectionTestResult } from "../composables/useConnectionTest";
+import { appAlert } from "../services/appDialog";
+import type { ColorTxtOpenDialogOptions } from "@shared/colorTxtOpenSaveDialog";
 import { buildLineSpeakChunks } from "../services/voiceRead/voiceReadLineBuild";
 import {
   buildDialogueAiPreviewSpeakChunks,
@@ -37,11 +68,10 @@ import {
 } from "../services/voiceRead/voiceReadLinePlayer";
 import type { VoiceReadSpeakChunk } from "../services/voiceRead/voiceReadVoiceResolve";
 import {
-  flatVoiceOptionsToSelectItems,
-  groupEdgeTtsVoices,
-  groupSystemVoices,
+  getVoiceGroupsForEngine,
+  resolveDefaultVoicePatchForEngine,
   resolveVoiceReadDisplayLabel,
-  voiceGroupsToSelectItems,
+  voiceSelectItemsForEngine,
 } from "../utils/voiceReadVoiceGroups";
 import type { CharacterRosterEntry } from "@shared/characterTypes";
 import { MAX_VOICE_READ_PROFILES } from "@shared/voiceReadProfiles";
@@ -93,11 +123,11 @@ const selectListsEmpty: CustomSelectItem[] = [];
 
 const schemeOptions: { id: VoiceReadScheme; label: string; description: string }[] =
   [
-    { id: "single", label: "单音色", description: "全书使用同一语音" },
+    { id: "single", label: "单音色", description: "全书使用同一音色" },
     {
       id: "multi",
       label: "旁白/对白多音色",
-      description: "旁白与对白可使用不同语音",
+      description: "旁白与对白可使用不同音色",
     },
   ];
 
@@ -108,12 +138,29 @@ const schemeScrollItems: CustomSelectItem[] = schemeOptions.map((o) => ({
   description: o.description,
 }));
 
+const supportsMultiVoiceScheme = computed(() =>
+  voiceReadEngineSupportsMultiVoiceScheme(
+    draft.value.engine,
+    draft.value.engineConfig,
+  ),
+);
+
+const schemeScrollItemsForDraft = computed(() =>
+  supportsMultiVoiceScheme.value
+    ? schemeScrollItems
+    : schemeScrollItems.filter(
+        (item) => item.kind === "item" && item.id === "single",
+      ),
+);
+
 const schemeDisplayLabel = computed(() => {
   const hit = schemeOptions.find((o) => o.id === draft.value.scheme);
   return hit?.label ?? draft.value.scheme;
 });
 
-const isMultiScheme = computed(() => draft.value.scheme === "multi");
+const isMultiScheme = computed(
+  () => draft.value.scheme === "multi" && supportsMultiVoiceScheme.value,
+);
 
 const showAiSpeakerRecognitionToggle = computed(
   () => isMultiScheme.value && props.aiEnabled === true,
@@ -123,30 +170,49 @@ const showDialogueGenderVoices = computed(
   () =>
     isMultiScheme.value &&
     props.aiEnabled === true &&
-    draft.value.aiSpeakerRecognitionEnabled !== false,
+    draft.value.multi.aiSpeakerRecognitionEnabled !== false,
 );
 
-const engineOptions: {
-  id: VoiceReadEngineId;
-  label: string;
-  description: string;
-}[] = [
-  {
-    id: "edge",
-    label: "Edge TTS",
-    description: "免费高质量微软 Neural 语音",
-  },
-  {
-    id: "system",
-    label: "系统语音",
-    description: "免费离线，使用设备系统语音",
-  },
-  {
-    id: "dashscope",
-    label: DASHSCOPE_PLATFORM_LABEL,
-    description: "高质量云端语音，需要 API 密钥",
-  },
+const engineOptions = VOICE_READ_ENGINE_REGISTRY.map((m) => ({
+  id: m.id,
+  label: m.label,
+  description: m.description,
+}));
+
+const engineMeta = computed(() => getVoiceReadEngineMeta(draft.value.engine));
+
+const showApiKeyFields = computed(() => engineMeta.value.auth === "apiKey");
+
+const showDashScopeModel = computed(() => draft.value.engine === "dashscope");
+
+const showMiniMaxModel = computed(() => draft.value.engine === "minimax");
+
+const showMimoModel = computed(() => draft.value.engine === "mimo");
+
+const mimoTtsModel = computed(() =>
+  normalizeMimoTtsModel(draft.value.engineConfig.mimoModel),
+);
+
+const showMimoVoiceDescription = computed(
+  () =>
+    draft.value.engine === "mimo" &&
+    isMimoTtsVoiceDesignModel(mimoTtsModel.value),
+);
+
+const showMimoReferenceAudio = computed(
+  () =>
+    draft.value.engine === "mimo" &&
+    isMimoTtsVoiceCloneModel(mimoTtsModel.value),
+);
+
+const mimoReferenceAudioOpenFilters: ColorTxtOpenDialogOptions["filters"] = [
+  { name: "音频文件", extensions: ["mp3", "wav"] },
 ];
+
+const showMimoPresetVoicePicker = computed(() => {
+  if (draft.value.engine !== "mimo") return true;
+  return isMimoTtsPresetModel(mimoTtsModel.value);
+});
 
 const engineScrollItems: CustomSelectItem[] = engineOptions.map((o) => ({
   kind: "item",
@@ -160,8 +226,50 @@ const engineDisplayLabel = computed(() => {
   return hit?.label ?? draft.value.engine;
 });
 
-function openDashScopeApiKeyPage() {
-  void window.colorTxt.openExternal(DASHSCOPE_API_KEY_CONSOLE_URL);
+async function runDashscopeConnectionTest(): Promise<ConnectionTestResult | null> {
+  const key =
+    draft.value.engineConfig.dashscopeApiKey?.trim() ??
+    draft.value.dashscopeApiKey?.trim() ??
+    "";
+  if (!key) {
+    await appAlert("请先填写阿里云通义 API 密钥");
+    return null;
+  }
+  const r = await healthCheckVoiceReadViaIpc("dashscope", {
+    ...draft.value.engineConfig,
+    dashscopeApiKey: key,
+  });
+  if (!r.ok) return { ok: false, error: r.error };
+  return r.result.ok
+    ? { ok: true }
+    : { ok: false, error: r.result.message ?? "连接失败" };
+}
+
+async function runMinimaxConnectionTest(): Promise<ConnectionTestResult | null> {
+  if (!draft.value.engineConfig.minimaxApiKey?.trim()) {
+    await appAlert("请先填写 MiniMax API 密钥");
+    return null;
+  }
+  const r = await healthCheckVoiceReadViaIpc(
+    "minimax",
+    draft.value.engineConfig,
+  );
+  if (!r.ok) return { ok: false, error: r.error };
+  return r.result.ok
+    ? { ok: true }
+    : { ok: false, error: r.result.message ?? "连接失败" };
+}
+
+async function runMimoConnectionTest(): Promise<ConnectionTestResult | null> {
+  if (!draft.value.engineConfig.mimoApiKey?.trim()) {
+    await appAlert("请先填写 MiMo API 密钥");
+    return null;
+  }
+  const r = await healthCheckVoiceReadViaIpc("mimo", draft.value.engineConfig);
+  if (!r.ok) return { ok: false, error: r.error };
+  return r.result.ok
+    ? { ok: true }
+    : { ok: false, error: r.result.message ?? "连接失败" };
 }
 
 const previewText = ref(VOICE_READ_DIALOGUE_GENDER_PREVIEW_DEFAULT);
@@ -172,11 +280,26 @@ const previewError = ref("");
 const previewDownload = ref<VoiceReadPreviewDownload | null>(null);
 
 const showDashScopeKey = ref(false);
+const showMiniMaxKey = ref(false);
+const showMimoKey = ref(false);
+
+const minimaxConnectionFingerprint = computed(
+  () => draft.value.engineConfig.minimaxApiKey?.trim() ?? "",
+);
+const mimoConnectionFingerprint = computed(
+  () => draft.value.engineConfig.mimoApiKey?.trim() ?? "",
+);
+const dashscopeConnectionFingerprint = computed(
+  () =>
+    draft.value.engineConfig.dashscopeApiKey?.trim() ??
+    draft.value.dashscopeApiKey?.trim() ??
+    "",
+);
 const previewPlayer = new VoiceReadLinePlayer();
 let previewRunId = 0;
 
 function voiceIdForSinglePreview(): string {
-  return draft.value.voiceId;
+  return draft.value.single.voiceId;
 }
 
 function isPreviewBusy(): boolean {
@@ -197,7 +320,8 @@ const previewButtonLabel = computed(() => {
 
 const previewButtonClass = computed(() => {
   if (previewPhase.value === "playing") return "danger";
-  if (isPreviewBusy()) return "warning";
+  if (previewPhase.value === "ai") return "warning";
+  if (previewPhase.value === "synthesizing") return "primary";
   return "primary";
 });
 
@@ -229,14 +353,26 @@ onMounted(() => {
   })();
 });
 
+watch(
+  () =>
+    [
+      draft.value.engine,
+      draft.value.engineConfig.minimaxApiKey?.trim() ?? "",
+    ] as const,
+  ([engine, apiKey]) => {
+    if (engine === "minimax" && apiKey) {
+      void fetchMinimaxVoiceCatalog(draft.value.engineConfig, { force: true });
+    }
+  },
+  { immediate: true },
+);
+
 function voiceScrollItemsForEngine(): CustomSelectItem[] {
-  if (draft.value.engine === "system") {
-    return voiceGroupsToSelectItems(groupSystemVoices(systemVoices.value));
-  }
-  if (draft.value.engine === "edge") {
-    return voiceGroupsToSelectItems(groupEdgeTtsVoices());
-  }
-  return flatVoiceOptionsToSelectItems(DASHSCOPE_TTS_VOICES);
+  return voiceSelectItemsForEngine(
+    draft.value.engine,
+    systemVoices.value,
+    draft.value.engineConfig,
+  );
 }
 
 const voiceScrollItems = computed(() => voiceScrollItemsForEngine());
@@ -246,13 +382,15 @@ const voiceScrollHasOptions = computed(() =>
 );
 
 const voiceScrollMaxHeight = computed(() =>
-  draft.value.engine === "dashscope" ? 280 : 360,
+  getVoiceGroupsForEngine(draft.value.engine, systemVoices.value) === "flat"
+    ? 280
+    : 360,
 );
 
 const voiceDisplayLabel = computed(() =>
   resolveVoiceReadDisplayLabel(
     draft.value.engine,
-    draft.value.voiceId,
+    draft.value.single.voiceId,
     systemVoices.value,
   ),
 );
@@ -260,7 +398,7 @@ const voiceDisplayLabel = computed(() =>
 const narrationVoiceDisplayLabel = computed(() =>
   resolveVoiceReadDisplayLabel(
     draft.value.engine,
-    draft.value.narrationVoiceId,
+    draft.value.multi.narrationVoiceId,
     systemVoices.value,
   ),
 );
@@ -268,7 +406,7 @@ const narrationVoiceDisplayLabel = computed(() =>
 const dialogueVoiceDisplayLabel = computed(() =>
   resolveVoiceReadDisplayLabel(
     draft.value.engine,
-    draft.value.dialogueVoiceId,
+    draft.value.multi.dialogueVoiceId,
     systemVoices.value,
   ),
 );
@@ -276,7 +414,7 @@ const dialogueVoiceDisplayLabel = computed(() =>
 const dialogueMaleVoiceDisplayLabel = computed(() =>
   resolveVoiceReadDisplayLabel(
     draft.value.engine,
-    draft.value.dialogueMaleVoiceId,
+    draft.value.multi.dialogueMaleVoiceId,
     systemVoices.value,
   ),
 );
@@ -284,17 +422,17 @@ const dialogueMaleVoiceDisplayLabel = computed(() =>
 const dialogueFemaleVoiceDisplayLabel = computed(() =>
   resolveVoiceReadDisplayLabel(
     draft.value.engine,
-    draft.value.dialogueFemaleVoiceId,
+    draft.value.multi.dialogueFemaleVoiceId,
     systemVoices.value,
   ),
 );
 
 function isQuoteStyleChecked(id: VoiceReadDialogueQuoteStyle): boolean {
-  return draft.value.dialogueQuoteStyles.includes(id);
+  return draft.value.multi.dialogueQuoteStyles.includes(id);
 }
 
 function toggleQuoteStyle(id: VoiceReadDialogueQuoteStyle, checked: boolean) {
-  const cur = [...draft.value.dialogueQuoteStyles];
+  const cur = [...draft.value.multi.dialogueQuoteStyles];
   const idx = cur.indexOf(id);
   if (checked) {
     if (idx < 0) cur.push(id);
@@ -302,70 +440,19 @@ function toggleQuoteStyle(id: VoiceReadDialogueQuoteStyle, checked: boolean) {
     if (cur.length <= 1) return;
     if (idx >= 0) cur.splice(idx, 1);
   }
-  patchDraft({ dialogueQuoteStyles: cur });
+  patchMultiVoice({ dialogueQuoteStyles: cur });
 }
 
 watch(
   () => draft.value.engine,
   (eng, prev) => {
     if (eng === prev) return;
-    if (eng === "system") {
-      refreshSystemVoices();
-      const first = systemVoices.value[0];
-      const vid = first?.voiceURI ?? "";
-      patchDraft({
-        voiceId: vid,
-        narrationVoiceId: vid,
-        dialogueVoiceId: vid,
-        dialogueMaleVoiceId: vid,
-        dialogueFemaleVoiceId: vid,
-      });
-    } else if (eng === "edge") {
-      patchDraft({
-        voiceId: defaultVoiceReadSettings.voiceId,
-        narrationVoiceId: defaultVoiceReadSettings.narrationVoiceId,
-        dialogueVoiceId: defaultVoiceReadSettings.dialogueVoiceId,
-        dialogueMaleVoiceId: defaultVoiceReadSettings.dialogueMaleVoiceId,
-        dialogueFemaleVoiceId: defaultVoiceReadSettings.dialogueFemaleVoiceId,
-      });
-    } else {
-      const vid = DASHSCOPE_TTS_VOICES[0]?.id ?? "Cherry";
-      patchDraft({
-        voiceId: vid,
-        narrationVoiceId: vid,
-        dialogueVoiceId: vid,
-        dialogueMaleVoiceId: vid,
-        dialogueFemaleVoiceId: vid,
-      });
-    }
-  },
-);
-
-watch(
-  () => draft.value.scheme,
-  (scheme, prev) => {
-    if (scheme === prev) return;
-    if (scheme === "multi") {
-      const v = draft.value.voiceId.trim() || defaultVoiceReadSettings.voiceId;
-      patchDraft({
-        narrationVoiceId: draft.value.narrationVoiceId.trim() || v,
-        dialogueVoiceId:
-          draft.value.dialogueVoiceId.trim() ||
-          defaultVoiceReadSettings.dialogueVoiceId,
-        dialogueMaleVoiceId:
-          draft.value.dialogueMaleVoiceId.trim() ||
-          draft.value.dialogueVoiceId.trim() ||
-          defaultVoiceReadSettings.dialogueMaleVoiceId,
-        dialogueFemaleVoiceId:
-          draft.value.dialogueFemaleVoiceId.trim() ||
-          draft.value.narrationVoiceId.trim() ||
-          defaultVoiceReadSettings.dialogueFemaleVoiceId,
-        dialogueQuoteStyles:
-          draft.value.dialogueQuoteStyles.length > 0
-            ? draft.value.dialogueQuoteStyles
-            : [...VOICE_READ_DIALOGUE_QUOTE_DEFAULTS],
-      });
-    }
+    if (eng === "system") refreshSystemVoices();
+    const patch = resolveDefaultVoicePatchForEngine(eng, systemVoices.value);
+    patchDraft({
+      single: patch.single,
+      multi: { ...draft.value.multi, ...patch.multi },
+    });
   },
 );
 
@@ -379,8 +466,91 @@ function restoreDefaultPreviewText() {
 }
 
 function patchDraft(p: Partial<VoiceReadSettings>) {
-  settings.value = { ...draft.value, ...p };
+  settings.value = mergeVoiceReadSettings({ ...draft.value, ...p });
 }
+
+/** 仅改音量：不替换 settings 根对象，避免误触发「合成参数变更 → 停止试听」 */
+function patchVolume(volume: number) {
+  const v = clampVoiceReadVolume(volume);
+  if (Math.abs(draft.value.volume - v) < 1e-9) {
+    applyPreviewPlaybackVolume(v);
+    return;
+  }
+  draft.value.volume = v;
+  applyPreviewPlaybackVolume(v);
+}
+
+function applyPreviewPlaybackVolume(volume: number) {
+  if (!isPreviewBusy()) return;
+  previewPlayer.setPlaybackVolume(volume);
+}
+
+watch(supportsMultiVoiceScheme, (supported) => {
+  if (!supported && draft.value.scheme === "multi") {
+    patchDraft({ scheme: "single" });
+  }
+});
+
+function patchSingleVoice(p: Partial<VoiceReadSingleVoiceSettings>) {
+  patchDraft({ single: { ...draft.value.single, ...p } });
+}
+
+function patchMultiVoice(p: Partial<VoiceReadMultiVoiceSettings>) {
+  patchDraft({ multi: { ...draft.value.multi, ...p } });
+}
+
+function patchEngineConfig(
+  partial: Partial<VoiceReadSettings["engineConfig"]>,
+) {
+  patchDraft({
+    engineConfig: { ...draft.value.engineConfig, ...partial },
+  });
+}
+
+const dashscopeApiKeyModel = computed({
+  get: () =>
+    draft.value.engineConfig.dashscopeApiKey ??
+    draft.value.dashscopeApiKey ??
+    "",
+  set: (value: string) => {
+    patchEngineConfig({ dashscopeApiKey: value });
+  },
+});
+
+const minimaxApiKeyModel = computed({
+  get: () => draft.value.engineConfig.minimaxApiKey ?? "",
+  set: (value: string) => {
+    patchEngineConfig({ minimaxApiKey: value });
+  },
+});
+
+const mimoApiKeyModel = computed({
+  get: () => draft.value.engineConfig.mimoApiKey ?? "",
+  set: (value: string) => {
+    patchEngineConfig({ mimoApiKey: value });
+  },
+});
+
+const mimoVoiceDescriptionModel = computed({
+  get: () => draft.value.engineConfig.mimoVoiceDescription ?? "",
+  set: (value: string) => {
+    patchEngineConfig({ mimoVoiceDescription: value });
+  },
+});
+
+const mimoOptimizeTextPreviewModel = computed({
+  get: () => draft.value.engineConfig.mimoOptimizeTextPreview === true,
+  set: (value: boolean) => {
+    patchEngineConfig({ mimoOptimizeTextPreview: value });
+  },
+});
+
+const mimoReferenceAudioPathModel = computed({
+  get: () => draft.value.engineConfig.mimoReferenceAudioPath ?? "",
+  set: (value: string) => {
+    patchEngineConfig({ mimoReferenceAudioPath: value });
+  },
+});
 
 function clearPreviewDownload() {
   previewDownload.value = null;
@@ -403,7 +573,7 @@ function buildPreviewSpeakChunks(
   const previewSettings: VoiceReadSettings = {
     ...settings,
     scheme: "single",
-    voiceId,
+    single: { ...settings.single, voiceId },
   };
   return buildLineSpeakChunks(previewSettings, text, []).chunks;
 }
@@ -489,7 +659,7 @@ async function onPreview() {
       const previewSettings: VoiceReadSettings = {
         ...settings,
         scheme: "single",
-        voiceId,
+        single: { ...settings.single, voiceId },
       };
       await previewPlayer.speakLine(previewSettings, text);
     }
@@ -521,7 +691,7 @@ function onPreviewDownload() {
 const previewDisabled = computed(() => {
   if (isPreviewPlaying.value) return false;
   return (
-    isPreviewBusy() || voiceReadDashScopeRequiresApiKey(draft.value)
+    isPreviewBusy() || voiceReadEngineRequiresCredentials(draft.value)
   );
 });
 
@@ -534,22 +704,18 @@ function onPreviewButtonClick() {
 }
 
 watch(
-  () =>
-    [
-      draft.value.scheme,
-      draft.value.engine,
-      draft.value.voiceId,
-      draft.value.narrationVoiceId,
-      draft.value.dialogueVoiceId,
-      draft.value.dialogueMaleVoiceId,
-      draft.value.dialogueFemaleVoiceId,
-      draft.value.aiSpeakerRecognitionEnabled,
-      draft.value.dialogueQuoteStyles.join(","),
-      draft.value.dashscopeApiKey,
-      draft.value.rate,
-      draft.value.pitch,
-      previewText.value,
-    ] as const,
+  () => voiceReadSettingsSynthesisFingerprint(draft.value),
+  () => {
+    if (isPreviewBusy()) cancelPreview();
+    else {
+      previewError.value = "";
+      clearPreviewDownload();
+    }
+  },
+);
+
+watch(
+  () => previewText.value,
   () => {
     if (isPreviewBusy()) cancelPreview();
     else {
@@ -562,9 +728,25 @@ watch(
 const rateDisabled = computed(
   () => !voiceReadEngineSupportsRate(draft.value.engine),
 );
-const pitchDisabled = computed(
-  () => !voiceReadEngineSupportsPitch(draft.value.engine),
+const showPitchControl = computed(() =>
+  voiceReadEngineSupportsPitch(draft.value.engine),
 );
+
+const showEmotionToggle = computed(
+  () =>
+    showDialogueGenderVoices.value &&
+    voiceReadEngineSupportsEmotion(
+      draft.value.engine,
+      draft.value.engineConfig,
+    ),
+);
+
+const emotionEnabledModel = computed({
+  get: () => draft.value.emotionEnabled !== false,
+  set: (value: boolean) => {
+    patchDraft({ emotionEnabled: value });
+  },
+});
 
 const voiceReadProfileToolbarProfiles = computed(
   () => voiceReadProfileDraft.profileSelectItems.value,
@@ -580,6 +762,7 @@ const voiceReadProfileToolbarPlaceholder = computed(
 );
 
 function onVoiceReadProfileEditingIdChange(id: string) {
+  if (id === voiceReadProfileDraft.editingId.value) return;
   if (isPreviewBusy()) cancelPreview();
   voiceReadProfileDraft.selectEditingProfile(id);
 }
@@ -589,16 +772,20 @@ function initVoiceReadProfiles() {
 }
 
 defineExpose({
+  cancelPreview,
   finalizeVoiceReadProfiles: voiceReadProfileDraft.finalizeBeforeSave,
   initVoiceReadProfiles,
   resetCurrentVoiceReadProfile: voiceReadProfileDraft.resetCurrentProfileSettings,
+});
+
+onUnmounted(() => {
+  cancelPreview();
 });
 </script>
 
 <template>
   <div class="settingsBody">
     <section class="aiSection aiSection--compact">
-      <h3 class="aiSectionTitle">配置方案</h3>
       <AiConfigProfileToolbar
         :profiles="voiceReadProfileToolbarProfiles"
         :editing-id="voiceReadProfileToolbarEditingId"
@@ -614,24 +801,7 @@ defineExpose({
 
     <section class="aiSection aiSection--compact">
       <div class="settingsRowMain settingsRowMain--baseline">
-        <span class="settingsLabel short">朗读方案</span>
-        <AppCustomSelect
-          class="settingsRowControl"
-          :model-value="draft.scheme"
-          :display-label="schemeDisplayLabel"
-          :fixed-top-items="selectListsEmpty"
-          :scroll-items="schemeScrollItems"
-          :fixed-bottom-items="selectListsEmpty"
-          :scroll-max-height="200"
-          ariaLabel="朗读方案"
-          @update:model-value="patchDraft({ scheme: $event as VoiceReadScheme })"
-        />
-      </div>
-    </section>
-
-    <section class="aiSection aiSection--compact">
-      <div class="settingsRowMain settingsRowMain--baseline">
-        <span class="settingsLabel short">引擎</span>
+        <span class="settingsLabel short settingsLabel--strong">服务商</span>
         <AppCustomSelect
           class="settingsRowControl"
           :model-value="draft.engine"
@@ -640,53 +810,231 @@ defineExpose({
           :scroll-items="engineScrollItems"
           :fixed-bottom-items="selectListsEmpty"
           :scroll-max-height="280"
-          ariaLabel="引擎"
+          ariaLabel="语音朗读服务商"
           @update:model-value="
             patchDraft({ engine: $event as VoiceReadEngineId })
           "
         />
       </div>
 
-      <template v-if="draft.engine === 'dashscope'">
-        <div class="settingsRowMain settingsRowMain--baseline">
-          <span class="settingsLabel short">API 密钥</span>
-          <div class="settingsRowField">
-            <div class="settingsPasswordRow">
-              <input
-                class="settingsStretchInput settingsPasswordRow__input"
-                :type="showDashScopeKey ? 'text' : 'password'"
-                autocomplete="off"
-                spellcheck="false"
-                :value="draft.dashscopeApiKey"
-                @input="
-                  patchDraft({
-                    dashscopeApiKey: ($event.target as HTMLInputElement).value,
-                  })
-                "
-              />
-              <button
-                type="button"
-                class="btn iconOnly"
-                :title="showDashScopeKey ? '隐藏' : '显示'"
-                :aria-label="
-                  showDashScopeKey ? '隐藏 API 密钥' : '显示 API 密钥'
-                "
-                @click="showDashScopeKey = !showDashScopeKey"
-              >
-                <span
-                  class="iconSvg"
-                  v-html="showDashScopeKey ? icons.view : icons.viewOff"
+      <template v-if="showApiKeyFields">
+        <div v-if="draft.engine === 'dashscope'" class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">API 密钥</span>
+            <div class="aiRowField">
+              <div class="settingsPasswordRow aiPasswordRow">
+                <input
+                  class="settingsStretchInput settingsPasswordRow__input"
+                  :type="showDashScopeKey ? 'text' : 'password'"
+                  autocomplete="off"
+                  spellcheck="false"
+                  v-model="dashscopeApiKeyModel"
                 />
-              </button>
+                <button
+                  type="button"
+                  class="btn iconOnly"
+                  :title="showDashScopeKey ? '隐藏' : '显示'"
+                  :aria-label="
+                    showDashScopeKey ? '隐藏 API 密钥' : '显示 API 密钥'
+                  "
+                  @click="showDashScopeKey = !showDashScopeKey"
+                >
+                  <span
+                    class="iconSvg"
+                    v-html="showDashScopeKey ? icons.view : icons.viewOff"
+                  />
+                </button>
+                <AppConnectionTestButton
+                  :fingerprint="dashscopeConnectionFingerprint"
+                  :on-test="runDashscopeConnectionTest"
+                  title="仅校验 API 密钥有效性，不进行语音合成"
+                />
+              </div>
+            </div>
+          </div>
+          <p class="settingsHint">{{ secretStorageHint }}</p>
+        </div>
+        <div v-if="showDashScopeModel" class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">模型</span>
+            <div class="aiRowField">
+              <ApiEndpointInput
+                :model-value="
+                  draft.engineConfig.dashscopeModel ?? DEFAULT_DASHSCOPE_TTS_MODEL
+                "
+                :suggestions="getDashscopeTtsModelSuggestions()"
+                placeholder="输入模型 ID…"
+                input-class="settingsStretchInput"
+                aria-label="通义语音模型"
+                :scroll-max-height="160"
+                @update:model-value="patchEngineConfig({ dashscopeModel: $event })"
+              />
+            </div>
+          </div>
+          <p class="settingsHint">
+            Instruct 支持自然语言语气控制。
+          </p>
+        </div>
+        <div v-if="draft.engine === 'minimax'" class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">API 密钥</span>
+            <div class="aiRowField">
+              <div class="settingsPasswordRow aiPasswordRow">
+                <input
+                  class="settingsStretchInput settingsPasswordRow__input"
+                  :type="showMiniMaxKey ? 'text' : 'password'"
+                  autocomplete="off"
+                  spellcheck="false"
+                  v-model="minimaxApiKeyModel"
+                />
+                <button
+                  type="button"
+                  class="btn iconOnly"
+                  :title="showMiniMaxKey ? '隐藏' : '显示'"
+                  :aria-label="
+                    showMiniMaxKey ? '隐藏 API 密钥' : '显示 API 密钥'
+                  "
+                  @click="showMiniMaxKey = !showMiniMaxKey"
+                >
+                  <span
+                    class="iconSvg"
+                    v-html="showMiniMaxKey ? icons.view : icons.viewOff"
+                  />
+                </button>
+                <AppConnectionTestButton
+                  :fingerprint="minimaxConnectionFingerprint"
+                  :on-test="runMinimaxConnectionTest"
+                  title="仅校验 API 密钥有效性，不进行语音合成"
+                />
+              </div>
+            </div>
+          </div>
+          <p class="settingsHint">{{ secretStorageHint }}</p>
+        </div>
+        <div v-if="showMiniMaxModel" class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">模型</span>
+            <div class="aiRowField">
+              <ApiEndpointInput
+                :model-value="
+                  draft.engineConfig.minimaxModel ?? DEFAULT_MINIMAX_TTS_MODEL
+                "
+                :suggestions="getMinimaxTtsModelSuggestions()"
+                placeholder="输入模型 ID…"
+                input-class="settingsStretchInput"
+                aria-label="MiniMax 语音模型"
+                :scroll-max-height="220"
+                @update:model-value="patchEngineConfig({ minimaxModel: $event })"
+              />
+            </div>
+          </div>
+          <p class="settingsHint">
+            turbo 延迟更低、生成更快；hd 音质更高、生成较慢。
+          </p>
+          <p v-if="minimaxVoiceCatalogError" class="settingsHint">
+            音色同步失败：{{ minimaxVoiceCatalogError }}（将使用本地预设音色）
+          </p>
+        </div>
+        <div v-if="draft.engine === 'mimo'" class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">API 密钥</span>
+            <div class="aiRowField">
+              <div class="settingsPasswordRow aiPasswordRow">
+                <input
+                  class="settingsStretchInput settingsPasswordRow__input"
+                  :type="showMimoKey ? 'text' : 'password'"
+                  autocomplete="off"
+                  spellcheck="false"
+                  v-model="mimoApiKeyModel"
+                />
+                <button
+                  type="button"
+                  class="btn iconOnly"
+                  :title="showMimoKey ? '隐藏' : '显示'"
+                  :aria-label="
+                    showMimoKey ? '隐藏 API 密钥' : '显示 API 密钥'
+                  "
+                  @click="showMimoKey = !showMimoKey"
+                >
+                  <span
+                    class="iconSvg"
+                    v-html="showMimoKey ? icons.view : icons.viewOff"
+                  />
+                </button>
+                <AppConnectionTestButton
+                  :fingerprint="mimoConnectionFingerprint"
+                  :on-test="runMimoConnectionTest"
+                  title="仅校验 API 密钥有效性，不进行语音合成"
+                />
+              </div>
+            </div>
+          </div>
+          <p class="settingsHint">{{ secretStorageHint }}</p>
+        </div>
+        <div v-if="showMimoModel" class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">模型</span>
+            <div class="aiRowField">
+              <ApiEndpointInput
+                :model-value="
+                  draft.engineConfig.mimoModel ?? DEFAULT_MIMO_TTS_MODEL
+                "
+                :suggestions="getMimoTtsModelSuggestions()"
+                placeholder="输入模型 ID…"
+                input-class="settingsStretchInput"
+                aria-label="MiMo 语音模型"
+                :scroll-max-height="160"
+                @update:model-value="patchEngineConfig({ mimoModel: $event })"
+              />
+            </div>
+          </div>
+          <p class="settingsHint">
+            VoiceDesign 可定制音色，需填写声音描述；VoiceClone 可克隆音色，需选择参考音频（mp3/wav）。
+          </p>
+        </div>
+        <div v-if="showMimoVoiceDescription" class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">声音描述</span>
+            <div class="aiRowField">
+              <textarea
+                v-model="mimoVoiceDescriptionModel"
+                class="settingsStretchTextarea settingsStretchTextarea--multiline"
+                rows="3"
+                placeholder="例如：年轻男声，语速适中，语气自然亲切"
+                aria-label="MiMo 声音描述"
+              />
             </div>
           </div>
         </div>
-        <p class="settingsHint">
-          从阿里百炼平台
-          <a href="#" @click.prevent="openDashScopeApiKeyPage">获取 API 密钥</a
-          >，使用 qwen3-tts-flash 模型。
-        </p>
-        <p class="settingsHint">{{ secretStorageHint }}</p>
+        <div v-if="showMimoVoiceDescription" class="settingsRow">
+          <div class="settingsRowMain">
+            <span class="settingsLabel">智能润色</span>
+            <SwitchToggle
+              v-model="mimoOptimizeTextPreviewModel"
+              aria-label="MiMo VoiceDesign 智能润色"
+            />
+          </div>
+          <p class="settingsHint">
+            开启后由模型改写为更适合口播的相近表达；关闭时严格朗读原文。
+          </p>
+        </div>
+        <div v-if="showMimoReferenceAudio" class="settingsRow">
+          <div class="settingsRowMain settingsRowMain--baseline">
+            <span class="settingsLabel short">参考音频</span>
+            <div class="aiRowField">
+              <PathPickerInput
+                v-model="mimoReferenceAudioPathModel"
+                :is-directory="false"
+                :filters="mimoReferenceAudioOpenFilters"
+                placeholder="选择 mp3 或 wav 参考音频"
+                aria-label="MiMo 参考音频"
+              />
+            </div>
+          </div>
+          <p class="settingsHint">
+            每次合成都会上传参考音频，长文连读可能较慢。
+          </p>
+        </div>
       </template>
 
       <div class="settingsRowMain">
@@ -704,9 +1052,8 @@ defineExpose({
           />
         </div>
       </div>
-      <p v-if="rateDisabled" class="settingsHint">当前引擎不支持调节语速。</p>
 
-      <div class="settingsRowMain">
+      <div v-if="showPitchControl" class="settingsRowMain">
         <span class="settingsLabel short">音调（{{ draft.pitch.toFixed(2) }}）</span>
         <div class="settingsRowField">
           <RangeSlider
@@ -714,12 +1061,41 @@ defineExpose({
             :min="0.5"
             :max="2"
             :step="0.05"
-            :disabled="pitchDisabled"
             :show-percent="false"
             aria-label="音调"
             @update:model-value="patchDraft({ pitch: $event })"
           />
         </div>
+      </div>
+
+      <div class="settingsRowMain">
+        <span class="settingsLabel short">音量（{{ Math.round(draft.volume * 100) }}%）</span>
+        <div class="settingsRowField">
+          <RangeSlider
+            :model-value="draft.volume"
+            :min="0"
+            :max="1"
+            :step="0.05"
+            :show-percent="false"
+            aria-label="音量"
+            @update:model-value="patchVolume($event)"
+          />
+        </div>
+      </div>
+
+      <div v-if="supportsMultiVoiceScheme" class="settingsRowMain settingsRowMain--baseline">
+        <span class="settingsLabel short settingsLabel--strong">朗读方案</span>
+        <AppCustomSelect
+          class="settingsRowControl"
+          :model-value="draft.scheme"
+          :display-label="schemeDisplayLabel"
+          :fixed-top-items="selectListsEmpty"
+          :scroll-items="schemeScrollItemsForDraft"
+          :fixed-bottom-items="selectListsEmpty"
+          :scroll-max-height="200"
+          ariaLabel="朗读方案"
+          @update:model-value="patchDraft({ scheme: $event as VoiceReadScheme })"
+        />
       </div>
 
       <template v-if="isMultiScheme">
@@ -740,11 +1116,14 @@ defineExpose({
           </div>
         </div>
 
-        <div class="settingsRowMain settingsRowMain--baseline">
+        <div
+          v-if="showMimoPresetVoicePicker"
+          class="settingsRowMain settingsRowMain--baseline"
+        >
           <span class="settingsLabel short">旁白</span>
           <AppCustomSelect
             class="settingsRowControl"
-            :model-value="draft.narrationVoiceId"
+            :model-value="draft.multi.narrationVoiceId"
             :display-label="narrationVoiceDisplayLabel"
             :placeholder="voiceScrollHasOptions ? '' : '暂无可用语音'"
             :fixed-top-items="selectListsEmpty"
@@ -752,15 +1131,18 @@ defineExpose({
             :fixed-bottom-items="selectListsEmpty"
             :scroll-max-height="voiceScrollMaxHeight"
             ariaLabel="旁白语音"
-            @update:model-value="patchDraft({ narrationVoiceId: $event })"
+            @update:model-value="patchMultiVoice({ narrationVoiceId: $event })"
           />
         </div>
 
-        <div class="settingsRowMain settingsRowMain--baseline">
+        <div
+          v-if="showMimoPresetVoicePicker"
+          class="settingsRowMain settingsRowMain--baseline"
+        >
           <span class="settingsLabel short">对白</span>
           <AppCustomSelect
             class="settingsRowControl"
-            :model-value="draft.dialogueVoiceId"
+            :model-value="draft.multi.dialogueVoiceId"
             :display-label="dialogueVoiceDisplayLabel"
             :placeholder="voiceScrollHasOptions ? '' : '暂无可用语音'"
             :fixed-top-items="selectListsEmpty"
@@ -768,7 +1150,7 @@ defineExpose({
             :fixed-bottom-items="selectListsEmpty"
             :scroll-max-height="voiceScrollMaxHeight"
             ariaLabel="对白语音"
-            @update:model-value="patchDraft({ dialogueVoiceId: $event })"
+            @update:model-value="patchMultiVoice({ dialogueVoiceId: $event })"
           />
         </div>
 
@@ -778,27 +1160,41 @@ defineExpose({
         >
           <span class="settingsLabel short">AI 识别</span>
           <SwitchToggle
-            :model-value="draft.aiSpeakerRecognitionEnabled"
+            :model-value="draft.multi.aiSpeakerRecognitionEnabled"
             aria-label="AI 识别"
             @update:model-value="
-              patchDraft({ aiSpeakerRecognitionEnabled: $event })
+              patchMultiVoice({ aiSpeakerRecognitionEnabled: $event })
             "
           />
         </div>
         <p v-if="showDialogueGenderVoices" class="settingsHint">
-          朗读时根据性别自动选用男声/女声；可在「角色卡」中为角色设置专属音色。
-        </p>
-        <p v-if="showDialogueGenderVoices" class="settingsHint voiceReadAiTokenHint">
+          朗读时根据性别自动选用男声/女声；可在「角色卡」中为角色设置专属音色。<br />
           {{ voiceReadAiTokenUsageLine }}
-          <a href="#" @click.prevent="onClearVoiceReadAiTokenUsage">清零</a>
+          <button class="link warning voiceReadAiToken__clear" href="#" @click.prevent="onClearVoiceReadAiTokenUsage">清零</button>
+        </p>
+        <div
+          v-if="showEmotionToggle"
+          class="settingsRowMain settingsRowMain--baseline"
+        >
+          <span class="settingsLabel short">情绪标注</span>
+          <SwitchToggle
+            v-model="emotionEnabledModel"
+            aria-label="情绪标注"
+          />
+        </div>
+        <p v-if="showEmotionToggle" class="settingsHint">
+          开启后由 AI 标注语气情绪并传给引擎；关闭时仅区分说话人与男女声。
         </p>
 
         <template v-if="showDialogueGenderVoices">
-          <div class="settingsRowMain settingsRowMain--baseline">
+          <div
+            v-if="showMimoPresetVoicePicker"
+            class="settingsRowMain settingsRowMain--baseline"
+          >
             <span class="settingsLabel short">男声</span>
             <AppCustomSelect
               class="settingsRowControl"
-              :model-value="draft.dialogueMaleVoiceId"
+              :model-value="draft.multi.dialogueMaleVoiceId"
               :display-label="dialogueMaleVoiceDisplayLabel"
               :placeholder="voiceScrollHasOptions ? '' : '暂无可用语音'"
               :fixed-top-items="selectListsEmpty"
@@ -806,14 +1202,17 @@ defineExpose({
               :fixed-bottom-items="selectListsEmpty"
               :scroll-max-height="voiceScrollMaxHeight"
               ariaLabel="对白男声"
-              @update:model-value="patchDraft({ dialogueMaleVoiceId: $event })"
+              @update:model-value="patchMultiVoice({ dialogueMaleVoiceId: $event })"
             />
           </div>
-          <div class="settingsRowMain settingsRowMain--baseline">
+          <div
+            v-if="showMimoPresetVoicePicker"
+            class="settingsRowMain settingsRowMain--baseline"
+          >
             <span class="settingsLabel short">女声</span>
             <AppCustomSelect
               class="settingsRowControl"
-              :model-value="draft.dialogueFemaleVoiceId"
+              :model-value="draft.multi.dialogueFemaleVoiceId"
               :display-label="dialogueFemaleVoiceDisplayLabel"
               :placeholder="voiceScrollHasOptions ? '' : '暂无可用语音'"
               :fixed-top-items="selectListsEmpty"
@@ -822,7 +1221,7 @@ defineExpose({
               :scroll-max-height="voiceScrollMaxHeight"
               ariaLabel="对白女声"
               @update:model-value="
-                patchDraft({ dialogueFemaleVoiceId: $event })
+                patchMultiVoice({ dialogueFemaleVoiceId: $event })
               "
             />
           </div>
@@ -830,21 +1229,21 @@ defineExpose({
       </template>
 
       <div
-        v-else
+        v-else-if="showMimoPresetVoicePicker"
         class="settingsRowMain settingsRowMain--baseline"
       >
-        <span class="settingsLabel short">语音</span>
+        <span class="settingsLabel short">音色</span>
         <AppCustomSelect
           class="settingsRowControl"
-          :model-value="draft.voiceId"
+          :model-value="draft.single.voiceId"
           :display-label="voiceDisplayLabel"
-          :placeholder="voiceScrollHasOptions ? '' : '暂无可用语音'"
+          :placeholder="voiceScrollHasOptions ? '' : '暂无可用音色'"
           :fixed-top-items="selectListsEmpty"
           :scroll-items="voiceScrollItems"
           :fixed-bottom-items="selectListsEmpty"
           :scroll-max-height="voiceScrollMaxHeight"
-          ariaLabel="语音"
-          @update:model-value="patchDraft({ voiceId: $event })"
+          ariaLabel="音色"
+          @update:model-value="patchSingleVoice({ voiceId: $event })"
         />
       </div>
 
@@ -860,7 +1259,7 @@ defineExpose({
           class="btn voiceReadPreviewRestoreBtn"
           @click="restoreDefaultPreviewText"
         >
-          恢复默认
+          恢复默认试听内容
         </button>
         <div class="voiceReadPreviewActionsGroup">
           <p
@@ -934,6 +1333,10 @@ defineExpose({
 
 .voiceReadPreviewBtn {
   flex-shrink: 0;
+  transition:
+    background 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.42s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .voiceReadQuoteChecks {
@@ -944,12 +1347,16 @@ defineExpose({
   gap: 8px 14px;
 }
 
-.voiceReadAiTokenHint a {
+.voiceReadAiToken__clear {
   margin-left: 8px;
 }
 
 .settingsStretchTextarea--multiline {
   min-height: 72px;
+}
+
+.settingsLabel--strong {
+  font-weight: 600;
 }
 
 .iconOnly {

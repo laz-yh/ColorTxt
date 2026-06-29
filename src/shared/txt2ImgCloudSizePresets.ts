@@ -72,6 +72,15 @@ const DASHSCOPE_WANX_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
   { width: 720, height: 1280 },
 ];
 
+/** MiniMax Image：配置宽高用于推导 aspect_ratio，取常用代表像素展示 */
+const MINIMAX_IMAGE_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
+  { width: 1024, height: 1024 },
+  { width: 1536, height: 1024 },
+  { width: 1024, height: 1536 },
+  { width: 1472, height: 1104 },
+  { width: 1104, height: 1472 },
+];
+
 /** Stability：配置宽高用于推导 aspect_ratio，取常用代表像素展示 */
 const STABILITY_SIZE_PRESETS: readonly Txt2ImgCloudSizePreset[] = [
   { width: 1024, height: 1024 },
@@ -89,6 +98,7 @@ const CLOUD_SIZE_PRESETS: Record<
   openai_images: OPENAI_IMAGE_SIZE_PRESETS,
   agnes_images: AGNES_IMAGE_SIZE_PRESETS,
   dashscope_wanx: DASHSCOPE_WANX_SIZE_PRESETS,
+  minimax_images: MINIMAX_IMAGE_SIZE_PRESETS,
   stability: STABILITY_SIZE_PRESETS,
 };
 

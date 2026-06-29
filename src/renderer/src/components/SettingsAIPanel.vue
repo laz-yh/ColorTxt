@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { DEFAULT_AI_QUICK_QUESTIONS, type AIConfig } from "@shared/aiTypes";
 import {
+  DEFAULT_AI_QUICK_QUESTIONS,
   DEFAULT_WORDCLOUD_MAX_WORDS,
   MAX_TOOL_ROUNDS_MAX,
   MAX_TOOL_ROUNDS_MIN,
   WORDCLOUD_MAX_WORDS_MAX,
   WORDCLOUD_MAX_WORDS_MIN,
+  defaultAIConfig,
+  type AIConfig,
 } from "@shared/aiTypes";
 import {
   CHAT_API_PROVIDER_CUSTOM_ID,
@@ -15,6 +17,7 @@ import {
   isChatApiProviderCustomId,
   resolveChatProviderPresetIdFromBaseUrl,
 } from "@shared/apiEndpointPresets";
+import { sortChatModelsForBaseUrl } from "@shared/chatModelPresets";
 import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import ApiEndpointInput from "./ApiEndpointInput.vue";
 import AppConnectionTestButton from "./AppConnectionTestButton.vue";
@@ -151,11 +154,14 @@ async function refreshChatModels(opts?: { pullDone?: AppPullFlashDone }) {
     });
     ok = r.ok;
     if (r.ok) {
-      chatModelOptions.value = r.models;
-      if (r.models.length > 0) {
+      chatModelOptions.value = sortChatModelsForBaseUrl(
+        modelValue.value.chat.baseUrl,
+        r.models,
+      );
+      if (chatModelOptions.value.length > 0) {
         const cur = modelValue.value.chat.model.trim();
-        if (!cur || !r.models.includes(cur)) {
-          modelValue.value.chat.model = r.models[0]!;
+        if (!cur || !chatModelOptions.value.includes(cur)) {
+          modelValue.value.chat.model = chatModelOptions.value[0]!;
         }
       }
     } else chatModelOptions.value = [];
@@ -214,6 +220,18 @@ function addQuickQuestion() {
 function restoreDefaultQuickQuestions() {
   modelValue.value.quickQuestions = [...DEFAULT_AI_QUICK_QUESTIONS];
   resetQuickQuestionRowIds(modelValue.value.quickQuestions.length);
+}
+
+/** 「重置当前页」：当前对话方案 + 本页全局项（Token、缓存目录、思维导图、词云、快速提问） */
+function resetAiPageDraft() {
+  chatProfileDraft.resetCurrentProfileChat();
+  const def = defaultAIConfig;
+  modelValue.value.showTokenUsage = def.showTokenUsage;
+  modelValue.value.aiDataCacheDir = resolveDefaultAiDataCacheDirSync();
+  modelValue.value.autoMindmapOnSummaryAndCharacters =
+    def.autoMindmapOnSummaryAndCharacters;
+  modelValue.value.wordcloudMaxWords = def.wordcloudMaxWords;
+  restoreDefaultQuickQuestions();
 }
 
 function removeQuickQuestion(i: number) {
@@ -320,6 +338,7 @@ defineExpose({
   finalizeChatProfiles: chatProfileDraft.finalizeBeforeSave,
   initChatProfiles,
   resetCurrentChatProfile: chatProfileDraft.resetCurrentProfileChat,
+  resetAiPageDraft,
 });
 
 </script>
@@ -340,7 +359,6 @@ defineExpose({
     </section>
     <template v-if="modelValue.aiEnabled">
       <section class="aiSection aiSection--compact">
-        <h3 class="aiSectionTitle">配置方案</h3>
         <AiConfigProfileToolbar
           :profiles="chatProfileToolbarProfiles"
           :editing-id="chatProfileToolbarEditingId"
@@ -473,7 +491,6 @@ defineExpose({
               :min="256"
               :max="128000"
               integer
-              class="numCompact"
             />
           </div>
           <p class="settingsHint">
@@ -490,7 +507,6 @@ defineExpose({
               :min="1"
               :max="64"
               integer
-              class="numCompact"
             />
           </div>
           <p class="settingsHint">
@@ -507,7 +523,6 @@ defineExpose({
               :min="MAX_TOOL_ROUNDS_MIN"
               :max="MAX_TOOL_ROUNDS_MAX"
               integer
-              class="numCompact"
             />
           </div>
           <p class="settingsHint">
@@ -576,7 +591,6 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.inputCacheHit"
                 :min="0"
                 :step="0.01"
-                class="numCompact"
                 aria-label="输入缓存命中每百万 Token 价格"
               />
             </div>
@@ -588,7 +602,6 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.inputCacheMiss"
                 :min="0"
                 :step="0.01"
-                class="numCompact"
                 aria-label="输入缓存未命中每百万 Token 价格"
               />
             </div>
@@ -600,7 +613,6 @@ defineExpose({
                 v-model="modelValue.chat.tokenPricePerMillion.output"
                 :min="0"
                 :step="0.01"
-                class="numCompact"
                 aria-label="输出每百万 Token 价格"
               />
             </div>
@@ -654,7 +666,6 @@ defineExpose({
               :min="WORDCLOUD_MAX_WORDS_MIN"
               :max="WORDCLOUD_MAX_WORDS_MAX"
               integer
-              class="numCompact"
             />
           </div>
         </div>
@@ -951,12 +962,6 @@ defineExpose({
 .temperatureSlider {
   width: 150px;
 }
-
-.numCompact {
-  width: 120px;
-  flex: 0 0 120px;
-}
-
 .quickQRow {
   display: flex;
   align-items: stretch;

@@ -63,6 +63,7 @@ import { useAppWindowBindings } from "./composables/useAppWindowBindings";
 import { useAiChapterPlainTextBridge } from "./composables/useAiChapterPlainTextBridge";
 import { isEbookFilePath, isMarkdownFilePath } from "./ebook/ebookFormat";
 import { useAppVoiceRead } from "./composables/useAppVoiceRead";
+import { useAppTimedScroll } from "./composables/useAppTimedScroll";
 import { useTxtStreamPipeline } from "./composables/useTxtStreamPipeline";
 import { fileHistoryKey } from "./stores/recentHistoryStore";
 import {
@@ -116,6 +117,7 @@ import {
   defaultMonacoAdvancedWrapping,
   defaultMonacoCustomHighlight,
   defaultMonacoSmoothScrolling,
+  defaultStickyChapterTitleEnabled,
   defaultReaderEditShowLineNumbers,
   defaultReaderEditMinimap,
   defaultEditAutoRefreshChapterList,
@@ -128,8 +130,11 @@ import {
   defaultReaderPaletteLight,
   defaultReaderTheme,
   defaultRecentFilesHistoryLimit,
+  mergeReaderPaletteColorEnabled,
   mergeReaderSurfacePalette,
+  overridesFromColorEnabled,
   overridesFromFullPalette,
+  resolveEffectiveReaderPalette,
   defaultRestoreSessionOnStartup,
   defaultSyncCurrentFile,
   defaultTxtrDelimitedMatchCrossLine,
@@ -150,6 +155,7 @@ import {
   minChapterMinCharCount,
   minLineHeightMultiple,
   SIDEBAR_ACTIVITY_BAR_WIDTH,
+  type ReaderSurfaceColorEnabled,
   type ReaderSurfacePalette,
 } from "./constants/appUi";
 import {
@@ -159,6 +165,10 @@ import {
 } from "@shared/textConvertTypes";
 import { applyTextDisplayConverts } from "./services/textConvertApply";
 import { mergeVoiceReadSettings, type VoiceReadSettings } from "./constants/voiceRead";
+import {
+  mergeTimedScrollSettings,
+  type TimedScrollSettings,
+} from "./constants/timedScroll";
 import { migrateVoiceReadFromPersisted, cloneVoiceReadProfiles } from "./services/voiceRead/voiceReadProfileState";
 import {
   voiceReadAiSpeakerTokenUsage,
@@ -506,6 +516,8 @@ const chapterMinCharCount = ref(defaultChapterMinCharCount);
 const monacoAdvancedWrapping = ref(defaultMonacoAdvancedWrapping);
 /** Monaco 阅读区平滑滚动（设置可关） */
 const monacoSmoothScrolling = ref(defaultMonacoSmoothScrolling);
+/** 阅读区顶部粘性章节标题 */
+const stickyChapterTitleEnabled = ref(defaultStickyChapterTitleEnabled);
 const readerEditShowLineNumbers = ref(defaultReaderEditShowLineNumbers);
 const readerEditMinimap = ref(defaultReaderEditMinimap);
 const editAutoRefreshChapterList = ref(defaultEditAutoRefreshChapterList);
@@ -517,6 +529,9 @@ const canUseAiSmartFormat = computed(() =>
 );
 /** 全屏时阅读区域宽度（百分比） */
 const fullscreenReaderWidthPercent = ref(defaultFullscreenReaderWidthPercent);
+const timedScrollSettings = ref<TimedScrollSettings>(
+  mergeTimedScrollSettings(undefined),
+);
 /** 电子书转换缓存目录；默认 userData/ConvertedTxt；设置里清空则为与源文件同目录 */
 const ebookConvertOutputDir = ref(
   (() => {
@@ -527,8 +542,16 @@ const ebookConvertOutputDir = ref(
     }
   })(),
 );
-/** 角色立绘缓存根目录（绝对路径）；启动后由持久化或默认 userData/CharacterPortrait 填充 */
-const characterPortraitCacheDir = ref("");
+/** 角色立绘缓存根目录（绝对路径）；出厂默认 userData/CharacterPortrait */
+const characterPortraitCacheDir = ref(
+  (() => {
+    try {
+      return window.colorTxt.getDefaultCharacterPortraitCacheDir();
+    } catch {
+      return "";
+    }
+  })(),
+);
 const characterCardTextureEffect = ref<CharacterCardTextureEffectId>(
   DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT,
 );
@@ -545,18 +568,12 @@ const ebookConversionSourcePath = ref<string | null>(null);
 
 const readerPaletteOverridesLight = ref<Partial<ReaderSurfacePalette>>({});
 const readerPaletteOverridesDark = ref<Partial<ReaderSurfacePalette>>({});
-
-const highlightColorsLight = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_LIGHT]);
-const highlightColorsDark = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_DARK]);
-const lineationColorsLight = ref<string[]>([...DEFAULT_LINEATION_COLORS_LIGHT]);
-const lineationColorsDark = ref<string[]>([...DEFAULT_LINEATION_COLORS_DARK]);
-/** 已收藏（全书通用）高亮词 */
-const highlightWordsByIndexGlobal = ref<HighlightWordsByIndex | undefined>(
-  undefined,
-);
-const lineationLastColors = ref<LineationLastColorPrefs>({
-  ...DEFAULT_LINEATION_LAST_COLORS,
-});
+const readerPaletteColorEnabledOverridesLight = ref<
+  Partial<ReaderSurfaceColorEnabled>
+>({});
+const readerPaletteColorEnabledOverridesDark = ref<
+  Partial<ReaderSurfaceColorEnabled>
+>({});
 
 const readerSurfaceLight = computed(() =>
   mergeReaderSurfacePalette(
@@ -571,6 +588,38 @@ const readerSurfaceDark = computed(() =>
   ),
 );
 
+const readerPaletteColorEnabledLight = computed(() =>
+  mergeReaderPaletteColorEnabled(readerPaletteColorEnabledOverridesLight.value),
+);
+const readerPaletteColorEnabledDark = computed(() =>
+  mergeReaderPaletteColorEnabled(readerPaletteColorEnabledOverridesDark.value),
+);
+
+const effectiveReaderSurfaceLight = computed(() =>
+  resolveEffectiveReaderPalette(
+    readerSurfaceLight.value,
+    readerPaletteColorEnabledLight.value,
+  ),
+);
+const effectiveReaderSurfaceDark = computed(() =>
+  resolveEffectiveReaderPalette(
+    readerSurfaceDark.value,
+    readerPaletteColorEnabledDark.value,
+  ),
+);
+
+const highlightColorsLight = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_LIGHT]);
+const highlightColorsDark = ref<string[]>([...DEFAULT_HIGHLIGHT_COLORS_DARK]);
+const lineationColorsLight = ref<string[]>([...DEFAULT_LINEATION_COLORS_LIGHT]);
+const lineationColorsDark = ref<string[]>([...DEFAULT_LINEATION_COLORS_DARK]);
+/** 已收藏（全书通用）高亮词 */
+const highlightWordsByIndexGlobal = ref<HighlightWordsByIndex | undefined>(
+  undefined,
+);
+const lineationLastColors = ref<LineationLastColorPrefs>({
+  ...DEFAULT_LINEATION_LAST_COLORS,
+});
+
 const highlightColorsForReader = computed(() =>
   currentTheme.value === "vs"
     ? highlightColorsLight.value
@@ -581,6 +630,12 @@ const lineationColorsForReader = computed(() =>
   currentTheme.value === "vs"
     ? lineationColorsLight.value
     : lineationColorsDark.value,
+);
+
+const readerPaletteColorEnabledForReader = computed(() =>
+  currentTheme.value === "vs"
+    ? readerPaletteColorEnabledLight.value
+    : readerPaletteColorEnabledDark.value,
 );
 
 const currentFileMetaRecord = computed(() => {
@@ -1083,16 +1138,20 @@ const persistence = useAppPersistence({
   chapterMinCharCount,
   monacoAdvancedWrapping,
   monacoSmoothScrolling,
+  stickyChapterTitleEnabled,
   readerEditShowLineNumbers,
   readerEditMinimap,
   editAutoRefreshChapterList,
   aiSmartFormat,
   fullscreenReaderWidthPercent,
+  timedScrollSettings,
   fileMetaRecords,
   shortcutBindings,
   defaultShortcutBindings,
   readerPaletteOverridesLight,
   readerPaletteOverridesDark,
+  readerPaletteColorEnabledOverridesLight,
+  readerPaletteColorEnabledOverridesDark,
   highlightColorsLight,
   highlightColorsDark,
   lineationColorsLight,
@@ -1121,6 +1180,7 @@ const persistence = useAppPersistence({
 });
 const {
   persistSettings,
+  persistVoiceReadSecretsToVault,
   clearRecentFiles,
   persistWindowUnloadState,
   persistFileListCache,
@@ -1150,6 +1210,11 @@ watch(wordcloudFontFamily, () => persistSettings());
 watch(characterCardTextureEffect, () => persistSettings());
 watch(
   voiceReadSettings,
+  () => persistSettings(),
+  { deep: true },
+);
+watch(
+  timedScrollSettings,
   () => persistSettings(),
   { deep: true },
 );
@@ -1647,15 +1712,16 @@ const {
   isSynthesizing: voiceReadSynthesizing,
   synthesizingPhase: voiceReadSynthesizingPhase,
   toolbarRate: voiceReadToolbarRate,
-  toolbarPitch: voiceReadToolbarPitch,
+  toolbarVolume: voiceReadToolbarVolume,
+  setToolbarVolume: setVoiceReadToolbarVolume,
   canStartVoiceRead: canVoiceRead,
   isVoiceReadActive,
   isVoiceReadScrollLocked,
   isVoiceReadBlocksFind,
   isVoiceReadHeaderLocked,
+  isVoiceReadNavigationBlocked,
   toggleVoiceReadToolbar,
   togglePlayPause: voiceReadTogglePlayPause,
-  restartFromViewportTopAfterNavigation: voiceReadRestartFromViewportTop,
   exitVoiceRead,
   playPrevLine: voiceReadPlayPrevLine,
   playNextLine: voiceReadPlayNextLine,
@@ -1665,6 +1731,8 @@ const {
 } = useAppVoiceRead({
   readerRef,
   voiceReadSettings,
+  voiceReadProfiles,
+  activeVoiceReadProfileId,
   currentFile,
   loading,
   readerEditMode,
@@ -1673,33 +1741,44 @@ const {
   characterRoster: currentFileCharacterRoster,
 });
 
-function scheduleVoiceReadResumeAfterJump() {
-  if (voiceReadMode.value !== "playing") return;
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      voiceReadRestartFromViewportTop();
-    });
-  });
+const {
+  isTimedScrollActive,
+  canStartTimedScroll,
+  toggleTimedScroll,
+} = useAppTimedScroll({
+  readerRef,
+  timedScrollSettings,
+  currentFile,
+  loading,
+  readerEditMode,
+  viewportAtBottom,
+  isVoiceReadActive,
+});
+
+function onVoiceReadToggle() {
+  if (!isVoiceReadActive.value && isTimedScrollActive.value) return;
+  toggleVoiceReadToolbar();
+}
+
+function guardReaderNavigation(action: () => void): void {
+  if (isVoiceReadNavigationBlocked.value) return;
+  action();
 }
 
 function onJumpToChapterFromSidebar(ch: Chapter) {
-  jumpToChapter(ch);
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => jumpToChapter(ch));
 }
 
 function jumpToBookmarkWithVoiceRead(line: number) {
-  jumpToBookmark(line);
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => jumpToBookmark(line));
 }
 
 function jumpToPrevChapterWithVoiceRead() {
-  jumpToPrevChapter();
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => jumpToPrevChapter());
 }
 
 function jumpToNextChapterWithVoiceRead() {
-  jumpToNextChapter();
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => jumpToNextChapter());
 }
 
 const canEnterReaderEditMode = computed(
@@ -1954,9 +2033,10 @@ async function handleWindowCloseRequest() {
 
 /** AI 助手跳转章节：未激活书钉时先记住当前滚动位置（与查找打开前一致），再跳转 */
 function jumpToChapterFromAiAssistant(ch: Chapter) {
-  ensurePinBeforeRevealFindWidget();
-  jumpToChapter(ch);
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => {
+    ensurePinBeforeRevealFindWidget();
+    jumpToChapter(ch);
+  });
 }
 
 const readerUi = useAppReaderUiPrefs({
@@ -2078,6 +2158,8 @@ function refreshReaderSurfaceAfterPaletteChange() {
 function onApplyReaderPalettes(payload: {
   light: ReaderSurfacePalette;
   dark: ReaderSurfacePalette;
+  colorEnabledLight: ReaderSurfaceColorEnabled;
+  colorEnabledDark: ReaderSurfaceColorEnabled;
 }) {
   readerPaletteOverridesLight.value = overridesFromFullPalette(
     payload.light,
@@ -2086,6 +2168,12 @@ function onApplyReaderPalettes(payload: {
   readerPaletteOverridesDark.value = overridesFromFullPalette(
     payload.dark,
     defaultReaderPaletteDark,
+  );
+  readerPaletteColorEnabledOverridesLight.value = overridesFromColorEnabled(
+    payload.colorEnabledLight,
+  );
+  readerPaletteColorEnabledOverridesDark.value = overridesFromColorEnabled(
+    payload.colorEnabledDark,
   );
   persistSettings();
   refreshReaderSurfaceAfterPaletteChange();
@@ -2221,6 +2309,7 @@ async function clearCurrentFileHighlightTerms() {
 
 function onFindHighlightTermFromSidebar(text: string) {
   if (!currentFile.value || loading.value || totalLineCount.value <= 0) return;
+  if (isVoiceReadNavigationBlocked.value) return;
   ensurePinBeforeRevealFindWidget();
   const found = readerRef.value?.jumpToNextInlineSearchMatch?.(text, {
     caseSensitive: false,
@@ -2229,7 +2318,6 @@ function onFindHighlightTermFromSidebar(text: string) {
     smooth: true,
   });
   hasInlineSearchHighlight.value = found === true;
-  scheduleVoiceReadResumeAfterJump();
 }
 
 function onUpsertReaderAnnotation(annotation: ReaderAnnotationRecord) {
@@ -2292,8 +2380,9 @@ function onClearReaderAnnotations() {
 }
 
 function onJumpToReaderAnnotation(ann: ReaderAnnotationRecord) {
-  readerRef.value?.jumpToAnnotationRange?.(ann, { smooth: true });
-  scheduleVoiceReadResumeAfterJump();
+  guardReaderNavigation(() => {
+    readerRef.value?.jumpToAnnotationRange?.(ann, { smooth: true });
+  });
 }
 
 async function onClearReaderAnnotationsWithConfirm() {
@@ -2703,6 +2792,7 @@ watch(sidebarTab, () => {
 
 function onJumpToSearchResult(item: SidebarSearchResult) {
   if (!currentFile.value || loading.value || totalLineCount.value <= 0) return;
+  if (isVoiceReadNavigationBlocked.value) return;
   activeSearchResult.value = {
     displayLine: item.displayLine,
     rangeStart: item.range.start,
@@ -2731,7 +2821,6 @@ function onJumpToSearchResult(item: SidebarSearchResult) {
     endColumn,
   );
   queueMicrotask(() => readerRef.value?.emitProbeLine?.());
-  scheduleVoiceReadResumeAfterJump();
 }
 
 onBeforeUnmount(() => {
@@ -2749,6 +2838,8 @@ async function applySettings(payload: SettingsApplyPayload) {
   const prevCompressBlankKeepOneBlank = compressBlankKeepOneBlank.value;
   const prevChapterMinCharCount = chapterMinCharCount.value;
   monacoSmoothScrolling.value = payload.monacoSmoothScrolling;
+  stickyChapterTitleEnabled.value = payload.stickyChapterTitleEnabled;
+  timedScrollSettings.value = mergeTimedScrollSettings(payload.timedScroll);
   readerEditShowLineNumbers.value = payload.readerEditShowLineNumbers;
   readerEditMinimap.value = payload.readerEditMinimap;
   editAutoRefreshChapterList.value = payload.editAutoRefreshChapterList;
@@ -2820,6 +2911,7 @@ async function applySettings(payload: SettingsApplyPayload) {
   voiceReadSettings.value = mergeVoiceReadSettings(payload.voiceRead);
   voiceReadProfiles.value = cloneVoiceReadProfiles(payload.voiceReadProfiles);
   activeVoiceReadProfileId.value = payload.activeVoiceReadProfileId.trim();
+  await persistVoiceReadSecretsToVault();
   aiAssistantConfigSyncNonce.value += 1;
   persistSettings();
   if (!payload.restoreSessionOnStartup) {
@@ -2997,6 +3089,8 @@ useAppShellThemeWatch({
         :can-bookmark="canBookmark"
         :voice-read-active="isVoiceReadActive"
         :can-voice-read="canVoiceRead"
+        :timed-scroll-active="isTimedScrollActive"
+        :can-timed-scroll="canStartTimedScroll"
         :voice-read-header-locked="isVoiceReadHeaderLocked"
         :current-theme="currentTheme"
         :show-sidebar="showSidebar"
@@ -3069,7 +3163,8 @@ useAppShellThemeWatch({
         :ai-smart-format-running="aiSmartFormatRunning"
         :smart-format-review-active="aiSmartFormatReviewSession != null"
         @ai-smart-format-full="onAiSmartFormatFull"
-        @voice-read-toggle="toggleVoiceReadToolbar"
+        @voice-read-toggle="onVoiceReadToggle"
+        @timed-scroll-toggle="toggleTimedScroll"
       />
     </div>
 
@@ -3254,11 +3349,13 @@ useAppShellThemeWatch({
           :chapter-min-char-count="chapterMinCharCount"
           :monaco-advanced-wrapping="monacoAdvancedWrapping"
           :monaco-smooth-scrolling="monacoSmoothScrolling"
+          :sticky-chapter-title-enabled="stickyChapterTitleEnabled"
           :reader-edit-show-line-numbers="readerEditShowLineNumbers"
           :reader-edit-minimap="readerEditMinimap"
           :stream-loading="loading"
-          :reader-surface-light="readerSurfaceLight"
-          :reader-surface-dark="readerSurfaceDark"
+          :reader-surface-light="effectiveReaderSurfaceLight"
+          :reader-surface-dark="effectiveReaderSurfaceDark"
+          :reader-palette-color-enabled="readerPaletteColorEnabledForReader"
           :highlight-colors="highlightColorsForReader"
           :lineation-colors="lineationColorsForReader"
           :highlight-words-by-index="readerDisplayHighlightWordsByIndex"
@@ -3312,12 +3409,12 @@ useAppShellThemeWatch({
           :synthesizing="voiceReadSynthesizing"
           :synthesizing-phase="voiceReadSynthesizingPhase"
           :toolbar-rate="voiceReadToolbarRate"
-          :toolbar-pitch="voiceReadToolbarPitch"
+          :toolbar-volume="voiceReadToolbarVolume"
           :engine="voiceReadSettings.engine"
           :can-prev-line="voiceReadCanPlayPrevLine"
           :can-next-line="voiceReadCanPlayNextLine"
           @update:toolbar-rate="voiceReadToolbarRate = $event"
-          @update:toolbar-pitch="voiceReadToolbarPitch = $event"
+          @update:toolbar-volume="setVoiceReadToolbarVolume($event)"
           @toggle-play-pause="voiceReadTogglePlayPause"
           @prev-line="voiceReadPlayPrevLine"
           @next-line="voiceReadPlayNextLine"
@@ -3421,6 +3518,8 @@ useAppShellThemeWatch({
       :reader-line-height-multiple="readerLineHeightMultiple"
       :compress-blank-keep-one-blank="compressBlankKeepOneBlank"
       :monaco-smooth-scrolling="monacoSmoothScrolling"
+      :sticky-chapter-title-enabled="stickyChapterTitleEnabled"
+      :timed-scroll-settings="timedScrollSettings"
       :reader-edit-show-line-numbers="readerEditShowLineNumbers"
       :reader-edit-minimap="readerEditMinimap"
       :edit-auto-refresh-chapter-list="editAutoRefreshChapterList"
@@ -3441,6 +3540,8 @@ useAppShellThemeWatch({
       :current-theme="currentTheme"
       :reader-surface-light="readerSurfaceLight"
       :reader-surface-dark="readerSurfaceDark"
+      :reader-palette-color-enabled-light="readerPaletteColorEnabledLight"
+      :reader-palette-color-enabled-dark="readerPaletteColorEnabledDark"
       :monaco-font-family="monacoFontFamily"
       :highlight-colors-light="highlightColorsLight"
       :highlight-colors-dark="highlightColorsDark"

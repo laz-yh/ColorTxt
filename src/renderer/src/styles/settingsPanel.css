@@ -148,6 +148,23 @@
   min-width: 0;
 }
 
+/** 设置页 API 密钥行右侧控件区 */
+.aiRowField {
+  flex: 1 1 65%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aiPasswordRow {
+  width: 100%;
+}
+
+.aiRowField :deep(.apiEndpointInput) {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .settingsActionsRow {
   display: flex;
   justify-content: flex-end;

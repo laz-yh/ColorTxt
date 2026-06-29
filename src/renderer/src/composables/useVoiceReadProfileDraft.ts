@@ -1,4 +1,4 @@
-import { computed, ref, toRaw, type Ref } from "vue";
+import { computed, ref, toRaw, watch, type Ref } from "vue";
 import {
   createVoiceReadProfile,
   MAX_VOICE_READ_PROFILES,
@@ -33,6 +33,16 @@ export function useVoiceReadProfileDraft(
       profiles.value.find((p) => p.id === active) ?? profiles.value[0];
     editingId.value = hit?.id ?? "";
   }
+
+  watch(
+    [profiles, activeProfileId],
+    () => {
+      if (!editingId.value.trim() || !editingProfile.value) {
+        syncEditingIdFromState();
+      }
+    },
+    { immediate: true, deep: true },
+  );
 
   function flushCurrentToProfiles() {
     const id = editingId.value.trim();
@@ -69,7 +79,6 @@ export function useVoiceReadProfileDraft(
 
   function initFromState() {
     syncEditingIdFromState();
-    if (editingId.value) loadProfileIntoForm(editingId.value);
   }
 
   function addProfile() {

@@ -31,7 +31,7 @@ import {
   persistTxtFileListSnapshot,
   type TxtFileItem,
 } from "../stores/cacheStore";
-import { defaultCharacterPortraitCacheRoot } from "@shared/characterPortraitPaths";
+import { resolveDefaultCharacterPortraitCacheDirSync } from "../utils/defaultCacheDirs";
 import type {
   FileCategoryDefinition,
   FileSortMode,
@@ -115,12 +115,20 @@ import {
   type VoiceReadSettings,
 } from "../constants/voiceRead";
 import {
+  mergeTimedScrollSettings,
+  type TimedScrollSettings,
+} from "../constants/timedScroll";
+import {
   collectVoiceReadProfileApiKeys,
   hydrateVoiceReadProfilesApiKeys,
+  mergeVoiceReadProfileSecretsForSave,
   stripVoiceReadProfileApiKeysForDisk,
+  stripVoiceReadSettingsApiKeysForDisk,
   type VoiceReadProfile,
 } from "@shared/voiceReadProfiles";
-import { parseProfileKeysBlob, serializeProfileKeysBlob } from "@shared/aiEndpointProfiles";
+import { DEPRECATED_SECRET_SLOT_VOICE_READ_DASHSCOPE_API_KEY } from "@shared/secretSlots";
+import { parseProfileKeysBlob } from "@shared/aiEndpointProfiles";
+import { parseProfileSecretsBlob, serializeProfileSecretsBlob } from "@shared/voiceReadEngineConfig";
 import {
   migrateVoiceReadFromPersisted,
   normalizeVoiceReadProfilesForSave,
@@ -198,16 +206,24 @@ export function useAppPersistence(deps: {
   chapterMinCharCount: Ref<number>;
   monacoAdvancedWrapping: Ref<boolean>;
   monacoSmoothScrolling: Ref<boolean>;
+  stickyChapterTitleEnabled: Ref<boolean>;
   readerEditShowLineNumbers: Ref<boolean>;
   readerEditMinimap: Ref<boolean>;
   editAutoRefreshChapterList: Ref<boolean>;
   aiSmartFormat: Ref<AiSmartFormatSettings>;
   fullscreenReaderWidthPercent: Ref<number>;
+  timedScrollSettings: Ref<TimedScrollSettings>;
   fileMetaRecords: Ref<FileMetaRecord[]>;
   shortcutBindings: Ref<ShortcutBindingMap>;
   defaultShortcutBindings: ShortcutBindingMap;
   readerPaletteOverridesLight: Ref<Partial<ReaderSurfacePalette>>;
   readerPaletteOverridesDark: Ref<Partial<ReaderSurfacePalette>>;
+  readerPaletteColorEnabledOverridesLight: Ref<
+    Partial<import("../constants/readerPalette").ReaderSurfaceColorEnabled>
+  >;
+  readerPaletteColorEnabledOverridesDark: Ref<
+    Partial<import("../constants/readerPalette").ReaderSurfaceColorEnabled>
+  >;
   highlightColorsLight: Ref<string[]>;
   highlightColorsDark: Ref<string[]>;
   lineationColorsLight: Ref<string[]>;
@@ -647,48 +663,62 @@ export function useAppPersistence(deps: {
     try {
       const profileKeysRes =
         await window.colorTxt.secrets.getVoiceReadProfileKeys();
-      const profileKeys = parseProfileKeysBlob(profileKeysRes.keys ?? "");
-      hydrateVoiceReadProfilesApiKeys(deps.voiceReadProfiles.value, profileKeys);
-
-      const legacyRes = await window.colorTxt.secrets.getVoiceReadDashScopeApiKey();
-      const legacyKey = legacyRes.apiKey.trim();
+      const profileKeysBlob = profileKeysRes.keys ?? "";
+      const profileKeys = parseProfileKeysBlob(profileKeysBlob);
       const activeId = deps.activeVoiceReadProfileId.value.trim();
-      const activeProfile = deps.voiceReadProfiles.value.find(
-        (p) => p.id === activeId,
+      if (
+        hydrateVoiceReadProfilesApiKeys(
+          deps.voiceReadProfiles.value,
+          profileKeys,
+          profileKeysBlob,
+          activeId,
+        )
+      ) {
+        migrated = true;
+      }
+
+      const legacyRes = await window.colorTxt.secrets.getDeprecated(
+        DEPRECATED_SECRET_SLOT_VOICE_READ_DASHSCOPE_API_KEY,
       );
+      const legacyKey = legacyRes.ok ? legacyRes.value.trim() : "";
+      const activeProfile =
+        deps.voiceReadProfiles.value.find((p) => p.id === activeId) ??
+        deps.voiceReadProfiles.value[0];
       if (
         legacyKey &&
         activeProfile &&
         !activeProfile.settings.dashscopeApiKey.trim()
       ) {
         activeProfile.settings.dashscopeApiKey = legacyKey;
+        if (!activeProfile.settings.engineConfig.dashscopeApiKey?.trim()) {
+          activeProfile.settings.engineConfig.dashscopeApiKey = legacyKey;
+        }
         migrated = true;
       }
 
-      const activeKey =
-        activeProfile?.settings.dashscopeApiKey.trim() ?? legacyKey;
-      if (activeKey) {
-        deps.voiceReadSettings.value = mergeVoiceReadSettings({
-          ...deps.voiceReadSettings.value,
-          dashscopeApiKey: activeKey,
-        });
+      if (activeProfile) {
+        deps.voiceReadSettings.value = mergeVoiceReadSettings(
+          activeProfile.settings,
+        );
       }
 
       const flatLegacyKey = deps.voiceReadSettings.value.dashscopeApiKey.trim();
       if (!legacyKey && flatLegacyKey) {
-        await window.colorTxt.secrets.setVoiceReadDashScopeApiKey(flatLegacyKey);
         migrated = true;
       }
-      if (Object.keys(profileKeys).length === 0 && deps.voiceReadProfiles.value.length > 0) {
+      if (!profileKeysBlob.trim() && deps.voiceReadProfiles.value.length > 0) {
         const collected = collectVoiceReadProfileApiKeys(
           deps.voiceReadProfiles.value,
         );
         if (Object.keys(collected).length > 0) {
-          await window.colorTxt.secrets.setVoiceReadProfileKeys(
-            serializeProfileKeysBlob(collected),
-          );
           migrated = true;
         }
+      } else if (migrated && profileKeysBlob.trim()) {
+        migrated = true;
+      }
+
+      if (migrated) {
+        await persistVoiceReadSecretsToVault();
       }
     } catch {
       // ignore
@@ -700,13 +730,16 @@ export function useAppPersistence(deps: {
     const profiles = normalizeVoiceReadProfilesForSave(
       deps.voiceReadProfiles.value,
     );
-    const profileKeys = collectVoiceReadProfileApiKeys(profiles);
-    const activeId = deps.activeVoiceReadProfileId.value.trim();
-    const activeKey = profileKeys[activeId]?.trim() ?? "";
-    await window.colorTxt.secrets.setVoiceReadProfileKeys(
-      serializeProfileKeysBlob(profileKeys),
+    const existingRes = await window.colorTxt.secrets.getVoiceReadProfileKeys();
+    const existingVault = parseProfileSecretsBlob(existingRes.keys ?? "");
+    const mergedSecrets = mergeVoiceReadProfileSecretsForSave(
+      profiles,
+      existingVault,
     );
-    await window.colorTxt.secrets.setVoiceReadDashScopeApiKey(activeKey);
+    const profileKeysBlob = serializeProfileSecretsBlob(mergedSecrets);
+    await window.colorTxt.secrets.setVoiceReadSecrets({
+      profileKeys: profileKeysBlob,
+    });
   }
 
   function loadPersistedSettings(): {
@@ -843,6 +876,9 @@ export function useAppPersistence(deps: {
     if (typeof data.monacoSmoothScrolling === "boolean") {
       deps.monacoSmoothScrolling.value = data.monacoSmoothScrolling;
     }
+    if (typeof data.stickyChapterTitleEnabled === "boolean") {
+      deps.stickyChapterTitleEnabled.value = data.stickyChapterTitleEnabled;
+    }
     if (typeof data.readerEditShowLineNumbers === "boolean") {
       deps.readerEditShowLineNumbers.value = data.readerEditShowLineNumbers;
     }
@@ -868,6 +904,7 @@ export function useAppPersistence(deps: {
       deps.fullscreenReaderWidthPercent.value =
         defaultFullscreenReaderWidthPercent;
     }
+    deps.timedScrollSettings.value = mergeTimedScrollSettings(data.timedScroll);
     deps.shortcutBindings.value = mergeShortcutBindings(
       deps.defaultShortcutBindings,
       data.shortcutBindings,
@@ -879,6 +916,14 @@ export function useAppPersistence(deps: {
     deps.readerPaletteOverridesDark.value = data.readerPaletteOverridesDark
       ? { ...data.readerPaletteOverridesDark }
       : {};
+    deps.readerPaletteColorEnabledOverridesLight.value =
+      data.readerPaletteColorEnabledOverridesLight
+        ? { ...data.readerPaletteColorEnabledOverridesLight }
+        : {};
+    deps.readerPaletteColorEnabledOverridesDark.value =
+      data.readerPaletteColorEnabledOverridesDark
+        ? { ...data.readerPaletteColorEnabledOverridesDark }
+        : {};
 
     const parsedHL = parseHighlightColorsArray(data.highlightColorsLight);
     deps.highlightColorsLight.value = mergeHighlightColors(
@@ -1016,11 +1061,12 @@ export function useAppPersistence(deps: {
     } catch {
       // ignore
     }
-    const voiceReadMerged = mergeVoiceReadSettings(deps.voiceReadSettings.value);
+    const voiceReadMerged = stripVoiceReadSettingsApiKeysForDisk(
+      mergeVoiceReadSettings(deps.voiceReadSettings.value),
+    );
     const profilesForDisk = stripVoiceReadProfileApiKeysForDisk(
       normalizeVoiceReadProfilesForSave(deps.voiceReadProfiles.value),
     );
-    void persistVoiceReadSecretsToVault();
     const voiceReadTokenPayload = voiceReadAiSpeakerTokenUsagePersistPayload();
     persistSettingsData(window.localStorage, persistKey, {
       theme: deps.currentTheme.value === "vs" ? "vs" : "vs-dark",
@@ -1049,11 +1095,13 @@ export function useAppPersistence(deps: {
       chapterMinCharCount: deps.chapterMinCharCount.value,
       monacoAdvancedWrapping: deps.monacoAdvancedWrapping.value,
       monacoSmoothScrolling: deps.monacoSmoothScrolling.value,
+      stickyChapterTitleEnabled: deps.stickyChapterTitleEnabled.value,
       readerEditShowLineNumbers: deps.readerEditShowLineNumbers.value,
       readerEditMinimap: deps.readerEditMinimap.value,
       editAutoRefreshChapterList: deps.editAutoRefreshChapterList.value,
       aiSmartFormat: deps.aiSmartFormat.value,
       fullscreenReaderWidthPercent: deps.fullscreenReaderWidthPercent.value,
+      timedScroll: deps.timedScrollSettings.value,
       shortcutBindings: deps.shortcutBindings.value,
       readerPaletteOverridesLight:
         Object.keys(deps.readerPaletteOverridesLight.value).length > 0
@@ -1062,6 +1110,16 @@ export function useAppPersistence(deps: {
       readerPaletteOverridesDark:
         Object.keys(deps.readerPaletteOverridesDark.value).length > 0
           ? deps.readerPaletteOverridesDark.value
+          : undefined,
+      readerPaletteColorEnabledOverridesLight:
+        Object.keys(deps.readerPaletteColorEnabledOverridesLight.value).length >
+        0
+          ? deps.readerPaletteColorEnabledOverridesLight.value
+          : undefined,
+      readerPaletteColorEnabledOverridesDark:
+        Object.keys(deps.readerPaletteColorEnabledOverridesDark.value).length >
+        0
+          ? deps.readerPaletteColorEnabledOverridesDark.value
           : undefined,
       highlightColorsLight: highlightColorsPersistPayload(
         deps.highlightColorsLight.value,
@@ -1113,7 +1171,6 @@ export function useAppPersistence(deps: {
         activeProfileId: deps.activeVoiceReadProfileId.value.trim(),
         profiles: profilesForDisk,
         ...voiceReadMerged,
-        dashscopeApiKey: "",
         aiSpeakerTokenUsage: voiceReadTokenPayload.usage,
         aiSpeakerTokenUsageAvailable: voiceReadTokenPayload.available,
       },
@@ -1172,7 +1229,7 @@ export function useAppPersistence(deps: {
       ebookConvertOutputDirKeyPresent,
       characterPortraitCacheDirKeyPresent,
     } = loadPersistedSettings();
-    const migratedVoiceSecret = await hydrateVoiceReadSecretsFromVault();
+    await hydrateVoiceReadSecretsFromVault();
     settingsLoaded.value = true;
     let needDefaultSettingsPersist = false;
     if (!ebookConvertOutputDirKeyPresent) {
@@ -1185,18 +1242,13 @@ export function useAppPersistence(deps: {
       needDefaultSettingsPersist = true;
     }
     if (!characterPortraitCacheDirKeyPresent) {
-      try {
-        const ud = await window.colorTxt.getPath("userData");
-        if (ud) {
-          deps.characterPortraitCacheDir.value =
-            defaultCharacterPortraitCacheRoot(ud);
-        }
-      } catch {
-        // ignore
+      const portraitDir = resolveDefaultCharacterPortraitCacheDirSync();
+      if (portraitDir) {
+        deps.characterPortraitCacheDir.value = portraitDir;
       }
       needDefaultSettingsPersist = true;
     }
-    if (needDefaultSettingsPersist || migratedVoiceSecret) {
+    if (needDefaultSettingsPersist) {
       persistSettings();
     }
     loadRecentFiles();
@@ -1225,6 +1277,7 @@ export function useAppPersistence(deps: {
     clearBookmarks,
     loadPersistedSettings,
     persistSettings,
+    persistVoiceReadSecretsToVault,
     persistReadingSessionSnapshot,
     persistWindowUnloadState,
     persistFileListCache,

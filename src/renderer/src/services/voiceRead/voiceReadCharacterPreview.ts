@@ -1,5 +1,10 @@
 import type { CharacterRosterEntry } from "@shared/characterTypes";
 import type { VoiceReadSettings } from "../../constants/voiceRead";
+import {
+  voiceReadMultiDialogueFemaleVoiceId,
+  voiceReadMultiDialogueMaleVoiceId,
+  voiceReadMultiDialogueVoiceId,
+} from "../../constants/voiceRead";
 import { buildLineSpeakChunks } from "./voiceReadLineBuild";
 import { VoiceReadLinePlayer } from "./voiceReadLinePlayer";
 
@@ -10,20 +15,12 @@ export function resolveCharacterVoicePreviewVoiceId(
   const custom = entry.voiceReadVoiceId?.trim();
   if (custom) return custom;
   if (entry.gender === "male") {
-    return (
-      settings.dialogueMaleVoiceId.trim() ||
-      settings.dialogueVoiceId.trim() ||
-      settings.voiceId.trim()
-    );
+    return voiceReadMultiDialogueMaleVoiceId(settings);
   }
   if (entry.gender === "female") {
-    return (
-      settings.dialogueFemaleVoiceId.trim() ||
-      settings.dialogueVoiceId.trim() ||
-      settings.voiceId.trim()
-    );
+    return voiceReadMultiDialogueFemaleVoiceId(settings);
   }
-  return settings.dialogueVoiceId.trim() || settings.voiceId.trim();
+  return voiceReadMultiDialogueVoiceId(settings);
 }
 
 export function characterVoicePreviewSettings(
@@ -33,7 +30,9 @@ export function characterVoicePreviewSettings(
   return {
     ...settings,
     scheme: "single",
-    voiceId: resolveCharacterVoicePreviewVoiceId(entry, settings),
+    single: {
+      voiceId: resolveCharacterVoicePreviewVoiceId(entry, settings),
+    },
   };
 }
 

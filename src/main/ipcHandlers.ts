@@ -53,11 +53,13 @@ import {
 } from "./ai/tools/characterPortraitFs";
 import { synthesizeEdgeTtsMp3 } from "./voiceReadEdgeTts";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
+import { VOICE_READ_EMOTION_AUTO } from "@shared/voiceReadEmotion";
 import type { VoiceReadAttributeSpeakersResult } from "@shared/voiceReadSpeakerIpc";
 import type { VoiceReadQuoteAttribution } from "@shared/voiceReadSpeakerIpc";
 import { loadAiConfig } from "./ai/infra/config";
 import { readActiveChatEndpoint } from "@shared/aiEndpointProfiles";
 import { attributeVoiceReadSpeakers } from "./ai/voiceReadSpeaker";
+import { registerVoiceReadIpcHandlers } from "./voiceRead/registerVoiceReadIpc";
 
 type TxtFileItem = { name: string; path: string; size: number };
 type DirListScanProgress = (item: { name: string; path: string }) => void;
@@ -884,6 +886,7 @@ function unknownQuoteAttributions(
   return Array.from({ length: count }, () => ({
     kind: "unknown" as const,
     speaker: null,
+    emotion: VOICE_READ_EMOTION_AUTO,
   }));
 }
 
@@ -911,8 +914,13 @@ function unknownQuoteAttributions(
           : [];
         roster.push({ displayName, aliases });
       }
+      const includeEmotion = o.includeEmotion === true;
       if (!line.trim() || dialogueTexts.length === 0) {
-        return { ok: true, quotes: unknownQuoteAttributions(dialogueTexts.length) };
+        return {
+          ok: true,
+          quotes: unknownQuoteAttributions(dialogueTexts.length),
+          narrationEmotion: VOICE_READ_EMOTION_AUTO,
+        };
       }
       try {
         const cfg = await loadAiConfig();
@@ -920,6 +928,7 @@ function unknownQuoteAttributions(
           return {
             ok: true,
             quotes: unknownQuoteAttributions(dialogueTexts.length),
+            narrationEmotion: VOICE_READ_EMOTION_AUTO,
           };
         }
         const chat = readActiveChatEndpoint(cfg);
@@ -927,16 +936,20 @@ function unknownQuoteAttributions(
           return {
             ok: true,
             quotes: unknownQuoteAttributions(dialogueTexts.length),
+            narrationEmotion: VOICE_READ_EMOTION_AUTO,
           };
         }
-        const { quotes, tokenUsage } = await attributeVoiceReadSpeakers(chat, {
-          line,
-          dialogueTexts,
-          roster,
-        });
+        const { quotes, narrationEmotion, tokenUsage } =
+          await attributeVoiceReadSpeakers(chat, {
+            line,
+            dialogueTexts,
+            roster,
+            includeEmotion,
+          });
         return {
           ok: true,
           quotes,
+          narrationEmotion,
           tokenUsage,
           tokenUsageAvailable: tokenUsage != null,
         };
@@ -950,6 +963,7 @@ function unknownQuoteAttributions(
   );
 
   registerAiIpcHandlers();
+  registerVoiceReadIpcHandlers();
   registerSecretsIpcHandlers();
   registerTextConvertIpcHandlers();
 }

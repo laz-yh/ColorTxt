@@ -11,8 +11,12 @@ import ColorSchemeLineationPanel, {
 import ColorSchemeReaderPanel from "./ColorSchemeReaderPanel.vue";
 import ColorSchemeTabBar from "./ColorSchemeTabBar.vue";
 import {
+  defaultReaderPaletteColorEnabled,
   defaultReaderPaletteDark,
   defaultReaderPaletteLight,
+  mergeReaderPaletteColorEnabled,
+  resolveEffectiveReaderPalette,
+  type ReaderSurfaceColorEnabled,
   type ReaderSurfacePalette,
 } from "../constants/appUi";
 import {
@@ -30,6 +34,8 @@ const props = defineProps<{
   currentTheme: string;
   readerSurfaceLight: ReaderSurfacePalette;
   readerSurfaceDark: ReaderSurfacePalette;
+  readerPaletteColorEnabledLight: ReaderSurfaceColorEnabled;
+  readerPaletteColorEnabledDark: ReaderSurfaceColorEnabled;
   monacoFontFamily: string;
   highlightColorsLight: string[];
   highlightColorsDark: string[];
@@ -39,7 +45,12 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   applyReaderPalettes: [
-    payload: { light: ReaderSurfacePalette; dark: ReaderSurfacePalette },
+    payload: {
+      light: ReaderSurfacePalette;
+      dark: ReaderSurfacePalette;
+      colorEnabledLight: ReaderSurfaceColorEnabled;
+      colorEnabledDark: ReaderSurfaceColorEnabled;
+    },
   ];
   applyHighlightColors: [payload: { light: string[]; dark: string[] }];
   applyLineationColors: [payload: { light: string[]; dark: string[] }];
@@ -51,6 +62,12 @@ const activeTab = ref<"reader" | "highlight" | "lineation">("reader");
 
 const draftLight = ref<ReaderSurfacePalette>({ ...defaultReaderPaletteLight });
 const draftDark = ref<ReaderSurfacePalette>({ ...defaultReaderPaletteDark });
+const draftColorEnabledLight = ref<ReaderSurfaceColorEnabled>({
+  ...defaultReaderPaletteColorEnabled,
+});
+const draftColorEnabledDark = ref<ReaderSurfaceColorEnabled>({
+  ...defaultReaderPaletteColorEnabled,
+});
 
 let highlightRowIdSeq = 0;
 
@@ -94,16 +111,25 @@ const activeDraft = computed(() =>
   isLightShell.value ? draftLight.value : draftDark.value,
 );
 
+const activeColorEnabledDraft = computed(() =>
+  isLightShell.value
+    ? draftColorEnabledLight.value
+    : draftColorEnabledDark.value,
+);
+
 const pickerLive = ref<Partial<Record<keyof ReaderSurfacePalette, string>>>({});
 
 const highlightPickerLive = ref<Partial<Record<number, string>>>({});
 const lineationPickerLive = ref<Partial<Record<number, string>>>({});
 
-const displaySurface = computed(
-  (): ReaderSurfacePalette => ({
-    ...activeDraft.value,
-    ...pickerLive.value,
-  }),
+const displaySurface = computed((): ReaderSurfacePalette =>
+  resolveEffectiveReaderPalette(
+    {
+      ...activeDraft.value,
+      ...pickerLive.value,
+    },
+    activeColorEnabledDraft.value,
+  ),
 );
 
 const previewBoxStyle = computed(
@@ -148,6 +174,12 @@ const bodyTextForHighlightPreview = computed(
 function syncDraftFromProps() {
   draftLight.value = { ...props.readerSurfaceLight };
   draftDark.value = { ...props.readerSurfaceDark };
+  draftColorEnabledLight.value = mergeReaderPaletteColorEnabled(
+    props.readerPaletteColorEnabledLight,
+  );
+  draftColorEnabledDark.value = mergeReaderPaletteColorEnabled(
+    props.readerPaletteColorEnabledDark,
+  );
 }
 
 function syncHighlightDraftFromProps() {
@@ -178,10 +210,29 @@ function onPickerDraftEnd() {
   pickerLive.value = {};
 }
 
+function onColorEnabledUpdate(
+  key: keyof ReaderSurfaceColorEnabled,
+  enabled: boolean,
+) {
+  if (isLightShell.value) {
+    draftColorEnabledLight.value = {
+      ...draftColorEnabledLight.value,
+      [key]: enabled,
+    };
+  } else {
+    draftColorEnabledDark.value = {
+      ...draftColorEnabledDark.value,
+      [key]: enabled,
+    };
+  }
+}
+
 function onApplyAll() {
   emit("applyReaderPalettes", {
     light: { ...draftLight.value },
     dark: { ...draftDark.value },
+    colorEnabledLight: { ...draftColorEnabledLight.value },
+    colorEnabledDark: { ...draftColorEnabledDark.value },
   });
   emit("applyHighlightColors", {
     light: draftHighlightLight.value.map((r) => r.color),
@@ -201,6 +252,8 @@ function onCancel() {
 function onResetReaderDefaults() {
   draftLight.value = { ...defaultReaderPaletteLight };
   draftDark.value = { ...defaultReaderPaletteDark };
+  draftColorEnabledLight.value = { ...defaultReaderPaletteColorEnabled };
+  draftColorEnabledDark.value = { ...defaultReaderPaletteColorEnabled };
 }
 
 function mutActiveHighlightDraft(updater: (arr: HighlightColorRow[]) => void) {
@@ -375,8 +428,10 @@ watch(activeTab, (tab) => {
           v-show="activeTab === 'reader'"
           :display-surface="displaySurface"
           :editing-surface="activeDraft"
+          :color-enabled="activeColorEnabledDraft"
           :preview-box-style="previewBoxStyle"
           @update-surface-key="onPickerUpdate"
+          @update-color-enabled="onColorEnabledUpdate"
           @draft-hex="onPickerDraftHex"
           @draft-end="onPickerDraftEnd"
         />

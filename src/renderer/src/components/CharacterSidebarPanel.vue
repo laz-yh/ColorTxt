@@ -54,19 +54,17 @@ import AiTokenUsageBanner from "./AiTokenUsageBanner.vue";
 import AppCustomSelect, { type CustomSelectItem } from "./AppCustomSelect.vue";
 import AppModal from "./AppModal.vue";
 import {
-  DASHSCOPE_TTS_VOICES,
   defaultVoiceReadSettings,
-  voiceReadDashScopeRequiresApiKey,
+  voiceReadEngineRequiresCredentials,
   type VoiceReadSettings,
 } from "../constants/voiceRead";
 import { speakCharacterVoiceSample } from "../services/voiceRead/voiceReadCharacterPreview";
+import { fetchMinimaxVoiceCatalog } from "../services/voiceRead/minimaxVoiceCatalog";
 import { VoiceReadLinePlayer } from "../services/voiceRead/voiceReadLinePlayer";
 import {
-  flatVoiceOptionsToSelectItems,
-  groupEdgeTtsVoices,
-  groupSystemVoices,
+  getVoiceGroupsForEngine,
   resolveVoiceReadDisplayLabel,
-  voiceGroupsToSelectItems,
+  voiceSelectItemsForEngine,
 } from "../utils/voiceReadVoiceGroups";
 import type { CharacterCardTextureEffectId } from "@shared/characterCardTextureEffects";
 import { DEFAULT_CHARACTER_CARD_TEXTURE_EFFECT } from "@shared/characterCardTextureEffects";
@@ -278,7 +276,7 @@ const isMultiVoiceReadScheme = computed(
 const showCharacterVoiceTab = computed(
   () =>
     isMultiVoiceReadScheme.value &&
-    props.voiceReadSettings.aiSpeakerRecognitionEnabled !== false,
+    props.voiceReadSettings.multi.aiSpeakerRecognitionEnabled !== false,
 );
 
 watch(showCharacterVoiceTab, (show) => {
@@ -303,6 +301,20 @@ onMounted(() => {
   }
 });
 
+watch(
+  () =>
+    [
+      props.voiceReadSettings.engine,
+      props.voiceReadSettings.engineConfig.minimaxApiKey?.trim() ?? "",
+    ] as const,
+  ([engine, apiKey]) => {
+    if (engine === "minimax" && apiKey) {
+      void fetchMinimaxVoiceCatalog(props.voiceReadSettings.engineConfig);
+    }
+  },
+  { immediate: true },
+);
+
 const charVoiceReadDefaultItem: CustomSelectItem = {
   kind: "item",
   id: "",
@@ -311,16 +323,11 @@ const charVoiceReadDefaultItem: CustomSelectItem = {
 };
 
 const charVoiceReadScrollItems = computed((): CustomSelectItem[] => {
-  let engineItems: CustomSelectItem[];
-  if (voiceReadEngine.value === "system") {
-    engineItems = voiceGroupsToSelectItems(
-      groupSystemVoices(systemVoices.value),
-    );
-  } else if (voiceReadEngine.value === "edge") {
-    engineItems = voiceGroupsToSelectItems(groupEdgeTtsVoices());
-  } else {
-    engineItems = flatVoiceOptionsToSelectItems(DASHSCOPE_TTS_VOICES);
-  }
+  const engineItems = voiceSelectItemsForEngine(
+    voiceReadEngine.value,
+    systemVoices.value,
+    props.voiceReadSettings.engineConfig,
+  );
   return [charVoiceReadDefaultItem, ...engineItems];
 });
 
@@ -329,7 +336,9 @@ const charVoiceReadScrollHasOptions = computed(() =>
 );
 
 const charVoiceReadScrollMaxHeight = computed(() =>
-  voiceReadEngine.value === "dashscope" ? 280 : 360,
+  getVoiceGroupsForEngine(voiceReadEngine.value, systemVoices.value) === "flat"
+    ? 280
+    : 360,
 );
 
 const charVoiceReadDisplayLabel = computed(() => {
@@ -346,7 +355,7 @@ function entryCanSpeakFromCard(entry: CharacterRosterEntry): boolean {
   return (
     showCharacterVoiceTab.value &&
     Boolean(entry.voiceReadSampleLine?.trim()) &&
-    !voiceReadDashScopeRequiresApiKey(props.voiceReadSettings)
+    !voiceReadEngineRequiresCredentials(props.voiceReadSettings)
   );
 }
 
@@ -438,7 +447,7 @@ const charVoicePreviewDisabled = computed(
   () =>
     charVoicePreviewPhase.value === "synthesizing" ||
     !draftVoiceSampleLine.value.trim() ||
-    voiceReadDashScopeRequiresApiKey(props.voiceReadSettings),
+    voiceReadEngineRequiresCredentials(props.voiceReadSettings),
 );
 
 const canCycleVoiceSampleQuote = computed(
@@ -521,7 +530,7 @@ async function onCharVoicePreviewClick() {
   if (charVoicePreviewPhase.value === "synthesizing") return;
   const text = draftVoiceSampleLine.value.trim();
   if (!text) return;
-  if (voiceReadDashScopeRequiresApiKey(props.voiceReadSettings)) return;
+  if (voiceReadEngineRequiresCredentials(props.voiceReadSettings)) return;
 
   resetRosterCardVoicePreview();
 

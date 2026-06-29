@@ -5,14 +5,29 @@
  * 暴露 `speakChunks` / `onChunkChange` 供后续「上一句 / 下一句」按段跳转。
  */
 
+import type { VoiceReadEmotionId } from "@shared/voiceReadEmotion";
 import type { VoiceReadSettings } from "../../constants/voiceRead";
-import { toVoiceReadEdgeTtsRequest } from "../../constants/voiceRead";
+import {
+  clampVoiceReadVolume,
+  voiceReadSingleVoiceId,
+} from "../../constants/voiceRead";
 import type { VoiceReadSpeakChunk } from "./voiceReadVoiceResolve";
+import {
+  voiceReadChunkCacheKey,
+} from "./voiceReadAudioCache";
+import {
+  synthesizeVoiceReadViaIpc,
+  toVoiceReadSynthesisRequest,
+} from "./voiceReadSynthesisClient";
+import {
+  voiceReadChunkUnitsForEngine,
+  voiceReadEdgeFetchBufferSize,
+  voiceReadPlaybackKind,
+  voiceReadRequiresSerialChunkFetch,
+} from "./voiceReadEngineRouting";
 import {
   hasVoiceReadSpeakableText,
   splitVoiceReadChunks,
-  VOICE_READ_CHUNK_UNITS_DEFAULT,
-  VOICE_READ_CHUNK_UNITS_EDGE,
 } from "./voiceReadTextChunks";
 
 export type { VoiceReadSpeakChunk } from "./voiceReadVoiceResolve";
@@ -21,17 +36,28 @@ const DASH_PCM_SAMPLE_RATE = 24000;
 /** 已合成段保留在内存，跳转不重拉 */
 const EDGE_MP3_CACHE_LIMIT = 64;
 const DASH_PCM_CACHE_LIMIT = 48;
+/** 解码后短于该时长视为无效，避免零时长段连排导致高亮连跳 */
+const MIN_DECODED_CHUNK_DURATION_SEC = 0.05;
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Edge 返回的 MP3 至少应具备 ID3 或 MPEG 帧同步头 */
-function isEdgeMp3PayloadValid(buf: ArrayBuffer): boolean {
+/** 行跳转 / 停止朗读时预期的合成中断，不应冒泡为 Uncaught */
+function isVoiceReadPlaybackAbortError(err: unknown): boolean {
+  const msg = (err as Error)?.message ?? "";
+  return msg === "aborted" || msg === "interrupted";
+}
+
+/** Edge / IPC 解码音频：MP3 或 WAV 头 */
+function isDecodedAudioPayloadValid(buf: ArrayBuffer): boolean {
   if (buf.byteLength < 10) return false;
   const u8 = new Uint8Array(buf, 0, Math.min(buf.byteLength, 4));
   if (u8[0] === 0x49 && u8[1] === 0x44 && u8[2] === 0x33) return true;
   if (u8[0] === 0xff && (u8[1]! & 0xe0) === 0xe0) return true;
+  if (u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46) {
+    return true;
+  }
   return false;
 }
 
@@ -45,28 +71,35 @@ function normalizeLineText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function applyGainPlaybackVolume(
+  gain: GainNode | null,
+  volume: number,
+): void {
+  if (!gain) return;
+  gain.gain.value = clampVoiceReadVolume(volume);
+}
+
 function chunkCacheKey(
   settings: VoiceReadSettings,
   chunkText: string,
   voiceId: string,
+  emotion?: VoiceReadEmotionId,
 ): string {
-  const t = normalizeLineText(chunkText);
-  return [
-    settings.engine,
-    voiceId.trim(),
-    settings.rate,
-    settings.pitch,
-    settings.dashscopeApiKey.trim(),
-    t,
-  ].join("\u0001");
+  return voiceReadChunkCacheKey(settings, chunkText, voiceId, emotion);
 }
 
 function lineCacheKey(
   settings: VoiceReadSettings,
   text: string,
   voiceId?: string,
+  emotion?: VoiceReadEmotionId,
 ): string {
-  return chunkCacheKey(settings, text, voiceId ?? settings.voiceId);
+  return chunkCacheKey(
+    settings,
+    text,
+    voiceId ?? voiceReadSingleVoiceId(settings),
+    emotion,
+  );
 }
 
 function normalizeSpeakChunks(
@@ -76,12 +109,12 @@ function normalizeSpeakChunks(
     .map((c) => ({
       text: normalizeLineText(c.text),
       voiceId: c.voiceId.trim() || "",
+      emotion: c.emotion,
     }))
     .filter((c) => c.text.length > 0 && hasVoiceReadSpeakableText(c.text));
 }
 
 type PreparedDashLine = {
-  engine: "dashscope";
   pcm: Uint8Array;
   sampleRate: number;
 };
@@ -147,7 +180,7 @@ function voiceReadPreviewFilename(
   settings: VoiceReadSettings,
   ext: string,
 ): string {
-  const voice = settings.voiceId.trim() || "voice";
+  const voice = voiceReadSingleVoiceId(settings);
   const safe = voice.replace(/[^\w\u4e00-\u9fff.-]+/g, "_").slice(0, 48);
   return `彩读试听-${safe}.${ext}`;
 }
@@ -173,6 +206,11 @@ export class VoiceReadLinePlayer {
   private static readonly EDGE_BUFFER_SIZE = 4;
 
   private stopped = false;
+  private playbackSessionGen = 0;
+  private activeDashSessionId = 0;
+  private activeEdgeSessionId = 0;
+  /** 与 edgeScheduledEnd / edgeHasAudioData 绑定的会话，避免多段排播串线 */
+  private edgeTimelineSessionId = 0;
   private playbackSynthesisDepth = 0;
 
   private prefetchKey: string | null = null;
@@ -191,6 +229,7 @@ export class VoiceReadLinePlayer {
 
   /** Edge 会话 */
   private edgeFetchBuffer = new Map<number, Promise<ArrayBuffer>>();
+  private edgeFetchBufferLimit = VoiceReadLinePlayer.EDGE_BUFFER_SIZE;
   private edgeProducerIndex = 0;
   private edgeProducerWake: (() => void) | null = null;
   private edgeChunks: VoiceReadSpeakChunk[] = [];
@@ -204,6 +243,9 @@ export class VoiceReadLinePlayer {
   private edgePlayingNotified = false;
   private edgeChunkStartTimers = new Set<ReturnType<typeof setTimeout>>();
   private edgePausedAt = 0;
+  /** 按排程顺序依次触发 onChunkChange，防止多段同时 notify 高亮连跳 */
+  private timelineScheduleOrdinal = 0;
+  private timelineNotifyThroughOrdinal = -1;
 
   /** DashScope 会话 */
   private dashAudioCtx: AudioContext | null = null;
@@ -216,6 +258,14 @@ export class VoiceReadLinePlayer {
   private dashChunkStartTimers = new Set<ReturnType<typeof setTimeout>>();
   private dashPausedAt = 0;
   private dashSessionSettings: VoiceReadSettings | null = null;
+  /** 播放中临时音量（优先于 settings.volume） */
+  private playbackVolumeOverride: number | null = null;
+
+  private resolvePlaybackVolume(settings: VoiceReadSettings): number {
+    return clampVoiceReadVolume(
+      this.playbackVolumeOverride ?? settings.volume,
+    );
+  }
 
   isPaused(): boolean {
     if (this.edgeAudioCtx) return this.edgeAudioCtx.state === "suspended";
@@ -224,6 +274,14 @@ export class VoiceReadLinePlayer {
       return true;
     }
     return false;
+  }
+
+  /** 播放中调节音量（不影响 TTS 合成缓存） */
+  setPlaybackVolume(volume: number): void {
+    const v = clampVoiceReadVolume(volume);
+    this.playbackVolumeOverride = v;
+    applyGainPlaybackVolume(this.edgeGain, v);
+    applyGainPlaybackVolume(this.dashGain, v);
   }
 
   pause(): void {
@@ -268,7 +326,6 @@ export class VoiceReadLinePlayer {
 
   private cloneDashPrepared(p: PreparedDashLine): PreparedDashLine {
     return {
-      engine: "dashscope",
       pcm: p.pcm.slice(),
       sampleRate: p.sampleRate,
     };
@@ -315,11 +372,54 @@ export class VoiceReadLinePlayer {
     this.onSynthesizingChange?.(false);
   }
 
-  private isEdgePlaybackCaughtUp(): boolean {
-    if (this.stopped) return false;
+  /** 每次中止或新开播放会话时递增，令旧会话的异步收尾不再改动 UI / AudioContext */
+  private bumpPlaybackSession(): number {
+    this.playbackSessionGen += 1;
+    return this.playbackSessionGen;
+  }
+
+  private isPlaybackSessionCurrent(sessionId: number): boolean {
+    return sessionId === this.playbackSessionGen;
+  }
+
+  private isEdgePlaybackCaughtUp(sessionId: number): boolean {
+    if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return false;
+    if (sessionId !== this.edgeTimelineSessionId) return true;
     if (!this.edgeHasAudioData || !this.edgeAudioCtx) return true;
     if (this.edgeAudioCtx.state === "suspended") return false;
     return this.edgeAudioCtx.currentTime >= this.edgeScheduledEnd - 0.05;
+  }
+
+  /** 浏览器可能在中途 suspend AudioContext；非用户暂停时尝试恢复，避免多段排播卡死 */
+  private async ensureEdgeAudioRunning(): Promise<void> {
+    const ctx = this.edgeAudioCtx;
+    if (!ctx || ctx.state !== "suspended" || this.edgePausedAt > 0) return;
+    try {
+      await ctx.resume();
+    } catch {
+      // 无用户手势时 resume 可能失败，下一轮重试
+    }
+  }
+
+  private async ensureDashAudioRunning(): Promise<void> {
+    const ctx = this.dashAudioCtx;
+    if (!ctx || ctx.state !== "suspended" || this.dashPausedAt > 0) return;
+    try {
+      await ctx.resume();
+    } catch {
+      // ignore
+    }
+  }
+
+  private async awaitEdgePlaybackCaughtUp(sessionId: number): Promise<void> {
+    for (;;) {
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) {
+        throw new Error("aborted");
+      }
+      await this.ensureEdgeAudioRunning();
+      if (this.isEdgePlaybackCaughtUp(sessionId)) return;
+      await sleepMs(20);
+    }
   }
 
   private isDashPlaybackCaughtUp(): boolean {
@@ -334,14 +434,21 @@ export class VoiceReadLinePlayer {
    * 边播边预合成、缓存命中、时间线仍有缓冲时不显示。
    */
   private async awaitWhenPlaybackBlocked<T>(
+    sessionId: number,
     playbackCaughtUp: () => boolean,
     work: Promise<T>,
   ): Promise<T> {
-    if (this.stopped) throw new Error("aborted");
+    if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) {
+      throw new Error("aborted");
+    }
 
     let uiActive = false;
     const syncUi = () => {
-      const want = playbackCaughtUp() && !this.stopped;
+      if (!this.isPlaybackSessionCurrent(sessionId)) return;
+      const want =
+        playbackCaughtUp() &&
+        this.isPlaybackSessionCurrent(sessionId) &&
+        !this.stopped;
       if (want && !uiActive) {
         uiActive = true;
         this.setPlaybackSynthesizing(true);
@@ -353,14 +460,42 @@ export class VoiceReadLinePlayer {
 
     try {
       while (true) {
-        const raced = await Promise.race([
-          work.then((v) => ({ kind: "done" as const, v })),
-          sleepMs(80).then(() => ({ kind: "tick" as const })),
-        ]);
+        if (!this.isPlaybackSessionCurrent(sessionId)) {
+          throw new Error("aborted");
+        }
+        let raced:
+          | { kind: "done"; v: T }
+          | { kind: "tick" };
+        try {
+          raced = await Promise.race([
+            work.then((v) => ({ kind: "done" as const, v })),
+            sleepMs(80).then(() => ({ kind: "tick" as const })),
+          ]);
+        } catch (err) {
+          if (
+            !this.isPlaybackSessionCurrent(sessionId) ||
+            this.stopped ||
+            isVoiceReadPlaybackAbortError(err)
+          ) {
+            throw new Error("aborted");
+          }
+          throw err;
+        }
         if (raced.kind === "done") return raced.v;
-        if (this.stopped) throw new Error("aborted");
+        if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) {
+          if (uiActive) {
+            uiActive = false;
+            this.setPlaybackSynthesizing(false);
+          }
+          throw new Error("aborted");
+        }
         syncUi();
       }
+    } catch (err) {
+      if (isVoiceReadPlaybackAbortError(err)) {
+        throw new Error("aborted");
+      }
+      throw err;
     } finally {
       if (uiActive) {
         uiActive = false;
@@ -373,8 +508,9 @@ export class VoiceReadLinePlayer {
     settings: VoiceReadSettings,
     text: string,
     voiceId: string,
+    emotion?: VoiceReadEmotionId,
   ): void {
-    const k = chunkCacheKey(settings, text, voiceId);
+    const k = chunkCacheKey(settings, text, voiceId, emotion);
     this.edgeMp3Cache.delete(k);
     this.edgeMp3Inflight.delete(k);
   }
@@ -384,7 +520,7 @@ export class VoiceReadLinePlayer {
     settings: VoiceReadSettings,
     chunk: VoiceReadSpeakChunk,
   ): Promise<ArrayBuffer> {
-    const p = this.getEdgeMp3(settings, chunk.text, chunk.voiceId);
+    const p = this.getEdgeMp3(settings, chunk.text, chunk.voiceId, chunk.emotion);
     void p.catch(() => {});
     return p;
   }
@@ -393,14 +529,15 @@ export class VoiceReadLinePlayer {
     settings: VoiceReadSettings,
     text: string,
     voiceId: string,
+    emotion?: VoiceReadEmotionId,
   ): Promise<ArrayBuffer> {
     if (!hasVoiceReadSpeakableText(text)) {
       return Promise.reject(new Error("无可朗读内容"));
     }
-    const k = chunkCacheKey(settings, text, voiceId);
+    const k = chunkCacheKey(settings, text, voiceId, emotion);
     const cached = this.edgeMp3Cache.get(k);
     if (cached) {
-      if (!isEdgeMp3PayloadValid(cached)) {
+      if (!isDecodedAudioPayloadValid(cached)) {
         this.edgeMp3Cache.delete(k);
       } else {
         this.touchEdgeMp3Cache(k, cached);
@@ -410,10 +547,10 @@ export class VoiceReadLinePlayer {
     const inflight = this.edgeMp3Inflight.get(k);
     if (inflight) return this.cloneArrayBuffer(await inflight);
 
-    const request = this.fetchEdgeMp3(settings, text, voiceId)
+    const request = this.fetchIpcDecodedAudio(settings, text, voiceId, emotion)
       .then((data) => {
-        if (!isEdgeMp3PayloadValid(data)) {
-          throw new Error("Edge TTS 返回无效音频");
+        if (!isDecodedAudioPayloadValid(data)) {
+          throw new Error("语音合成返回无效音频");
         }
         const copy = this.cloneArrayBuffer(data);
         if (!this.edgeSkipCacheKeys.delete(k)) {
@@ -433,25 +570,31 @@ export class VoiceReadLinePlayer {
     text: string,
     voiceId: string,
     signal: AbortSignal,
+    emotion?: VoiceReadEmotionId,
   ): Promise<PreparedDashLine> {
     if (!hasVoiceReadSpeakableText(text)) {
       return Promise.reject(new Error("无可朗读内容"));
     }
-    const k = chunkCacheKey(settings, text, voiceId);
+    const k = chunkCacheKey(settings, text, voiceId, emotion);
     const cached = this.dashPcmCache.get(k);
     if (cached) {
       this.touchDashPcmCache(k, cached);
       return this.cloneDashPrepared(cached);
     }
     const inflight = this.dashPcmInflight.get(k);
-    if (inflight) return this.cloneDashPrepared(await inflight);
+    if (inflight) {
+      try {
+        return this.cloneDashPrepared(await inflight);
+      } catch (err) {
+        if (!isVoiceReadPlaybackAbortError(err)) throw err;
+      }
+    }
 
-    const request = this.fetchDashScopePcm(settings, text, voiceId, signal)
+    const request = this.fetchIpcPcm(settings, text, voiceId, signal, emotion)
       .then((pcm) => {
         const prep: PreparedDashLine = {
-          engine: "dashscope",
-          pcm: pcm.slice(),
-          sampleRate: DASH_PCM_SAMPLE_RATE,
+          pcm: pcm.pcm.slice(),
+          sampleRate: pcm.sampleRate,
         };
         if (!this.dashSkipCacheKeys.delete(k)) {
           this.touchDashPcmCache(k, prep);
@@ -461,6 +604,7 @@ export class VoiceReadLinePlayer {
       .finally(() => {
         this.dashPcmInflight.delete(k);
       });
+    void request.catch(() => {});
     this.dashPcmInflight.set(k, request);
     return this.cloneDashPrepared(await request);
   }
@@ -504,21 +648,20 @@ export class VoiceReadLinePlayer {
         : (() => {
             const t = normalizeLineText(text);
             if (!t) return [];
-            const units =
-              settings.engine === "edge"
-                ? VOICE_READ_CHUNK_UNITS_EDGE
-                : VOICE_READ_CHUNK_UNITS_DEFAULT;
+            const units = voiceReadChunkUnitsForEngine(settings.engine);
             const parts = splitVoiceReadChunks(t, units);
             const texts = parts.length > 0 ? parts : [t];
-            return texts.map((part) => ({
-              text: part,
-              voiceId: settings.voiceId,
-            }));
+            return texts.map(
+              (part): VoiceReadSpeakChunk => ({
+                text: part,
+                voiceId: voiceReadSingleVoiceId(settings),
+              }),
+            );
           })();
     if (use.length === 0) return;
 
     for (const c of use) {
-      const k = chunkCacheKey(settings, c.text, c.voiceId);
+      const k = chunkCacheKey(settings, c.text, c.voiceId, c.emotion);
       this.edgeMp3Cache.delete(k);
       this.edgeMp3Inflight.delete(k);
       this.edgeSkipCacheKeys.add(k);
@@ -528,7 +671,7 @@ export class VoiceReadLinePlayer {
     }
 
     if (use.length === 1) {
-      const lineKey = lineCacheKey(settings, text, use[0]!.voiceId);
+      const lineKey = lineCacheKey(settings, text, use[0]!.voiceId, use[0]!.emotion);
       this.dashPcmCache.delete(lineKey);
       this.dashPcmInflight.delete(lineKey);
       this.dashSkipCacheKeys.add(lineKey);
@@ -546,26 +689,33 @@ export class VoiceReadLinePlayer {
     chunks: VoiceReadSpeakChunk[],
   ): void {
     if (settings.engine === "system") return;
+    if (
+      this.activeEdgeSessionId > 0 &&
+      voiceReadRequiresSerialChunkFetch(settings)
+    ) {
+      return;
+    }
     const use = normalizeSpeakChunks(chunks);
     if (use.length === 0) return;
-    if (settings.engine === "dashscope") {
-      for (const c of use) {
-        const k = chunkCacheKey(settings, c.text, c.voiceId);
-        if (this.dashPcmCache.has(k) || this.dashPcmInflight.has(k)) continue;
-        const ac = new AbortController();
-        void this.getDashChunkPrepared(
-          settings,
-          c.text,
-          c.voiceId,
-          ac.signal,
-        ).catch(() => {});
-      }
+    if (voiceReadPlaybackKind(settings.engine) === "pcm") {
+      const c = use[0];
+      if (!c) return;
+      const k = chunkCacheKey(settings, c.text, c.voiceId, c.emotion);
+      if (this.dashPcmCache.has(k) || this.dashPcmInflight.has(k)) return;
+      const ac = new AbortController();
+      void this.getDashChunkPrepared(
+        settings,
+        c.text,
+        c.voiceId,
+        ac.signal,
+        c.emotion,
+      ).catch(() => {});
       return;
     }
     for (const c of use) {
-      const k = chunkCacheKey(settings, c.text, c.voiceId);
+      const k = chunkCacheKey(settings, c.text, c.voiceId, c.emotion);
       if (this.edgeMp3Cache.has(k) || this.edgeMp3Inflight.has(k)) continue;
-      void this.getEdgeMp3(settings, c.text, c.voiceId).catch(() => {});
+      void this.getEdgeMp3(settings, c.text, c.voiceId, c.emotion).catch(() => {});
     }
   }
 
@@ -573,15 +723,15 @@ export class VoiceReadLinePlayer {
   warmLine(settings: VoiceReadSettings, text: string): void {
     const t = normalizeLineText(text);
     if (!t || !hasVoiceReadSpeakableText(t)) return;
-    const units =
-      settings.engine === "edge"
-        ? VOICE_READ_CHUNK_UNITS_EDGE
-        : VOICE_READ_CHUNK_UNITS_DEFAULT;
+    const units = voiceReadChunkUnitsForEngine(settings.engine);
     const parts = splitVoiceReadChunks(t, units);
     const texts = parts.length > 0 ? parts : [t];
     this.warmSpeakChunks(
       settings,
-      texts.map((part) => ({ text: part, voiceId: settings.voiceId })),
+      texts.map((part) => ({
+        text: part,
+        voiceId: voiceReadSingleVoiceId(settings),
+      })),
     );
   }
 
@@ -592,13 +742,13 @@ export class VoiceReadLinePlayer {
     if (settings.engine === "system") return true;
     const use = normalizeSpeakChunks(speakChunks);
     if (use.length === 0) return true;
-    if (settings.engine === "dashscope") {
+    if (voiceReadPlaybackKind(settings.engine) === "pcm") {
       return use.every((c) =>
-        this.dashPcmCache.has(chunkCacheKey(settings, c.text, c.voiceId)),
+        this.dashPcmCache.has(chunkCacheKey(settings, c.text, c.voiceId, c.emotion)),
       );
     }
     return use.every((c) =>
-      this.edgeMp3Cache.has(chunkCacheKey(settings, c.text, c.voiceId)),
+      this.edgeMp3Cache.has(chunkCacheKey(settings, c.text, c.voiceId, c.emotion)),
     );
   }
 
@@ -609,11 +759,11 @@ export class VoiceReadLinePlayer {
   ): void {
     this.discardDashPrefetchOnly();
     this.warmSpeakChunks(settings, chunks);
-    if (settings.engine !== "dashscope") return;
+    if (voiceReadPlaybackKind(settings.engine) !== "pcm") return;
     const use = normalizeSpeakChunks(chunks);
     if (use.length !== 1) return;
     const c = use[0]!;
-    const key = chunkCacheKey(settings, c.text, c.voiceId);
+    const key = chunkCacheKey(settings, c.text, c.voiceId, c.emotion);
     if (this.dashPcmCache.has(key) || this.dashPcmInflight.has(key)) return;
     this.prefetchDashAbort = new AbortController();
     this.prefetchKey = key;
@@ -622,7 +772,9 @@ export class VoiceReadLinePlayer {
       c.text,
       c.voiceId,
       this.prefetchDashAbort.signal,
+      c.emotion,
     );
+    void this.prefetchPromise.catch(() => {});
   }
 
   stop(): void {
@@ -669,7 +821,7 @@ export class VoiceReadLinePlayer {
     if (settings.engine === "system") {
       return this.speakSystemChunks(settings, remaining);
     }
-    if (settings.engine === "edge") {
+    if (voiceReadPlaybackKind(settings.engine) === "decoded") {
       return this.speakEdgeChunks(settings, remaining);
     }
     return this.speakDashChunks(settings, remaining);
@@ -682,11 +834,11 @@ export class VoiceReadLinePlayer {
   async waitForPlaybackSettled(): Promise<void> {
     if (this.stopped) return;
     if (this.edgeAudioCtx && this.edgeHasAudioData) {
-      await this.awaitEdgePlaybackDrain();
+      await this.awaitEdgePlaybackDrain(this.activeEdgeSessionId);
       return;
     }
     if (this.dashAudioCtx && this.dashHasAudioData) {
-      await this.awaitDashPlaybackDrain();
+      await this.awaitDashPlaybackDrain(this.activeDashSessionId);
     }
   }
 
@@ -701,7 +853,7 @@ export class VoiceReadLinePlayer {
     if (settings.engine === "system") {
       return this.speakSystemChunks(settings, use);
     }
-    if (settings.engine === "edge") {
+    if (voiceReadPlaybackKind(settings.engine) === "decoded") {
       return this.speakEdgeChunks(settings, use);
     }
     return this.speakDashChunks(settings, use);
@@ -719,24 +871,28 @@ export class VoiceReadLinePlayer {
       speakChunks && speakChunks.length > 0
         ? normalizeSpeakChunks(speakChunks)
         : (() => {
-            const units =
-              settings.engine === "edge"
-                ? VOICE_READ_CHUNK_UNITS_EDGE
-                : VOICE_READ_CHUNK_UNITS_DEFAULT;
+            const units = voiceReadChunkUnitsForEngine(settings.engine);
             const parts = splitVoiceReadChunks(t, units);
             const texts = parts.length > 0 ? parts : [t];
-            return texts.map((part) => ({
-              text: part,
-              voiceId: settings.voiceId,
-            }));
+            return texts.map(
+              (part): VoiceReadSpeakChunk => ({
+                text: part,
+                voiceId: voiceReadSingleVoiceId(settings),
+              }),
+            );
           })();
 
     const key =
       built.length === 1
-        ? chunkCacheKey(settings, built[0]!.text, built[0]!.voiceId)
+        ? chunkCacheKey(
+            settings,
+            built[0]!.text,
+            built[0]!.voiceId,
+            built[0]!.emotion,
+          )
         : null;
     let dashPrepared: Promise<PreparedDashLine> | null = null;
-    if (settings.engine === "dashscope" && key) {
+    if (voiceReadPlaybackKind(settings.engine) === "pcm" && key) {
       if (this.prefetchKey === key && this.prefetchPromise) {
         dashPrepared = this.prefetchPromise;
         this.prefetchKey = null;
@@ -747,24 +903,26 @@ export class VoiceReadLinePlayer {
 
     this.abortActivePlayback();
     this.stopped = false;
+    const sessionId = this.bumpPlaybackSession();
 
     if (settings.engine === "system") {
       return this.speakSystemChunks(settings, built);
     }
 
     if (
-      settings.engine === "dashscope" &&
+      voiceReadPlaybackKind(settings.engine) === "pcm" &&
       dashPrepared &&
       built.length === 1
     ) {
       const playPrepared = async (p: PreparedDashLine) => {
-        if (this.stopped) return;
-        await this.playDashSingleBuffer(settings, p.pcm, p.sampleRate);
+        if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
+        await this.playDashSingleBuffer(settings, p.pcm, p.sampleRate, sessionId);
       };
       const loadPrepared =
         key && this.dashPcmCache.has(key)
           ? dashPrepared
           : this.awaitWhenPlaybackBlocked(
+              sessionId,
               () => this.isDashPlaybackCaughtUp(),
               dashPrepared,
             );
@@ -773,7 +931,7 @@ export class VoiceReadLinePlayer {
       );
     }
 
-    if (settings.engine === "edge") {
+    if (voiceReadPlaybackKind(settings.engine) === "decoded") {
       return this.speakEdgeChunks(settings, built);
     }
 
@@ -781,6 +939,10 @@ export class VoiceReadLinePlayer {
   }
 
   private abortActivePlayback(): void {
+    this.bumpPlaybackSession();
+    this.activeEdgeSessionId = 0;
+    this.activeDashSessionId = 0;
+    this.edgeTimelineSessionId = 0;
     this.dashAbort?.abort();
     this.dashAbort = null;
     if (this.dashCheckTimer) {
@@ -815,6 +977,7 @@ export class VoiceReadLinePlayer {
     this.edgeChunks = [];
     this.edgeSettings = null;
     this.dashSessionSettings = null;
+    this.playbackVolumeOverride = null;
 
     if (typeof window !== "undefined" && window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -822,17 +985,47 @@ export class VoiceReadLinePlayer {
     this.resetPlaybackSynthesizing();
   }
 
-  private async fetchEdgeMp3(
+  private async fetchIpcDecodedAudio(
     settings: VoiceReadSettings,
     text: string,
     voiceId: string,
+    emotion?: VoiceReadEmotionId,
   ): Promise<ArrayBuffer> {
-    const req = toVoiceReadEdgeTtsRequest(settings, text, voiceId);
-    const r = await window.colorTxt.voiceReadEdgeTts(req);
+    const r = await synthesizeVoiceReadViaIpc(
+      toVoiceReadSynthesisRequest(settings, text, voiceId, emotion),
+    );
     if (!r.ok) {
-      throw new Error(r.error || "Edge 语音合成失败");
+      throw new Error(r.error || "语音合成失败");
     }
-    return r.mp3;
+    if (r.result.format !== "mp3" && r.result.format !== "wav") {
+      throw new Error("语音合成返回了不支持的音频格式");
+    }
+    return r.result.data;
+  }
+
+  private async fetchIpcPcm(
+    settings: VoiceReadSettings,
+    text: string,
+    voiceId: string,
+    signal: AbortSignal,
+    emotion?: VoiceReadEmotionId,
+  ): Promise<{ pcm: Uint8Array; sampleRate: number }> {
+    if (signal.aborted) throw new Error("interrupted");
+    const r = await synthesizeVoiceReadViaIpc(
+      toVoiceReadSynthesisRequest(settings, text, voiceId, emotion),
+      signal,
+    );
+    if (signal.aborted) throw new Error("interrupted");
+    if (!r.ok) {
+      throw new Error(r.error || "语音合成失败");
+    }
+    if (r.result.format !== "pcm_s16le" || !r.result.sampleRate) {
+      throw new Error("语音合成返回了不支持的 PCM 格式");
+    }
+    return {
+      pcm: new Uint8Array(r.result.data),
+      sampleRate: r.result.sampleRate,
+    };
   }
 
   private async speakSystemChunks(
@@ -860,7 +1053,8 @@ export class VoiceReadLinePlayer {
       const u = new SpeechSynthesisUtterance(text);
       u.rate = settings.rate;
       u.pitch = settings.pitch;
-      const vid = voiceId.trim() || settings.voiceId.trim();
+      u.volume = this.resolvePlaybackVolume(settings);
+      const vid = voiceId.trim() || voiceReadSingleVoiceId(settings);
       if (vid) {
         const v = window.speechSynthesis
           .getVoices()
@@ -888,19 +1082,26 @@ export class VoiceReadLinePlayer {
     settings: VoiceReadSettings,
     chunks: VoiceReadSpeakChunk[],
   ): Promise<void> {
-    const BUFFER = VoiceReadLinePlayer.EDGE_BUFFER_SIZE;
+    const sessionId = this.bumpPlaybackSession();
+    this.activeEdgeSessionId = sessionId;
+    this.edgeTimelineSessionId = sessionId;
+    const BUFFER = voiceReadEdgeFetchBufferSize(settings);
+    this.edgeFetchBufferLimit = BUFFER;
     this.edgeChunks = chunks;
     this.edgeSettings = settings;
     this.edgeAllChunksDone = false;
     this.edgeHasAudioData = false;
     this.edgePlayingNotified = false;
     this.edgePausedAt = 0;
+    this.timelineScheduleOrdinal = 0;
+    this.timelineNotifyThroughOrdinal = -1;
     this.edgeFetchBuffer.clear();
     this.edgeProducerIndex = 0;
 
     this.edgeAudioCtx = new AudioContext();
     this.edgeGain = this.edgeAudioCtx.createGain();
     this.edgeGain.connect(this.edgeAudioCtx.destination);
+    applyGainPlaybackVolume(this.edgeGain, this.resolvePlaybackVolume(settings));
     this.edgeScheduledEnd = 0;
 
     if (this.edgeAudioCtx.state === "suspended") {
@@ -908,40 +1109,42 @@ export class VoiceReadLinePlayer {
     }
 
     this.edgeCheckTimer = setInterval(() => {
-      if (this.stopped) return;
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
       if (this.edgeAudioCtx?.state === "suspended") return;
       if (this.edgeAllChunksDone && this.edgeAudioCtx) {
         if (!this.edgeHasAudioData) {
-          this.cleanupEdgeSession();
+          this.cleanupEdgeSession(sessionId);
           return;
         }
         const ct = this.edgeAudioCtx.currentTime;
         if (ct >= this.edgeScheduledEnd - 0.05) {
-          this.cleanupEdgeSession();
+          this.cleanupEdgeSession(sessionId);
         }
       }
     }, 200);
 
-    void this.runEdgeProducer(settings, chunks);
-
     const prewarm = Math.min(BUFFER, chunks.length);
     for (let p = 0; p < prewarm; p++) {
-      if (this.stopped) return;
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
       const ch = chunks[p]!;
       this.edgeFetchBuffer.set(p, this.enqueueEdgeMp3Fetch(settings, ch));
-      this.edgeProducerIndex = p + 1;
     }
+    this.edgeProducerIndex = prewarm;
+    void this.runEdgeProducer(sessionId, settings, chunks);
 
     let edgeChunkError: unknown = null;
     for (let i = 0; i < chunks.length; i++) {
-      if (this.stopped) break;
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) break;
       const settings = this.edgeSettings;
       const ch = chunks[i];
-      if (!settings || !ch) continue;
+      if (!settings || !ch) break;
+      if (i > 0 && this.edgeHasAudioData) {
+        await this.awaitEdgePlaybackCaughtUp(sessionId);
+      }
       try {
-        await this.playEdgeChunkAtIndex(i, chunks.length, settings, ch);
+        await this.playEdgeChunkAtIndex(sessionId, i, chunks.length, settings, ch);
       } catch (e) {
-        if ((e as Error)?.message === "aborted") break;
+        if (isVoiceReadPlaybackAbortError(e)) break;
         const msg = (e as Error)?.message ?? "";
         if (/无可朗读内容/.test(msg)) {
           this.edgeFetchBuffer.delete(i);
@@ -955,30 +1158,32 @@ export class VoiceReadLinePlayer {
       this.edgeProducerWake?.();
     }
 
-    if (this.stopped) return;
+    if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
     if (edgeChunkError && !this.edgeHasAudioData) {
-      this.cleanupEdgeSession();
+      this.cleanupEdgeSession(sessionId);
       throw edgeChunkError instanceof Error
         ? edgeChunkError
         : new Error(String(edgeChunkError));
     }
     this.edgeAllChunksDone = true;
     // 必须等本行实际播完再 resolve，否则连续朗读时下一行 `speakLine` 会立刻 abort 掉本行 AudioContext（试听只有一行故不易发现）
-    await this.awaitEdgePlaybackDrain();
+    await this.awaitEdgePlaybackDrain(sessionId);
   }
 
   /** 等 Edge 时间线播放到 scheduledEnd（与 setInterval 清理条件一致） */
-  private async awaitEdgePlaybackDrain(): Promise<void> {
+  private async awaitEdgePlaybackDrain(sessionId: number): Promise<void> {
     for (;;) {
+      if (!this.isPlaybackSessionCurrent(sessionId)) return;
       if (!this.edgeAudioCtx) return;
       if (this.stopped) return;
       const ctx = this.edgeAudioCtx;
       if (ctx.state === "suspended") {
+        await this.ensureEdgeAudioRunning();
         await sleepMs(50);
         continue;
       }
       if (this.edgeAllChunksDone && !this.edgeHasAudioData) {
-        this.cleanupEdgeSession();
+        this.cleanupEdgeSession(sessionId);
         return;
       }
       if (
@@ -986,7 +1191,7 @@ export class VoiceReadLinePlayer {
         this.edgeHasAudioData &&
         ctx.currentTime >= this.edgeScheduledEnd - 0.05
       ) {
-        this.cleanupEdgeSession();
+        this.cleanupEdgeSession(sessionId);
         return;
       }
       await sleepMs(50);
@@ -994,51 +1199,57 @@ export class VoiceReadLinePlayer {
   }
 
   private async runEdgeProducer(
+    sessionId: number,
     settings: VoiceReadSettings,
     chunks: VoiceReadSpeakChunk[],
   ): Promise<void> {
-    const BUFFER = VoiceReadLinePlayer.EDGE_BUFFER_SIZE;
+    const BUFFER = this.edgeFetchBufferLimit;
     while (this.edgeProducerIndex < chunks.length) {
-      if (this.stopped) return;
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
       while (this.edgeFetchBuffer.size >= BUFFER) {
-        if (this.stopped) return;
+        if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
         await new Promise<void>((resolve) => {
           this.edgeProducerWake = resolve;
         });
         this.edgeProducerWake = null;
       }
-      if (this.stopped) return;
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
       const idx = this.edgeProducerIndex++;
       const ch = chunks[idx]!;
       this.edgeFetchBuffer.set(idx, this.enqueueEdgeMp3Fetch(settings, ch));
     }
   }
 
-  private async waitEdgeChunk(index: number): Promise<ArrayBuffer> {
+  private async waitEdgeChunk(
+    sessionId: number,
+    index: number,
+  ): Promise<ArrayBuffer> {
     while (!this.edgeFetchBuffer.has(index)) {
-      if (this.stopped) throw new Error("aborted");
-      await new Promise<void>((r) => setTimeout(r, 50));
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) {
+        throw new Error("aborted");
+      }
+      const ch = this.edgeChunks[index];
+      const settings = this.edgeSettings;
+      if (ch && settings) {
+        this.edgeFetchBuffer.set(
+          index,
+          this.enqueueEdgeMp3Fetch(settings, ch),
+        );
+        this.edgeProducerWake?.();
+      }
+      await sleepMs(50);
     }
     const promise = this.edgeFetchBuffer.get(index)!;
-    const settings = this.edgeSettings;
-    const ch = this.edgeChunks[index];
-    if (
-      settings &&
-      ch &&
-      this.edgeMp3Cache.has(
-        chunkCacheKey(settings, ch.text, ch.voiceId),
-      )
-    ) {
-      return promise;
-    }
     return this.awaitWhenPlaybackBlocked(
-      () => this.isEdgePlaybackCaughtUp(),
+      sessionId,
+      () => this.isEdgePlaybackCaughtUp(sessionId),
       promise,
     );
   }
 
   /** 拉取并解码单段；合成/解码失败时作废缓存并重试（含主进程自动重试后仍失败） */
   private async playEdgeChunkAtIndex(
+    sessionId: number,
     index: number,
     total: number,
     settings: VoiceReadSettings,
@@ -1048,38 +1259,68 @@ export class VoiceReadLinePlayer {
 
     const maxAttempts = 4;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (this.stopped) throw new Error("aborted");
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) {
+        throw new Error("aborted");
+      }
       if (attempt > 0) {
-        this.invalidateEdgeChunkCache(settings, chunk.text, chunk.voiceId);
+        this.invalidateEdgeChunkCache(
+          settings,
+          chunk.text,
+          chunk.voiceId,
+          chunk.emotion,
+        );
         await sleepMs(200 * attempt);
+        if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) {
+          throw new Error("aborted");
+        }
       }
 
       let buf: ArrayBuffer;
       try {
         buf =
           attempt === 0
-            ? await this.waitEdgeChunk(index)
-            : await this.getEdgeMp3(settings, chunk.text, chunk.voiceId);
+            ? await this.waitEdgeChunk(sessionId, index)
+            : await this.getEdgeMp3(
+                settings,
+                chunk.text,
+                chunk.voiceId,
+                chunk.emotion,
+              );
       } catch (e) {
-        if ((e as Error)?.message === "aborted") throw e;
+        if (isVoiceReadPlaybackAbortError(e)) throw e;
         if (/无可朗读内容/.test((e as Error)?.message ?? "")) return;
         if (attempt < maxAttempts - 1) continue;
         throw e;
       }
 
-      if (this.stopped) throw new Error("aborted");
-      if (!isEdgeMp3PayloadValid(buf)) {
-        this.invalidateEdgeChunkCache(settings, chunk.text, chunk.voiceId);
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) {
+        throw new Error("aborted");
+      }
+      if (!isDecodedAudioPayloadValid(buf)) {
+        this.invalidateEdgeChunkCache(
+          settings,
+          chunk.text,
+          chunk.voiceId,
+          chunk.emotion,
+        );
         if (attempt < maxAttempts - 1) continue;
         throw new Error("Edge TTS 返回无效音频");
       }
 
       try {
-        await this.edgeDecodeAndSchedule(buf, index, total);
+        await this.edgeDecodeAndSchedule(sessionId, buf, index, total);
         return;
       } catch (e) {
-        if (isDecodeAudioDataEncodingError(e) && attempt < maxAttempts - 1) {
-          this.invalidateEdgeChunkCache(settings, chunk.text, chunk.voiceId);
+        const msg = (e as Error)?.message ?? "";
+        const retryable =
+          isDecodeAudioDataEncodingError(e) || /音频过短/.test(msg);
+        if (retryable && attempt < maxAttempts - 1) {
+          this.invalidateEdgeChunkCache(
+            settings,
+            chunk.text,
+            chunk.voiceId,
+            chunk.emotion,
+          );
           continue;
         }
         throw e;
@@ -1088,19 +1329,39 @@ export class VoiceReadLinePlayer {
   }
 
   private async edgeDecodeAndSchedule(
+    sessionId: number,
     mp3Data: ArrayBuffer,
     index: number,
     total: number,
   ): Promise<void> {
-    if (!this.edgeAudioCtx || !this.edgeGain || this.stopped) return;
-    if (!isEdgeMp3PayloadValid(mp3Data)) {
-      throw new Error("Edge TTS 音频无效");
+    if (
+      !this.isPlaybackSessionCurrent(sessionId) ||
+      sessionId !== this.edgeTimelineSessionId ||
+      !this.edgeAudioCtx ||
+      !this.edgeGain ||
+      this.stopped
+    ) {
+      throw new Error("aborted");
+    }
+    if (!isDecodedAudioPayloadValid(mp3Data)) {
+      throw new Error("语音合成音频无效");
     }
 
     const audioBuffer = await this.edgeAudioCtx.decodeAudioData(
       mp3Data.slice(0),
     );
-    if (!this.edgeAudioCtx || !this.edgeGain || this.stopped) return;
+    if (
+      !this.isPlaybackSessionCurrent(sessionId) ||
+      sessionId !== this.edgeTimelineSessionId ||
+      !this.edgeAudioCtx ||
+      !this.edgeGain ||
+      this.stopped
+    ) {
+      throw new Error("aborted");
+    }
+    if (audioBuffer.duration < MIN_DECODED_CHUNK_DURATION_SEC) {
+      throw new Error("语音合成音频过短");
+    }
 
     const ctx = this.edgeAudioCtx;
     const gain = this.edgeGain;
@@ -1109,21 +1370,22 @@ export class VoiceReadLinePlayer {
     src.connect(gain);
 
     const startAt = Math.max(ctx.currentTime, this.edgeScheduledEnd);
-    const notify = () => {
-      if (this.stopped) return;
-      this.onChunkChange?.(index, total);
-    };
-    const delayMs = Math.max(0, (startAt - ctx.currentTime) * 1000);
-    if (delayMs <= 16) {
-      notify();
-    } else {
-      const timer = setTimeout(() => {
-        this.edgeChunkStartTimers.delete(timer);
-        notify();
-      }, delayMs);
-      this.edgeChunkStartTimers.add(timer);
+    if (!this.isPlaybackSessionCurrent(sessionId)) {
+      throw new Error("aborted");
     }
     src.start(startAt);
+    const scheduleOrdinal = this.timelineScheduleOrdinal++;
+    await this.scheduleEdgeChunkNotify(
+      sessionId,
+      index,
+      total,
+      startAt,
+      ctx,
+      scheduleOrdinal,
+    );
+    if (sessionId !== this.edgeTimelineSessionId) {
+      throw new Error("aborted");
+    }
     this.edgeScheduledEnd = startAt + audioBuffer.duration;
     this.edgeHasAudioData = true;
 
@@ -1132,7 +1394,11 @@ export class VoiceReadLinePlayer {
     }
   }
 
-  private cleanupEdgeSession(): void {
+  private cleanupEdgeSession(forSessionId: number): void {
+    if (forSessionId !== this.activeEdgeSessionId) return;
+    if (forSessionId === this.edgeTimelineSessionId) {
+      this.edgeTimelineSessionId = 0;
+    }
     if (this.edgeCheckTimer) {
       clearInterval(this.edgeCheckTimer);
       this.edgeCheckTimer = null;
@@ -1145,6 +1411,8 @@ export class VoiceReadLinePlayer {
     }
     this.edgeGain = null;
     this.edgeScheduledEnd = 0;
+    this.timelineScheduleOrdinal = 0;
+    this.timelineNotifyThroughOrdinal = -1;
     this.edgeFetchBuffer.clear();
     this.edgeProducerWake?.();
     this.edgeProducerWake = null;
@@ -1157,15 +1425,20 @@ export class VoiceReadLinePlayer {
     settings: VoiceReadSettings,
     chunks: VoiceReadSpeakChunk[],
   ): Promise<void> {
+    const sessionId = this.bumpPlaybackSession();
+    this.activeDashSessionId = sessionId;
     this.dashSessionSettings = settings;
     this.dashAbort = new AbortController();
     const sessionSignal = this.dashAbort.signal;
     this.dashAllChunksDone = false;
     this.dashHasAudioData = false;
+    this.timelineScheduleOrdinal = 0;
+    this.timelineNotifyThroughOrdinal = -1;
 
     this.dashAudioCtx = new AudioContext();
     this.dashGain = this.dashAudioCtx.createGain();
     this.dashGain.connect(this.dashAudioCtx.destination);
+    applyGainPlaybackVolume(this.dashGain, this.resolvePlaybackVolume(settings));
     this.dashScheduledEnd = 0;
 
     if (this.dashAudioCtx.state === "suspended") {
@@ -1173,63 +1446,62 @@ export class VoiceReadLinePlayer {
     }
 
     this.dashCheckTimer = setInterval(() => {
-      if (this.stopped) return;
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
       if (this.dashAudioCtx?.state === "suspended") return;
       if (this.dashAllChunksDone && this.dashAudioCtx) {
         if (!this.dashHasAudioData) {
-          this.cleanupDashSession();
+          this.cleanupDashSession(sessionId);
           return;
         }
         const ct = this.dashAudioCtx.currentTime;
         if (ct >= this.dashScheduledEnd - 0.05) {
-          this.cleanupDashSession();
+          this.cleanupDashSession(sessionId);
         }
       }
     }, 200);
 
-    let dashChunkError: unknown = null;
     for (let i = 0; i < chunks.length; i++) {
-      if (this.stopped) break;
+      if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) break;
       try {
         await this.dashStreamChunk(
+          sessionId,
           settings,
           chunks[i]!,
           i,
           chunks.length,
           sessionSignal,
         );
-      } catch (err) {
-        if ((err as Error)?.message === "aborted" || sessionSignal.aborted) {
+      } catch (e) {
+        if (
+          isVoiceReadPlaybackAbortError(e) ||
+          !this.isPlaybackSessionCurrent(sessionId) ||
+          this.stopped
+        ) {
           break;
         }
-        if (!dashChunkError) dashChunkError = err;
-        console.error("[VoiceRead DashScope] chunk error:", err);
+        throw e;
       }
     }
 
-    if (this.stopped) return;
+    if (!this.isPlaybackSessionCurrent(sessionId) || this.stopped) return;
     this.dashAllChunksDone = true;
-    if (dashChunkError && !this.dashHasAudioData) {
-      this.cleanupDashSession();
-      throw dashChunkError instanceof Error
-        ? dashChunkError
-        : new Error(String(dashChunkError));
-    }
-    await this.awaitDashPlaybackDrain();
+    await this.awaitDashPlaybackDrain(sessionId);
   }
 
   /** 等 Dash 排播时间线播放到 scheduledEnd */
-  private async awaitDashPlaybackDrain(): Promise<void> {
+  private async awaitDashPlaybackDrain(sessionId: number): Promise<void> {
     for (;;) {
+      if (!this.isPlaybackSessionCurrent(sessionId)) return;
       if (!this.dashAudioCtx) return;
       if (this.stopped) return;
       const ctx = this.dashAudioCtx;
       if (ctx.state === "suspended") {
+        await this.ensureDashAudioRunning();
         await sleepMs(50);
         continue;
       }
       if (this.dashAllChunksDone && !this.dashHasAudioData) {
-        this.cleanupDashSession();
+        this.cleanupDashSession(sessionId);
         return;
       }
       if (
@@ -1237,7 +1509,7 @@ export class VoiceReadLinePlayer {
         this.dashHasAudioData &&
         ctx.currentTime >= this.dashScheduledEnd - 0.05
       ) {
-        this.cleanupDashSession();
+        this.cleanupDashSession(sessionId);
         return;
       }
       await sleepMs(50);
@@ -1245,59 +1517,139 @@ export class VoiceReadLinePlayer {
   }
 
   private async dashStreamChunk(
+    sessionId: number,
     settings: VoiceReadSettings,
     chunk: VoiceReadSpeakChunk,
     index: number,
     total: number,
     signal: AbortSignal,
   ): Promise<void> {
-    const fetchPrepared = this.getDashChunkPrepared(
-      settings,
-      chunk.text,
-      chunk.voiceId,
-      signal,
-    );
-    const prepared = this.dashPcmCache.has(
-      chunkCacheKey(settings, chunk.text, chunk.voiceId),
-    )
-      ? await fetchPrepared
-      : await this.awaitWhenPlaybackBlocked(
-          () => this.isDashPlaybackCaughtUp(),
-          fetchPrepared,
-        );
-    if (this.stopped || signal.aborted) return;
-    this.scheduleDashChunkPlayback(prepared.pcm, index, total);
+    if (
+      !this.isPlaybackSessionCurrent(sessionId) ||
+      this.stopped ||
+      signal.aborted
+    ) {
+      return;
+    }
+    try {
+      const fetchPrepared = this.getDashChunkPrepared(
+        settings,
+        chunk.text,
+        chunk.voiceId,
+        signal,
+        chunk.emotion,
+      );
+      const prepared = this.dashPcmCache.has(
+        chunkCacheKey(settings, chunk.text, chunk.voiceId, chunk.emotion),
+      )
+        ? await fetchPrepared
+        : await this.awaitWhenPlaybackBlocked(
+            sessionId,
+            () => this.isDashPlaybackCaughtUp(),
+            fetchPrepared,
+          );
+      if (
+        !this.isPlaybackSessionCurrent(sessionId) ||
+        this.stopped ||
+        signal.aborted
+      ) {
+        return;
+      }
+      this.scheduleDashChunkPlayback(sessionId, prepared.pcm, index, total);
+    } catch (e) {
+      if (
+        !this.isPlaybackSessionCurrent(sessionId) ||
+        this.stopped ||
+        signal.aborted ||
+        isVoiceReadPlaybackAbortError(e)
+      ) {
+        return;
+      }
+      throw e;
+    }
   }
 
-  /** 与 Edge 一致：在排播时间线 startAt 触发 onChunkChange，而非合成开始时 */
-  private scheduleDashChunkNotify(
+  /** 按 AudioContext 时间线在 startAt 触发 onChunkChange（不用墙钟 setTimeout，避免 suspend 时高亮抢跑） */
+  private scheduleEdgeChunkNotify(
+    sessionId: number,
     index: number,
     total: number,
     startAt: number,
     ctx: AudioContext,
+    scheduleOrdinal: number,
+  ): Promise<void> {
+    return this.runTimelineChunkNotify(
+      sessionId,
+      index,
+      total,
+      startAt,
+      ctx,
+      () => this.ensureEdgeAudioRunning(),
+      scheduleOrdinal,
+    );
+  }
+
+  /** 与 Edge 一致：在排播时间线 startAt 触发 onChunkChange，而非合成开始时 */
+  private scheduleDashChunkNotify(
+    sessionId: number,
+    index: number,
+    total: number,
+    startAt: number,
+    ctx: AudioContext,
+    scheduleOrdinal: number,
   ): void {
-    const notify = () => {
-      if (this.stopped) return;
-      this.onChunkChange?.(index, total);
-    };
-    const delayMs = Math.max(0, (startAt - ctx.currentTime) * 1000);
-    if (delayMs <= 16) {
-      notify();
-      return;
+    void this.runTimelineChunkNotify(
+      sessionId,
+      index,
+      total,
+      startAt,
+      ctx,
+      () => this.ensureDashAudioRunning(),
+      scheduleOrdinal,
+    );
+  }
+
+  private async runTimelineChunkNotify(
+    sessionId: number,
+    index: number,
+    total: number,
+    startAt: number,
+    ctx: AudioContext,
+    ensureRunning: () => Promise<void>,
+    scheduleOrdinal: number,
+  ): Promise<void> {
+    for (;;) {
+      if (this.stopped || !this.isPlaybackSessionCurrent(sessionId)) return;
+      if (ctx.state === "closed") return;
+      while (scheduleOrdinal > this.timelineNotifyThroughOrdinal + 1) {
+        if (this.stopped || !this.isPlaybackSessionCurrent(sessionId)) return;
+        await sleepMs(20);
+      }
+      await ensureRunning();
+      if (ctx.currentTime >= startAt - 0.02) {
+        if (this.stopped || !this.isPlaybackSessionCurrent(sessionId)) return;
+        this.onChunkChange?.(index, total);
+        this.timelineNotifyThroughOrdinal = scheduleOrdinal;
+        return;
+      }
+      await sleepMs(20);
     }
-    const timer = setTimeout(() => {
-      this.dashChunkStartTimers.delete(timer);
-      notify();
-    }, delayMs);
-    this.dashChunkStartTimers.add(timer);
   }
 
   private scheduleDashChunkPlayback(
+    sessionId: number,
     pcm: Uint8Array,
     index: number,
     total: number,
   ): void {
-    if (!this.dashAudioCtx || !this.dashGain || this.stopped) return;
+    if (
+      !this.isPlaybackSessionCurrent(sessionId) ||
+      !this.dashAudioCtx ||
+      !this.dashGain ||
+      this.stopped
+    ) {
+      return;
+    }
 
     const numSamples = Math.floor(pcm.length / 2);
     if (numSamples === 0) return;
@@ -1318,14 +1670,24 @@ export class VoiceReadLinePlayer {
     src.connect(gain);
 
     const startAt = Math.max(ctx.currentTime, this.dashScheduledEnd);
-    this.scheduleDashChunkNotify(index, total, startAt, ctx);
+    const scheduleOrdinal = this.timelineScheduleOrdinal++;
+    if (!this.isPlaybackSessionCurrent(sessionId)) return;
     src.start(startAt);
+    this.scheduleDashChunkNotify(
+      sessionId,
+      index,
+      total,
+      startAt,
+      ctx,
+      scheduleOrdinal,
+    );
     this.dashScheduledEnd =
       startAt + audioBuffer.duration / src.playbackRate.value;
     this.dashHasAudioData = true;
   }
 
-  private cleanupDashSession(): void {
+  private cleanupDashSession(forSessionId: number): void {
+    if (forSessionId !== this.activeDashSessionId) return;
     if (this.dashCheckTimer) {
       clearInterval(this.dashCheckTimer);
       this.dashCheckTimer = null;
@@ -1347,11 +1709,13 @@ export class VoiceReadLinePlayer {
     settings: VoiceReadSettings,
     pcm: Uint8Array,
     sampleRate: number,
+    sessionId: number,
   ): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped || !this.isPlaybackSessionCurrent(sessionId)) return;
     this.dashAudioCtx = new AudioContext();
     this.dashGain = this.dashAudioCtx.createGain();
     this.dashGain.connect(this.dashAudioCtx.destination);
+    applyGainPlaybackVolume(this.dashGain, this.resolvePlaybackVolume(settings));
     this.dashScheduledEnd = 0;
 
     if (this.dashAudioCtx.state === "suspended") {
@@ -1376,12 +1740,29 @@ export class VoiceReadLinePlayer {
 
     await new Promise<void>((resolve, reject) => {
       src.onended = () => {
-        if (!this.stopped) resolve();
+        if (
+          !this.stopped &&
+          this.isPlaybackSessionCurrent(sessionId)
+        ) {
+          resolve();
+        }
       };
       try {
         const startAt = Math.max(ctx.currentTime, this.dashScheduledEnd);
-        this.scheduleDashChunkNotify(0, 1, startAt, ctx);
+        const scheduleOrdinal = this.timelineScheduleOrdinal++;
+        if (!this.isPlaybackSessionCurrent(sessionId)) {
+          resolve();
+          return;
+        }
         src.start(startAt);
+        this.scheduleDashChunkNotify(
+          sessionId,
+          0,
+          1,
+          startAt,
+          ctx,
+          scheduleOrdinal,
+        );
         this.dashScheduledEnd =
           startAt + audioBuffer.duration / src.playbackRate.value;
       } catch (e) {
@@ -1396,90 +1777,8 @@ export class VoiceReadLinePlayer {
     this.dashGain = null;
   }
 
-  private async fetchDashScopePcm(
-    settings: VoiceReadSettings,
-    text: string,
-    voiceId: string,
-    signal: AbortSignal,
-  ): Promise<Uint8Array> {
-    const key = settings.dashscopeApiKey.trim();
-    if (!key) {
-      throw new Error(
-        "请先在「语音朗读」设置中填写阿里云通义（DashScope）API 密钥",
-      );
-    }
-    const voice = voiceId.trim() || settings.voiceId.trim() || "Cherry";
-
-    const resp = await fetch(
-      "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-          "X-DashScope-SSE": "enable",
-        },
-        body: JSON.stringify({
-          model: "qwen3-tts-flash",
-          input: { text, voice },
-        }),
-        signal,
-      },
-    );
-    if (!resp.ok) {
-      throw new Error(`通义语音合成 HTTP ${resp.status}`);
-    }
-    const reader = resp.body?.getReader();
-    if (!reader) throw new Error("无响应体");
-
-    const chunks: Uint8Array[] = [];
-    const dec = new TextDecoder();
-    let buf = "";
-    while (!signal.aborted) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const jsonStr = line.slice(5).trim();
-        if (!jsonStr) continue;
-        try {
-          const evt = JSON.parse(jsonStr) as {
-            output?: { audio?: { data?: string } };
-          };
-          const b64 = evt?.output?.audio?.data;
-          if (b64 && typeof b64 === "string") {
-            const bin = atob(b64);
-            const bytes = new Uint8Array(bin.length);
-            for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
-            chunks.push(bytes);
-          }
-        } catch {
-          // skip
-        }
-      }
-    }
-    if (signal.aborted) {
-      throw new Error("interrupted");
-    }
-
-    const totalLen = chunks.reduce((s, c) => s + c.length, 0);
-    if (totalLen === 0) {
-      throw new Error("通义语音合成未返回音频数据");
-    }
-    const merged = new Uint8Array(totalLen);
-    let off = 0;
-    for (const c of chunks) {
-      merged.set(c, off);
-      off += c.length;
-    }
-    return merged;
-  }
-
   /**
-   * 从试听合成缓存拼出可下载文件（Edge：MP3；DashScope：WAV；系统语音不支持）。
+   * 从试听合成缓存拼出可下载文件（解码类：MP3/WAV；PCM 类：WAV；系统语音不支持）。
    */
   async buildLineDownloadable(
     settings: VoiceReadSettings,
@@ -1493,28 +1792,40 @@ export class VoiceReadLinePlayer {
       speakChunks && speakChunks.length > 0
         ? normalizeSpeakChunks(speakChunks)
         : (() => {
-            const units =
-              settings.engine === "edge"
-                ? VOICE_READ_CHUNK_UNITS_EDGE
-                : VOICE_READ_CHUNK_UNITS_DEFAULT;
+            const units = voiceReadChunkUnitsForEngine(settings.engine);
             const parts = splitVoiceReadChunks(t, units);
             const texts = parts.length > 0 ? parts : [t];
-            return texts.map((part) => ({
-              text: part,
-              voiceId: settings.voiceId,
-            }));
+            return texts.map(
+              (part): VoiceReadSpeakChunk => ({
+                text: part,
+                voiceId: voiceReadSingleVoiceId(settings),
+              }),
+            );
           })();
 
-    if (settings.engine === "edge") {
+    if (voiceReadPlaybackKind(settings.engine) === "decoded") {
       const parts: ArrayBuffer[] = [];
       for (const c of built) {
-        const buf = await this.getEdgeMp3(settings, c.text, c.voiceId);
+        const buf = await this.getEdgeMp3(
+          settings,
+          c.text,
+          c.voiceId,
+          c.emotion,
+        );
         if (!buf.byteLength) return null;
         parts.push(buf);
       }
+      const ext =
+        built.length === 1 &&
+        isDecodedAudioPayloadValid(parts[0]!) &&
+        new Uint8Array(parts[0]!, 0, 4)[0] === 0x52
+          ? "wav"
+          : "mp3";
       return {
-        blob: new Blob([concatArrayBuffers(parts)], { type: "audio/mpeg" }),
-        filename: voiceReadPreviewFilename(settings, "mp3"),
+        blob: new Blob([concatArrayBuffers(parts)], {
+          type: ext === "wav" ? "audio/wav" : "audio/mpeg",
+        }),
+        filename: voiceReadPreviewFilename(settings, ext),
       };
     }
 
@@ -1527,6 +1838,7 @@ export class VoiceReadLinePlayer {
         c.text,
         c.voiceId,
         signal,
+        c.emotion,
       );
       pcmParts.push(prep.pcm);
       sampleRate = prep.sampleRate;

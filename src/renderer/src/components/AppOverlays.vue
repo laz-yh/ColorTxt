@@ -10,6 +10,7 @@ import {
 import type { ChapterMatchRule } from "../chapter";
 import type { AiCustomSkill, AiSkillUserOverride } from "@shared/aiSkills";
 import type { VoiceReadSettings } from "../constants/voiceRead";
+import type { TimedScrollSettings } from "../constants/timedScroll";
 import type { VoiceReadProfile } from "@shared/voiceReadProfiles";
 import type { CharacterRosterEntry } from "@shared/characterTypes";
 import { bookmarkNoteInputRefKey } from "../injectionKeys";
@@ -23,6 +24,7 @@ import SettingsPanel, { type SettingsApplyPayload } from "./SettingsPanel.vue";
 import ShortcutPanel from "./ShortcutPanel.vue";
 import type { ShortcutBindingMap } from "../services/shortcutRegistry";
 import type { ReaderSurfacePalette } from "../constants/appUi";
+import type { ReaderSurfaceColorEnabled } from "../constants/readerPalette";
 import { readerEbookConvertingHintText } from "../constants/appUi";
 
 const bookmarkNoteInputRef = inject(bookmarkNoteInputRefKey)!;
@@ -36,6 +38,7 @@ const props = defineProps<{
   readerFontSize: number;
   readerLineHeightMultiple: number;
   monacoSmoothScrolling: boolean;
+  stickyChapterTitleEnabled: boolean;
   readerEditShowLineNumbers: boolean;
   readerEditMinimap: boolean;
   editAutoRefreshChapterList: boolean;
@@ -43,6 +46,7 @@ const props = defineProps<{
   compressBlankKeepOneBlank: boolean;
   monacoCustomHighlight: boolean;
   txtrDelimitedMatchCrossLine: boolean;
+  timedScrollSettings: TimedScrollSettings;
   chapterRules: ChapterMatchRule[];
   chapterRuleErrorText: string;
   editingBookmarkLine: number | null;
@@ -62,6 +66,8 @@ const props = defineProps<{
   currentTheme: string;
   readerSurfaceLight: ReaderSurfacePalette;
   readerSurfaceDark: ReaderSurfacePalette;
+  readerPaletteColorEnabledLight: ReaderSurfaceColorEnabled;
+  readerPaletteColorEnabledDark: ReaderSurfaceColorEnabled;
   monacoFontFamily: string;
   highlightColorsLight: string[];
   highlightColorsDark: string[];
@@ -86,7 +92,12 @@ const emit = defineEmits<{
   confirmRemoveActiveBookmark: [];
   applyShortcutBindings: [payload: ShortcutBindingMap];
   applyReaderPalettes: [
-    payload: { light: ReaderSurfacePalette; dark: ReaderSurfacePalette },
+    payload: {
+      light: ReaderSurfacePalette;
+      dark: ReaderSurfacePalette;
+      colorEnabledLight: ReaderSurfaceColorEnabled;
+      colorEnabledDark: ReaderSurfaceColorEnabled;
+    },
   ];
   applyHighlightColors: [payload: { light: string[]; dark: string[] }];
   applyLineationColors: [payload: { light: string[]; dark: string[] }];
@@ -193,6 +204,7 @@ onBeforeUnmount(() => {
     :reader-font-size="readerFontSize"
     :reader-line-height-multiple="readerLineHeightMultiple"
     :monaco-smooth-scrolling="monacoSmoothScrolling"
+    :sticky-chapter-title-enabled="stickyChapterTitleEnabled"
     :reader-edit-show-line-numbers="readerEditShowLineNumbers"
     :reader-edit-minimap="readerEditMinimap"
     :edit-auto-refresh-chapter-list="editAutoRefreshChapterList"
@@ -200,6 +212,7 @@ onBeforeUnmount(() => {
     :compress-blank-keep-one-blank="compressBlankKeepOneBlank"
     :monaco-custom-highlight="monacoCustomHighlight"
     :txtr-delimited-match-cross-line="txtrDelimitedMatchCrossLine"
+    :timed-scroll-settings="timedScrollSettings"
     :ebook-convert-output-dir="ebookConvertOutputDir"
     :character-portrait-cache-dir="characterPortraitCacheDir"
     :ai-skills-enabled="aiSkillsEnabled"
@@ -223,6 +236,8 @@ onBeforeUnmount(() => {
     :current-theme="currentTheme"
     :reader-surface-light="readerSurfaceLight"
     :reader-surface-dark="readerSurfaceDark"
+    :reader-palette-color-enabled-light="readerPaletteColorEnabledLight"
+    :reader-palette-color-enabled-dark="readerPaletteColorEnabledDark"
     :monaco-font-family="monacoFontFamily"
     :highlight-colors-light="highlightColorsLight"
     :highlight-colors-dark="highlightColorsDark"

@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-还有章节识别、简繁互转、划线标注、记笔记、语音朗读、AI 阅读助手、AI 智能排版等功能。
+还有章节识别、简繁互转、划线标注、记笔记、多角色语音朗读、AI 阅读助手、AI 智能排版等功能。
 </p>
 
 <p align="center">
@@ -51,7 +51,7 @@
 - **角色卡生成**：借助 **AI** 检索小说中角色的相关信息生成摘要，通过**文生图**生成角色立绘。
 - **支持编辑模式**：方便对小说内容进行修改（_错别字坚决不能忍！_）
 - **AI 智能排版**：让 AI 对文本进行排版，可自动处理硬换行、修正标点符号等。
-- **语音朗读功能**：支持 Edge TTS、系统语音和阿里云通义（DashScope）云端语音；支持旁白/对白多音色；启用 AI 时，可区分男女音色，也可以给角色设置专属音色。
+- **语音朗读功能**：支持 Edge TTS、系统语音、Qwen3-TTS、MiniMax；支持多角色语音朗读。
 
 ### 关于「其他电子书格式」的支持
 
@@ -83,6 +83,22 @@
 
 **已知问题**：启用「高级换行策略」会有很大的内存开销，且这个占用难以被释放，见 [#5311](https://github.com/microsoft/monaco-editor/issues/5311)。
 
+### 关于「语音朗读」
+
+支持的 TTS：
+
+| 服务商    | API 密钥                | 说明                                            |
+| --------- | ----------------------- | ----------------------------------------------- |
+| Edge TTS  | -                       |                                                 |
+| 系统语音  | -                       |                                                 |
+| Qwen3-TTS | 阿里云通义（DashScope） |                                                 |
+| MiniMax   | MiniMax                 |                                                 |
+| 小米 MiMo | MiMo                    | 支持 **音色定制** 和 **音色克隆**，**目前限免** |
+
+支持「单音色」或「旁白/对白多音色」。
+
+启用「AI 阅读助手」时，多音色可区分「男声」「女声」，也可以在「角色卡」中给角色设置专属音色。
+
 ### 关于「AI」功能
 
 |   <p align="center"><strong>分析剧情</strong></p> ![](./images/AI阅读助手_剧情分析.jpg)   | <p align="center"><strong>生成章节匹配规则</strong></p> ![](./images/AI阅读助手_匹配规则.jpg) |
@@ -106,6 +122,8 @@
 | Moonshot（Kimi）             | `https://api.moonshot.cn/v1`                              |
 | 硅基流动                     | `https://api.siliconflow.cn/v1`                           |
 | Agnes AI                     | `https://apihub.agnes-ai.com/v1`                          |
+| MiniMax                      | `https://api.minimaxi.com/v1`                             |
+| 小米 MiMo                    | `https://api.xiaomimimo.com/v1`                           |
 | OpenAI                       | `https://api.openai.com/v1`                               |
 | OpenRouter                   | `https://openrouter.ai/api/v1`                            |
 | Google Gemini（OpenAI 兼容） | `https://generativelanguage.googleapis.com/v1beta/openai` |
@@ -133,6 +151,7 @@ OpenAI 接口拼接方式：
 | OpenAI Images               | `https://api.openai.com/v1`      |
 | Agnes AI                    | `https://apihub.agnes-ai.com/v1` |
 | 阿里云通义万相（DashScope） | `https://dashscope.aliyuncs.com` |
+| MiniMax                     | `https://api.minimaxi.com`       |
 | Stability AI                | `https://api.stability.ai`       |
 | _自定义 OpenAI 兼容服务_    | _（手动输入接口地址）_           |
 

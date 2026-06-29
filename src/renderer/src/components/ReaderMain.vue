@@ -102,12 +102,15 @@ import {
   defaultMonacoAdvancedWrapping,
   defaultMonacoCustomHighlight,
   defaultMonacoSmoothScrolling,
+  defaultStickyChapterTitleEnabled,
   defaultReaderEditShowLineNumbers,
   defaultReaderEditMinimap,
   defaultTxtrDelimitedMatchCrossLine,
   defaultReaderLineHeightMultiple,
   defaultReaderPaletteDark,
   defaultReaderPaletteLight,
+  defaultReaderPaletteColorEnabled,
+  type ReaderSurfaceColorEnabled,
   type ReaderSurfacePalette,
 } from "../constants/appUi";
 import { DEFAULT_HIGHLIGHT_COLORS_LIGHT } from "../constants/highlightColors";
@@ -358,6 +361,8 @@ const props = withDefaults(
     monacoAdvancedWrapping?: boolean;
     /** Monaco 平滑滚动（滚轮、revealLine、setScrollTop 等） */
     monacoSmoothScrolling?: boolean;
+    /** 阅读区顶部粘性章节标题 */
+    stickyChapterTitleEnabled?: boolean;
     /** 编辑模式下是否显示行号（只读模式始终关闭） */
     readerEditShowLineNumbers?: boolean;
     readerEditMinimap?: boolean;
@@ -366,6 +371,8 @@ const props = withDefaults(
     /** 合并用户覆盖后的阅读器表面色（亮色 / 暗色） */
     readerSurfaceLight?: ReaderSurfacePalette;
     readerSurfaceDark?: ReaderSurfacePalette;
+    /** 当前主题下阅读器 token 独立配色开关（Monarch 引号/括号内回退用） */
+    readerPaletteColorEnabled?: ReaderSurfaceColorEnabled;
     /** 当前主题下的高亮色列表（与设置中亮/暗数组之一对应） */
     highlightColors?: string[];
     /** 当前主题下的划线标注色列表（与设置中亮/暗数组之一对应） */
@@ -429,11 +436,13 @@ const props = withDefaults(
     compressBlankLines: defaultCompressBlankLines,
     monacoAdvancedWrapping: defaultMonacoAdvancedWrapping,
     monacoSmoothScrolling: defaultMonacoSmoothScrolling,
+    stickyChapterTitleEnabled: defaultStickyChapterTitleEnabled,
     readerEditShowLineNumbers: defaultReaderEditShowLineNumbers,
     readerEditMinimap: defaultReaderEditMinimap,
     streamLoading: false,
     readerSurfaceLight: () => ({ ...defaultReaderPaletteLight }),
     readerSurfaceDark: () => ({ ...defaultReaderPaletteDark }),
+    readerPaletteColorEnabled: () => ({ ...defaultReaderPaletteColorEnabled }),
     highlightColors: () => [...DEFAULT_HIGHLIGHT_COLORS_LIGHT],
     lineationColors: () => [...DEFAULT_LINEATION_COLORS_LIGHT],
     highlightWordsByIndex: undefined,
@@ -530,7 +539,6 @@ const {
   floatCenterX,
   floatRootTop,
   floatOpenDownward,
-  floatRootRef,
   activeLineation,
   toolbarHasLineation,
   toolbarHasNote,
@@ -541,7 +549,6 @@ const {
   notePanelDraft,
   notePanelEditing,
   notePanelSourceText,
-  notePanelRootRef,
   closeNotePanel,
   onToolbarAction,
   onHighlightPickConfirm,
@@ -1109,6 +1116,7 @@ function applyTxtrMonarchTokenizer() {
     createTxtrTextMonarchLanguage(
       getTxtrMonarchHighlightOptions(),
       props.txtrDelimitedMatchCrossLine,
+      props.readerPaletteColorEnabled,
     ),
   );
 }
@@ -1142,6 +1150,14 @@ watch(
 );
 
 watch(
+  () => props.readerPaletteColorEnabled,
+  () => {
+    applyTxtrMonarchTokenizer();
+  },
+  { deep: true },
+);
+
+watch(
   () => props.monacoAdvancedWrapping,
   (advanced) => {
     setWrappingStrategyAdvanced(advanced);
@@ -1152,6 +1168,13 @@ watch(
   () => props.monacoSmoothScrolling,
   (on) => {
     editor.value?.updateOptions({ smoothScrolling: on });
+  },
+);
+
+watch(
+  () => [props.stickyChapterTitleEnabled, props.streamLoading] as const,
+  () => {
+    syncStickyScrollToStreamState();
   },
 );
 
@@ -1174,17 +1197,21 @@ watch(
   },
 );
 
+function stickyChapterTitleShouldEnable(): boolean {
+  return Boolean(props.stickyChapterTitleEnabled) && !props.streamLoading;
+}
+
 function syncStickyScrollToStreamState() {
   const ed = editor.value;
   if (!ed) return;
   ed.updateOptions({
-    stickyScroll: { enabled: !props.streamLoading },
+    stickyScroll: { enabled: stickyChapterTitleShouldEnable() },
   });
 }
 
 /** 章节大纲/标题装饰已更新后，强制粘性条重绘以套用样式 */
 function scheduleStickyChapterScrollRefresh() {
-  if (props.streamLoading) return;
+  if (!stickyChapterTitleShouldEnable()) return;
   const ed = editor.value;
   if (!ed) return;
   if (stickyChapterScrollRefreshRaf != null) {
@@ -1193,17 +1220,10 @@ function scheduleStickyChapterScrollRefresh() {
   stickyChapterScrollRefreshRaf = requestAnimationFrame(() => {
     stickyChapterScrollRefreshRaf = null;
     const e = editor.value;
-    if (!e || props.streamLoading) return;
+    if (!e || !stickyChapterTitleShouldEnable()) return;
     refreshStickyChapterScrollWidget(e);
   });
 }
-
-watch(
-  () => props.streamLoading,
-  () => {
-    syncStickyScrollToStreamState();
-  },
-);
 
 /** 程序性滚动（跳转、复位等）期间，onDidScrollChange 仍触发，但不视为用户阅读滚动 */
 let programmaticScrollDepth = 0;
@@ -3159,6 +3179,7 @@ onMounted(() => {
       fontFamily: currentFontFamily,
       wrappingStrategyAdvanced: props.monacoAdvancedWrapping,
       smoothScrolling: props.monacoSmoothScrolling,
+      stickyChapterTitleEnabled: props.stickyChapterTitleEnabled,
     }),
   });
   chapterTitleDecorationsCollection.value =

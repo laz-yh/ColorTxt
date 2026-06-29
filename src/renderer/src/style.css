@@ -833,6 +833,37 @@ textarea:focus {
   }
 }
 
+/* 通义音色下拉：性别图标与角色卡性别按钮同色 */
+.voiceReadGenderPrefix {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.voiceReadGenderPrefix svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.voiceReadGenderPrefix--male {
+  color: var(--male);
+}
+
+.voiceReadGenderPrefix--female {
+  color: var(--female);
+}
+
+.voiceReadGenderPrefix--unknown {
+  color: var(--muted);
+}
+
+.appShellMenuItemPrefix .voiceReadGenderPrefix svg path {
+  fill: currentColor;
+}
+
 .appShellMenuSubWrap {
   position: relative;
 }

@@ -45,7 +45,7 @@ function onSelect(id: string) {
 
 <template>
   <div class="settingsRowMain settingsRowMain--baseline aiProfileToolbar">
-    <span class="settingsLabel short">当前方案</span>
+    <h3 class="settingsLabel short aiProfileToolbarTitle">配置方案</h3>
     <div class="aiProfileToolbarMain">
       <AppCustomSelect
         class="aiProfileSelect settingsRowControl"
@@ -56,7 +56,7 @@ function onSelect(id: string) {
         :scroll-items="scrollItems"
         :fixed-bottom-items="selectListsEmpty"
         :scroll-max-height="280"
-        ariaLabel="当前方案"
+        ariaLabel="配置方案"
         @update:model-value="onSelect"
       />
       <div class="aiProfileToolbarActions">
@@ -95,6 +95,11 @@ function onSelect(id: string) {
 </template>
 
 <style scoped>
+.aiProfileToolbarTitle {
+  margin: 0;
+  font-weight: 600;
+}
+
 .aiProfileToolbarMain {
   display: flex;
   align-items: center;

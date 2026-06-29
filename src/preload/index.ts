@@ -40,6 +40,19 @@ import type {
 } from "@shared/aiTxt2ImgIpc";
 import type { VoiceReadEdgeTtsRequest } from "@shared/voiceReadEdgeIpc";
 import type {
+  VoiceReadHealthCheckIpcResult,
+  VoiceReadHealthCheckPayload,
+  VoiceReadListVoicesIpcResult,
+  VoiceReadListVoicesPayload,
+  VoiceReadSynthesizeIpcResult,
+  VoiceReadSynthesizePayload,
+} from "@shared/voiceReadSynthesisIpc";
+import {
+  VOICE_READ_IPC_HEALTH_CHECK,
+  VOICE_READ_IPC_LIST_VOICES,
+  VOICE_READ_IPC_SYNTHESIZE,
+} from "@shared/voiceReadSynthesisIpc";
+import type {
   VoiceReadAttributeSpeakersRequest,
   VoiceReadAttributeSpeakersResult,
 } from "@shared/voiceReadSpeakerIpc";
@@ -164,6 +177,21 @@ const api = {
     ipcRenderer.invoke("voiceRead:edgeTts", payload) as Promise<
       { ok: true; mp3: ArrayBuffer } | { ok: false; error: string }
     >,
+  voiceReadSynthesize: (payload: VoiceReadSynthesizePayload) =>
+    ipcRenderer.invoke(
+      VOICE_READ_IPC_SYNTHESIZE,
+      payload,
+    ) as Promise<VoiceReadSynthesizeIpcResult>,
+  voiceReadListVoices: (payload: VoiceReadListVoicesPayload) =>
+    ipcRenderer.invoke(
+      VOICE_READ_IPC_LIST_VOICES,
+      payload,
+    ) as Promise<VoiceReadListVoicesIpcResult>,
+  voiceReadHealthCheck: (payload: VoiceReadHealthCheckPayload) =>
+    ipcRenderer.invoke(
+      VOICE_READ_IPC_HEALTH_CHECK,
+      payload,
+    ) as Promise<VoiceReadHealthCheckIpcResult>,
   voiceReadAttributeSpeakers: (payload: VoiceReadAttributeSpeakersRequest) =>
     ipcRenderer.invoke(
       "voiceRead:attributeSpeakers",
@@ -219,16 +247,10 @@ const api = {
         available: boolean;
         backend: "safeStorage" | "appBound" | "unavailable";
       }>,
-    getVoiceReadDashScopeApiKey: () =>
-      ipcRenderer.invoke("secrets:getVoiceReadDashScopeApiKey") as Promise<{
-        ok: true;
-        apiKey: string;
-      }>,
-    setVoiceReadDashScopeApiKey: (apiKey: string) =>
-      ipcRenderer.invoke(
-        "secrets:setVoiceReadDashScopeApiKey",
-        apiKey,
-      ) as Promise<{ ok: true }>,
+    getDeprecated: (slot: string) =>
+      ipcRenderer.invoke("secrets:getDeprecated", slot) as Promise<
+        { ok: true; value: string } | { ok: false; error: string }
+      >,
     getVoiceReadProfileKeys: () =>
       ipcRenderer
         .invoke("secrets:get", SECRET_SLOT_VOICE_READ_PROFILE_KEYS)
@@ -244,6 +266,11 @@ const api = {
         slot: SECRET_SLOT_VOICE_READ_PROFILE_KEYS,
         value: keysBlob,
       }) as Promise<{ ok: true }>,
+    setVoiceReadSecrets: (payload: { profileKeys: string }) =>
+      ipcRenderer.invoke(
+        "secrets:setVoiceReadSecrets",
+        payload,
+      ) as Promise<{ ok: true } | { ok: false; error: string }>,
   },
   pathToFileUrl: (filePath: string) =>
     ipcRenderer.invoke("path:toFileUrl", filePath) as Promise<string | null>,

@@ -1,5 +1,10 @@
 import type { AIChatEndpoint } from "@shared/aiTypes";
 import type { AITokenUsageTotals } from "@shared/aiTokenUsage";
+import {
+  normalizeVoiceReadEmotion,
+  VOICE_READ_EMOTION_AUTO,
+  type VoiceReadEmotionId,
+} from "@shared/voiceReadEmotion";
 import type {
   VoiceReadAttributeSpeakersRequest,
   VoiceReadQuoteAttribution,
@@ -33,7 +38,19 @@ function unknownQuotes(count: number): VoiceReadQuoteAttribution[] {
   return Array.from({ length: count }, () => ({
     kind: "unknown" as const,
     speaker: null,
+    emotion: VOICE_READ_EMOTION_AUTO,
   }));
+}
+
+function parseQuoteEmotion(
+  raw: unknown,
+  kind: VoiceReadQuoteVoiceKind,
+): VoiceReadEmotionId {
+  if (kind === "narration") {
+    const e = normalizeVoiceReadEmotion(raw);
+    return e === VOICE_READ_EMOTION_AUTO ? "calm" : e;
+  }
+  return normalizeVoiceReadEmotion(raw);
 }
 
 function buildRosterNameMap(
@@ -65,17 +82,21 @@ function normalizeSpeaker(
 function parseQuoteAttribution(
   raw: unknown,
   nameSet: Map<string, string>,
+  includeEmotion: boolean,
 ): VoiceReadQuoteAttribution {
   if (!raw || typeof raw !== "object") {
-    return { kind: "unknown", speaker: null };
+    return { kind: "unknown", speaker: null, emotion: VOICE_READ_EMOTION_AUTO };
   }
   const o = raw as Record<string, unknown>;
   const kind = normalizeQuoteKind(o.kind ?? o.type ?? o.label);
   const speaker = normalizeSpeaker(o.speaker ?? o.name, nameSet);
+  const emotion = includeEmotion
+    ? parseQuoteEmotion(o.emotion, kind)
+    : VOICE_READ_EMOTION_AUTO;
   if (kind === "narration") {
-    return { kind: "narration", speaker: null };
+    return { kind: "narration", speaker: null, emotion };
   }
-  return { kind, speaker };
+  return { kind, speaker, emotion };
 }
 
 function parseLegacySpeakers(
@@ -86,7 +107,7 @@ function parseLegacySpeakers(
   const out: VoiceReadQuoteAttribution[] = [];
   for (let i = 0; i < quoteCount; i++) {
     const speaker = normalizeSpeaker(speakers[i], nameSet);
-    out.push({ kind: "unknown", speaker });
+    out.push({ kind: "unknown", speaker, emotion: VOICE_READ_EMOTION_AUTO });
   }
   return out;
 }
@@ -97,12 +118,19 @@ export async function attributeVoiceReadSpeakers(
   signal?: AbortSignal,
 ): Promise<{
   quotes: VoiceReadQuoteAttribution[];
+  narrationEmotion: VoiceReadEmotionId;
   tokenUsage: AITokenUsageTotals | null;
 }> {
   const quoteTexts = req.dialogueTexts.map((t) => t.trim()).filter(Boolean);
   if (quoteTexts.length === 0) {
-    return { quotes: [], tokenUsage: null };
+    return {
+      quotes: [],
+      narrationEmotion: VOICE_READ_EMOTION_AUTO,
+      tokenUsage: null,
+    };
   }
+
+  const includeEmotion = req.includeEmotion === true;
 
   const rosterLines =
     req.roster.length > 0
@@ -121,6 +149,22 @@ export async function attributeVoiceReadSpeakers(
     .map((t, i) => `${i + 1}. 「${t}」`)
     .join("\n");
 
+  const emotionBlock = includeEmotion
+    ? `
+
+同时根据整行原文（含引号外引导语、叙述）标注朗读情绪 emotion：
+- 用简短中文自然语言描述语气/情绪（10～30 字），如「语气关切、略带担忧」「冷淡、不带感情」「哽咽、压抑悲伤」「俏皮、略带调侃」等，可覆盖任意细腻情绪。
+- 不确定或无需强调时填 auto（由引擎根据文本推断）。
+- kind 为 narration 时 emotion 一般用「语气平静、自然」或 auto。
+- 对白应结合引导语判断，如「冷冷地说」「哽咽道」等。
+
+另输出 narrationEmotion 表示本行引号外旁白段的整体情绪（一般用「语气平静、自然」或 auto）。`
+    : "";
+
+  const jsonShape = includeEmotion
+    ? `{ "quotes": [ { "kind": "narration"|"male"|"female"|"unknown", "speaker": string|null, "emotion": string }, ... ], "narrationEmotion": string }`
+    : `{ "quotes": [ { "kind": "narration"|"male"|"female"|"unknown", "speaker": string|null }, ... ] }`;
+
   const system = `你是中文小说「引号内文本」朗读分类助手。
 用户会给出当前行原文，以及按顺序提取的引号内文本列表。请对每一条判断应如何朗读：
 
@@ -133,10 +177,10 @@ kind 为 "narration" 时 speaker 必须为 null。
 注意：
 - 引导语可在引号前或后，如「杨过道："…"」或「"…"杨过道。」；也可能没有引导语，两人轮流对话需结合上下文推断。
 - 不要仅凭「引号」就假设是对白；强调、术语、招式名等应为 narration。
-- 不要自行穷举招式等特例，根据语义判断是否为角色开口说话。
+- 不要自行穷举招式等特例，根据语义判断是否为角色开口说话。${emotionBlock}
 
 输出必须是单一 JSON 对象，不要 Markdown、不要代码围栏：
-{ "quotes": [ { "kind": "narration"|"male"|"female"|"unknown", "speaker": string|null }, ... ] }
+${jsonShape}
 quotes 数组长度必须与引号条数相同，顺序一一对应。`;
 
   const user = `## 角色表
@@ -166,31 +210,47 @@ ${quoteList}
   try {
     parsed = JSON.parse(stripped) as unknown;
   } catch {
-    return { quotes: unknownQuotes(quoteTexts.length), tokenUsage: usage };
+    return {
+      quotes: unknownQuotes(quoteTexts.length),
+      narrationEmotion: VOICE_READ_EMOTION_AUTO,
+      tokenUsage: usage,
+    };
   }
   if (!parsed || typeof parsed !== "object") {
-    return { quotes: unknownQuotes(quoteTexts.length), tokenUsage: usage };
+    return {
+      quotes: unknownQuotes(quoteTexts.length),
+      narrationEmotion: VOICE_READ_EMOTION_AUTO,
+      tokenUsage: usage,
+    };
   }
 
   const nameSet = buildRosterNameMap(req.roster);
   const record = parsed as Record<string, unknown>;
   const rawQuotes = record.quotes;
+  const narrationEmotion = includeEmotion
+    ? normalizeVoiceReadEmotion(record.narrationEmotion)
+    : VOICE_READ_EMOTION_AUTO;
 
   if (Array.isArray(rawQuotes)) {
     const out: VoiceReadQuoteAttribution[] = [];
     for (let i = 0; i < quoteTexts.length; i++) {
-      out.push(parseQuoteAttribution(rawQuotes[i], nameSet));
+      out.push(parseQuoteAttribution(rawQuotes[i], nameSet, includeEmotion));
     }
-    return { quotes: out, tokenUsage: usage };
+    return { quotes: out, narrationEmotion, tokenUsage: usage };
   }
 
   const rawSpeakers = record.speakers;
   if (Array.isArray(rawSpeakers)) {
     return {
       quotes: parseLegacySpeakers(rawSpeakers, quoteTexts.length, nameSet),
+      narrationEmotion,
       tokenUsage: usage,
     };
   }
 
-  return { quotes: unknownQuotes(quoteTexts.length), tokenUsage: usage };
+  return {
+    quotes: unknownQuotes(quoteTexts.length),
+    narrationEmotion,
+    tokenUsage: usage,
+  };
 }
