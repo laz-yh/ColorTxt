@@ -82,6 +82,7 @@ import {
   upsertFileMetaRecord,
   upsertReaderAnnotationForFile,
   type FileMetaRecord,
+  type HighlightWord,
   type HighlightWordsByIndex,
   type ReaderAnnotationRecord,
   type ReaderLineationType,
@@ -100,6 +101,7 @@ import {
 import {
   assignHighlightTermToColorMap,
   buildHighlightListTerms,
+  findHighlightWordWithDefault,
   mergeHighlightWordsByIndex,
   removeHighlightTermFromMap,
   termExistsInHighlightMap,
@@ -2214,13 +2216,13 @@ function onAddHighlightTerm(payload: { text: string; colorIndex: number }) {
     fileMetaRecords.value,
     path,
     payload.colorIndex,
-    payload.text,
+    { text: payload.text },
   );
   persistFileMeta();
 }
 
 /** 从侧栏手动录入添加高亮词（随机颜色） */
-function onAddHighlightTermFromSidebar(text: string) {
+function onAddHighlightTermFromSidebar(text: string, isRegex?: boolean) {
   const path = currentFile.value;
   if (!path) return;
   const colors = highlightColorsForReader.value;
@@ -2229,7 +2231,7 @@ function onAddHighlightTermFromSidebar(text: string) {
     fileMetaRecords.value,
     path,
     colorIndex,
-    text,
+    { text, isRegex: isRegex === true },
   );
   persistFileMeta();
 }
@@ -2238,7 +2240,7 @@ function onRemoveHighlightTerm(payload: {
   text: string;
   scope?: "global" | "book";
 }) {
-  const term = payload.text;
+  const term = { text: payload.text.trim() };
   if (payload.scope === "global") {
     highlightWordsByIndexGlobal.value = removeHighlightTermFromMap(
       highlightWordsByIndexGlobal.value,
@@ -2260,15 +2262,23 @@ function onRemoveHighlightTerm(payload: {
 function onFavoriteHighlightTerm(payload: { text: string; colorIndex: number }) {
   const path = currentFile.value;
   if (!path) return;
+  const term = { text: payload.text.trim() };
+  // 从全局词或本书词中查找 isRegex 属性，保留正则标记
+  const sourceWord = findHighlightWordWithDefault(
+    highlightWordsByIndexGlobal.value,
+    currentFileHighlightWords.value,
+    term.text,
+    term,
+  );
   fileMetaRecords.value = removeHighlightTermFromFile(
     fileMetaRecords.value,
     path,
-    payload.text,
+    term,
   );
   highlightWordsByIndexGlobal.value = assignHighlightTermToColorMap(
     highlightWordsByIndexGlobal.value,
     payload.colorIndex,
-    payload.text,
+    sourceWord,
   );
   persistFileMeta();
   persistSettings();
@@ -2278,7 +2288,15 @@ function onUnfavoriteHighlightTerm(payload: {
   text: string;
   colorIndex: number;
 }) {
-  const term = payload.text.trim();
+  const term = { text: payload.text.trim() };
+  // 取消收藏前从全局词或本书词中查找 isRegex 属性（此时全局词中还有该词）
+  const sourceWord = findHighlightWordWithDefault(
+    highlightWordsByIndexGlobal.value,
+    currentFileHighlightWords.value,
+    term.text,
+    term,
+  );
+  // 现在再删除全局词
   highlightWordsByIndexGlobal.value = removeHighlightTermFromMap(
     highlightWordsByIndexGlobal.value,
     term,
@@ -2293,7 +2311,7 @@ function onUnfavoriteHighlightTerm(payload: {
       fileMetaRecords.value,
       path,
       payload.colorIndex,
-      term,
+      sourceWord,
     );
     persistFileMeta();
   }
@@ -2322,13 +2340,12 @@ async function clearCurrentFileHighlightTerms() {
   persistFileMeta();
 }
 
-function onFindHighlightTermFromSidebar(text: string) {
+function onFindHighlightTermFromSidebar(text: string, isRegex?: boolean) {
   if (!currentFile.value || loading.value || totalLineCount.value <= 0) return;
   if (isVoiceReadNavigationBlocked.value) return;
   ensurePinBeforeRevealFindWidget();
-  const useRegex = text.startsWith("regex:");
-  const pattern = useRegex ? text.slice(6) : text;
-  const found = readerRef.value?.jumpToNextInlineSearchMatch?.(pattern, {
+  const useRegex = isRegex === true;
+  const found = readerRef.value?.jumpToNextInlineSearchMatch?.(text, {
     caseSensitive: false,
     wholeWord: false,
     useRegex,
@@ -3282,7 +3299,7 @@ useAppShellThemeWatch({
           @remove-bookmarks="removeCurrentFileBookmarks"
           @edit-bookmark="onEditBookmark"
           @remove-bookmark="onRemoveBookmark"
-          @find-highlight-term="onFindHighlightTermFromSidebar"
+          @find-highlight-term="(text, isRegex) => onFindHighlightTermFromSidebar(text, isRegex)"
           @clear-inline-search-highlight="clearReaderInlineSearchHighlight"
           @update:search-query="searchQuery = $event"
           @update:search-match-case="searchMatchCase = $event"
@@ -3321,7 +3338,7 @@ useAppShellThemeWatch({
           @update:file-list-editing="fileListEditing = $event"
           @request-expand-panel="showSidebar = true"
           @request-collapse-panel="showSidebar = false"
-          @add-highlight-term="onAddHighlightTermFromSidebar"
+          @add-highlight-term="(text, isRegex) => onAddHighlightTermFromSidebar(text, isRegex)"
           @open-color-scheme="showColorSchemePanel = true"
           @open-settings="showSettingsPanel = true"
         />

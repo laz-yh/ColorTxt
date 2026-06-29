@@ -2984,17 +2984,9 @@ function countHighlightTermMatches(
   return terms.map((t) => {
     const q = t.text.trim();
     if (!q) return { ...t, matchCount: 0 };
-    const isRegex = q.startsWith("regex:");
-    const pattern = isRegex ? q.slice(6) : q;
-    if (!pattern) return { ...t, matchCount: 0 };
-    let matches: monaco.editor.FindMatch[];
-    try {
-      matches = modelToUse.findMatches(
-        pattern, false, isRegex, false, null, false,
-      );
-    } catch {
-      return { ...t, matchCount: 0 };
-    }
+    const matches = modelToUse.findMatches(
+      q, false, t.isRegex, false, null, false,
+    );
     return { ...t, matchCount: matches?.length ?? 0 };
   });
 }

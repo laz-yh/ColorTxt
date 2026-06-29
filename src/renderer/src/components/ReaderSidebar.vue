@@ -253,13 +253,13 @@ const emit = defineEmits<{
   openColorScheme: [];
   openSettings: [];
   refreshChaptersFromReader: [];
-  findHighlightTerm: [text: string];
+  findHighlightTerm: [text: string, isRegex: boolean];
   removeHighlightTerm: [payload: { text: string; scope: "global" | "book" }];
   favoriteHighlightTerm: [payload: { text: string; colorIndex: number }];
   unfavoriteHighlightTerm: [payload: { text: string; colorIndex: number }];
   clearInlineSearchHighlight: [];
   clearHighlights: [];
-  addHighlightTerm: [text: string];
+  addHighlightTerm: [text: string, isRegex: boolean];
   jumpToAnnotation: [ann: ReaderAnnotationRecord];
   removeAnnotation: [id: string];
   clearAnnotations: [];
@@ -302,6 +302,8 @@ const {
   resetChapterListScroll,
   centerActiveChapterInList,
 } = useReaderSidebarLists(props, (e, chapter) => emit(e, chapter));
+
+const activeTab = computed(() => props.activeTab);
 
 const activityBarWidthPx = `${SIDEBAR_ACTIVITY_BAR_WIDTH}px`;
 
@@ -577,11 +579,7 @@ function toggleAddHighlightInput() {
 function onConfirmAddHighlight() {
   const text = addHighlightText.value.trim();
   if (!text) return;
-  if (isRegexMode.value) {
-    emit("addHighlightTerm", "regex:" + text);
-  } else {
-    emit("addHighlightTerm", text);
-  }
+  emit("addHighlightTerm", text, isRegexMode.value);
   showAddHighlightInput.value = false;
   addHighlightText.value = "";
   isRegexMode.value = false;
@@ -952,7 +950,7 @@ defineExpose({
         :has-inline-search-highlight="hasInlineSearchHighlight"
         :highlight-preview-bg="highlightPreviewBg"
         :monaco-font-family="monacoFontFamily"
-        @find-highlight-term="emit('findHighlightTerm', $event)"
+        @find-highlight-term="(text, isRegex) => emit('findHighlightTerm', text, isRegex)"
         @remove-highlight-term="emit('removeHighlightTerm', $event)"
         @favorite-highlight-term="emit('favoriteHighlightTerm', $event)"
         @unfavorite-highlight-term="emit('unfavoriteHighlightTerm', $event)"

@@ -37,7 +37,7 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  findHighlightTerm: [text: string];
+  findHighlightTerm: [text: string, isRegex: boolean];
   removeHighlightTerm: [payload: { text: string; scope: "global" | "book" }];
   favoriteHighlightTerm: [payload: { text: string; colorIndex: number }];
   unfavoriteHighlightTerm: [payload: { text: string; colorIndex: number }];
@@ -102,7 +102,7 @@ const emptyMessage = computed(() => {
             backgroundColor: highlightPreviewBg,
             fontFamily: monacoFontFamily,
           }"
-          @click="emit('findHighlightTerm', item.text)"
+          @click="emit('findHighlightTerm', item.text, item.isRegex)"
         >
           <span class="highlightText" :style="{ color: item.color }">
             {{ item.text }}

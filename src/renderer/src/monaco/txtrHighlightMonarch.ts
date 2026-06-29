@@ -1,5 +1,5 @@
 import type * as monaco from "monaco-editor";
-import type { HighlightWordsByIndex } from "../stores/fileMetaStore";
+import type { HighlightWord, HighlightWordsByIndex } from "../stores/fileMetaStore";
 
 /** 与装饰方案一致：更长词优先，同长则更小的高亮色索引优先 */
 export type TxtrMonarchHighlightOptions = {
@@ -9,35 +9,28 @@ export type TxtrMonarchHighlightOptions = {
   highlightWordsByIndex: HighlightWordsByIndex | undefined;
 };
 
-const REGEX_PREFIX = "regex:";
-
 function escapeRegExpLiteral(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function buildHighlightPattern(phrase: string): RegExp {
-  if (phrase.startsWith(REGEX_PREFIX)) {
-    const pattern = phrase.slice(REGEX_PREFIX.length);
-    if (!pattern) return /^$/;
+function buildHighlightPattern(word: HighlightWord): RegExp {
+  if (word.isRegex) {
     try {
-      return new RegExp(pattern, "iu");
+      return new RegExp(word.text, "iu");
     } catch {
       return /^$/;
     }
   }
-  return new RegExp(escapeRegExpLiteral(phrase), "iu");
+  return new RegExp(escapeRegExpLiteral(word.text), "iu");
 }
 
-function highlightPatternLength(phrase: string): number {
-  if (phrase.startsWith(REGEX_PREFIX)) {
-    return phrase.slice(REGEX_PREFIX.length).length;
-  }
-  return phrase.length;
+function highlightPatternLength(word: HighlightWord): number {
+  return word.text.length;
 }
 
 /**
  * 生成自定义高亮词的 Monarch 规则（每条一词一类 token：`txtr.customHighlight.{index}`）。
- * 以 `regex:` 开头的高亮词采用正则匹配，其余走字面量匹配。
+ * `isRegex: true` 的高亮词采用正则匹配，其余走字面量匹配。
  * 与原先 `findMatches` 一致：大小写不敏感。
  */
 export function buildTxtrCustomHighlightMonarchRules(
@@ -63,10 +56,10 @@ export function buildTxtrCustomHighlightMonarchRules(
     ) {
       continue;
     }
-    for (const phrase of words) {
-      if (!phrase) continue;
-      const pattern = buildHighlightPattern(phrase);
-      const len = highlightPatternLength(phrase);
+    for (const word of words) {
+      if (!word.text) continue;
+      const pattern = buildHighlightPattern(word);
+      const len = highlightPatternLength(word);
       entries.push({ pattern, colorIndex: idx, len });
     }
   }

@@ -2,7 +2,7 @@ import {
   convertDigitsWidth,
   convertLettersWidth,
 } from "@shared/textWidthConvert";
-import type { HighlightWordsByIndex } from "../stores/fileMetaStore";
+import type { HighlightWord, HighlightWordsByIndex } from "../stores/fileMetaStore";
 import {
   resolveOpenCcConfig,
   type TextConvertWidthMode,
@@ -64,10 +64,13 @@ export async function applyTextDisplayConvertsToHighlightWordsByIndex(
   if (!map) return undefined;
   const out: HighlightWordsByIndex = {};
   for (const [key, words] of Object.entries(map)) {
-    const converted: string[] = [];
+    const converted: HighlightWord[] = [];
     for (const word of words) {
-      if (!word) continue;
-      converted.push(await applyTextDisplayConverts(word, options));
+      if (!word.text) continue;
+      converted.push({
+        text: await applyTextDisplayConverts(word.text, options),
+        isRegex: word.isRegex,
+      });
     }
     if (converted.length > 0) out[key] = converted;
   }
